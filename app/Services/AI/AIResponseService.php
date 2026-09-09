@@ -315,16 +315,19 @@ class AIResponseService
 
         if ($isGreeting) {
             $name = $business->name;
+            $hello = $this->resolveGreetingWord($business, $normalized);
+            $moment = $hello === 'Bonsoir' ? 'ce soir' : "aujourd'hui";
+
             $variants = ! empty($business->custom_greeting)
                 ? [
                     trim($business->custom_greeting),
-                    "Bonjour et bienvenue chez *{$name}* 👋 Comment puis-je vous aider aujourd'hui ?",
-                    "Bonjour ! Ravi de vous accueillir chez *{$name}*. Que puis-je faire pour vous ?",
+                    "{$hello} et bienvenue chez *{$name}* 👋 Comment puis-je vous aider {$moment} ?",
+                    "{$hello} ! Ravi de vous accueillir chez *{$name}*. Que puis-je faire pour vous ?",
                 ]
                 : [
-                    "Bonjour et bienvenue chez *{$name}* 👋 Comment puis-je vous aider aujourd'hui ?",
-                    "Bonjour ! Ici l'équipe de *{$name}*. Que puis-je faire pour vous ?",
-                    "Bonjour, merci de nous écrire chez *{$name}*. Comment puis-je vous aider ?",
+                    "{$hello} et bienvenue chez *{$name}* 👋 Comment puis-je vous aider {$moment} ?",
+                    "{$hello} ! Ici l'équipe de *{$name}*. Que puis-je faire pour vous ?",
+                    "{$hello}, merci de nous écrire chez *{$name}*. Comment puis-je vous aider ?",
                 ];
 
             return $this->simpleResponse($this->pickRandom($variants));
@@ -362,6 +365,67 @@ class AIResponseService
         }
 
         return null;
+    }
+
+    /**
+     * Fuseau horaire de l'entreprise (défaut : Africa/Ouagadougou, GMT+0).
+     */
+    private function businessTimezone(Business $business): string
+    {
+        $tz = is_string($business->timezone ?? null) ? trim($business->timezone) : '';
+
+        if ($tz !== '' && in_array($tz, timezone_identifiers_list(), true)) {
+            return $tz;
+        }
+
+        return 'Africa/Ouagadougou';
+    }
+
+    /**
+     * Heure locale actuelle (0-23) de l'entreprise.
+     */
+    private function currentHour(Business $business): int
+    {
+        try {
+            return (int) now()->timezone($this->businessTimezone($business))->format('G');
+        } catch (\Throwable) {
+            return (int) now()->format('G');
+        }
+    }
+
+    /**
+     * Salutation adaptée : priorité au message du client (« Bonsoir » →
+     * « Bonsoir »), sinon on se base sur l'heure locale de l'entreprise.
+     * Matin/après-midi (5h-18h) → « Bonjour » ; soir/nuit (18h-5h) → « Bonsoir ».
+     */
+    private function resolveGreetingWord(Business $business, string $normalized): string
+    {
+        $words = explode(' ', $normalized);
+
+        if (in_array('bonsoir', $words, true) || in_array('bsr', $words, true)) {
+            return 'Bonsoir';
+        }
+
+        if (in_array('bonjour', $words, true) || in_array('bjr', $words, true) || in_array('bonjr', $words, true)) {
+            return 'Bonjour';
+        }
+
+        $hour = $this->currentHour($business);
+
+        return ($hour >= 18 || $hour < 5) ? 'Bonsoir' : 'Bonjour';
+    }
+
+    /**
+     * Décrire le moment de la journée pour le prompt système.
+     */
+    private function partOfDay(int $hour): string
+    {
+        return match (true) {
+            $hour >= 5 && $hour < 12 => 'le matin',
+            $hour >= 12 && $hour < 18 => "l'après-midi",
+            $hour >= 18 && $hour < 22 => 'le soir',
+            default => 'la nuit',
+        };
     }
 
     /**
@@ -532,6 +596,13 @@ class AIResponseService
             ? "Message d'accueil défini par l'entreprise (inspire-t'en pour saluer, sans le répéter mot pour mot à chaque fois) :\n\"{$business->custom_greeting}\""
             : "Aucun message d'accueil personnalisé n'a été défini : accueille le client chaleureusement avec tes propres mots.";
 
+        $hour = $this->currentHour($business);
+        $ville = ! empty($business->city) ? $business->city : 'Ouagadougou';
+        $heureStr = str_pad((string) $hour, 2, '0', STR_PAD_LEFT).'h';
+        $heureBloc = "Il est actuellement environ {$heureStr} ({$this->partOfDay($hour)}) à {$ville}. "
+            .'Adapte tes salutations en conséquence : « Bonjour » le matin et l\'après-midi, « Bonsoir » à partir de 18h et la nuit. '
+            ."Si le client te dit « Bonsoir », ne réponds jamais « Bonjour », et inversement.";
+
         $prompt = <<<PROMPT
 {$identite}
 
@@ -567,6 +638,9 @@ Tu discutes avec un client sur WhatsApp. Tu incarnes une vraie personne du servi
 
 # Accueil
 {$accueil}
+
+# Moment de la journée
+{$heureBloc}
 PROMPT;
 
         if (! empty($business->ai_instructions)) {
