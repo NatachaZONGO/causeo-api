@@ -4,6 +4,7 @@ namespace App\Http\Controllers\API\V1;
 
 use App\Http\Controllers\Controller;
 use App\Models\Business;
+use App\Models\BusinessMedia;
 use App\Models\Conversation;
 use App\Models\Escalation;
 use App\Models\Message;
@@ -131,6 +132,10 @@ class WebhookController extends Controller
                 $inboundMessage->update(['status' => 'answered_by_ai']);
             }
 
+            if (! empty($result['media_ids'])) {
+                $this->sendMediaFiles($incoming['from'], $result['media_ids']);
+            }
+
             $business->increment('monthly_message_count');
 
             return response('', 200);
@@ -140,6 +145,37 @@ class WebhookController extends Controller
             ]);
 
             return response('', 200);
+        }
+    }
+
+    /**
+     * Envoyer au client les médias sélectionnés par l'IA.
+     *
+     * @param  array<int, string>  $mediaIds
+     */
+    private function sendMediaFiles(string $to, array $mediaIds): void
+    {
+        foreach ($mediaIds as $mediaId) {
+            $media = BusinessMedia::find($mediaId);
+
+            if ($media === null || empty($media->public_url)) {
+                continue;
+            }
+
+            if ($media->type === 'document') {
+                $extension = pathinfo((string) $media->file_path, PATHINFO_EXTENSION);
+                $filename = $media->title.($extension !== '' ? ".{$extension}" : '');
+                $response = $this->whatsApp->sendDocument($to, $media->public_url, $filename, $media->description);
+            } else {
+                $response = $this->whatsApp->sendImage($to, $media->public_url, $media->title);
+            }
+
+            Log::info('WebhookController: média envoyé au client', [
+                'media_id' => $media->id,
+                'type' => $media->type,
+                'to' => $to,
+                'whatsapp_message_id' => data_get($response, 'messages.0.id'),
+            ]);
         }
     }
 

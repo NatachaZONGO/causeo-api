@@ -32,6 +32,8 @@ Route::prefix('v1/auth')->group(function () {
 Route::prefix('v1')->middleware('auth:sanctum')->group(function () {
     Route::apiResource('businesses', \App\Http\Controllers\API\V1\BusinessController::class);
     Route::apiResource('businesses.documents', \App\Http\Controllers\API\V1\DocumentController::class)->shallow()->except('update');
+    Route::apiResource('businesses.media', \App\Http\Controllers\API\V1\BusinessMediaController::class)
+        ->shallow()->except('update')->parameters(['media' => 'media']);
 
     Route::get('businesses/{business}/conversations', [ConversationController::class, 'index']);
     Route::get('conversations/{conversation}', [ConversationController::class, 'show']);

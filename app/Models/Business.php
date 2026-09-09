@@ -69,6 +69,14 @@ class Business extends Model
     }
 
     /**
+     * @return HasMany<BusinessMedia>
+     */
+    public function media(): HasMany
+    {
+        return $this->hasMany(BusinessMedia::class);
+    }
+
+    /**
      * @return HasMany<Conversation>
      */
     public function conversations(): HasMany

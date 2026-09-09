@@ -36,7 +36,7 @@ class AIResponseService
     /**
      * Générer une réponse à la question d'un client pour une entreprise donnée.
      *
-     * @return array{answer: ?string, confidence: float, should_escalate: bool, context_used: array<int, mixed>}
+     * @return array{answer: ?string, confidence: float, should_escalate: bool, context_used: array<int, mixed>, media_ids: array<int, string>}
      */
     public function answer(Business $business, string $question, ?string $conversationId = null): array
     {
@@ -51,6 +51,8 @@ class AIResponseService
             $context = $this->findRelevantContext($business, $question);
             $hasContext = $context->isNotEmpty();
 
+            $media = $this->findRelevantMedia($business, $question);
+
             $messages = $this->buildConversationHistory($conversationId, $question);
 
             $systemPrompt = $this->buildSystemPrompt($business);
@@ -59,6 +61,16 @@ class AIResponseService
                 $systemPrompt .= "\n\n# Contexte de la conversation\n"
                     ."Note : cette conversation est déjà en cours, le client a déjà été accueilli. "
                     .'Réponds directement à sa question sans resaluer.';
+            }
+
+            if ($media->isNotEmpty()) {
+                $systemPrompt .= "\n\n# Médias disponibles à envoyer\n"
+                    ."Certains médias (images, documents, catalogues) peuvent être envoyés au client. "
+                    ."S'ils sont pertinents pour sa question (il demande à voir le menu, le catalogue, une photo, un document...), "
+                    ."mentionne-les naturellement dans ta réponse ET ajoute, tout à la fin de ta réponse, seul sur la dernière ligne, "
+                    ."la ligne spéciale : MEDIA:id1,id2 (les identifiants exacts des médias à envoyer, séparés par des virgules). "
+                    ."N'invente jamais d'identifiant et n'ajoute cette ligne que si un média listé est réellement utile. "
+                    .'Cette ligne est technique : elle ne doit jamais apparaître dans une phrase adressée au client.';
             }
 
             if ($hasContext) {
@@ -77,6 +89,13 @@ class AIResponseService
                     .'sur la dernière ligne.';
 
                 $userMessage = $question;
+            }
+
+            if ($media->isNotEmpty()) {
+                $mediaList = $media
+                    ->map(fn ($m) => "{$m->title} (id: {$m->id}, type: {$m->type})")
+                    ->implode(', ');
+                $userMessage .= "\n\nMédias disponibles à envoyer au client : {$mediaList}";
             }
 
             if ($messages !== [] && end($messages)['role'] === 'user') {
@@ -98,12 +117,23 @@ class AIResponseService
 
             $text = trim($payload['content'][0]['text'] ?? '');
 
+            // Extrait puis retire la ligne technique MEDIA:id1,id2 de la réponse.
+            $mediaIds = [];
+            if ($media->isNotEmpty() && preg_match('/^\s*MEDIA\s*:\s*(.+)$/mi', $text, $matches)) {
+                $requested = array_filter(array_map('trim', explode(',', $matches[1])));
+                $validIds = $media->pluck('id')->all();
+                $mediaIds = array_values(array_intersect($requested, $validIds));
+
+                $text = trim(preg_replace('/^\s*MEDIA\s*:.*$/mi', '', $text) ?? $text);
+            }
+
             if ($text === '') {
                 return [
                     'answer' => null,
                     'confidence' => 0,
                     'should_escalate' => true,
                     'context_used' => $context->pluck('id')->all(),
+                    'media_ids' => [],
                 ];
             }
 
@@ -115,6 +145,7 @@ class AIResponseService
                     'confidence' => 0.2,
                     'should_escalate' => true,
                     'context_used' => $context->pluck('id')->all(),
+                    'media_ids' => [],
                 ];
             }
 
@@ -123,6 +154,7 @@ class AIResponseService
                 'confidence' => $hasContext ? $this->averageSimilarity($context) : 0.3,
                 'should_escalate' => false,
                 'context_used' => $context->pluck('id')->all(),
+                'media_ids' => $mediaIds,
             ];
         } catch (\Throwable $e) {
             Log::error('AIResponseService::answer a échoué', [
@@ -135,6 +167,7 @@ class AIResponseService
                 'confidence' => 0,
                 'should_escalate' => true,
                 'context_used' => $context->pluck('id')->all(),
+                'media_ids' => [],
             ];
         }
     }
@@ -180,6 +213,72 @@ class AIResponseService
             ->filter(fn ($row) => (float) $row->similarity > self::SIMILARITY_THRESHOLD)
             ->sortByDesc('similarity')
             ->values();
+    }
+
+    /**
+     * Récupérer les médias pertinents pour la question du client.
+     *
+     * D'abord par mots-clés exacts, puis (si besoin) par similarité vectorielle
+     * sur l'embedding des mots-clés.
+     *
+     * @return Collection<int, \App\Models\BusinessMedia>
+     */
+    public function findRelevantMedia(Business $business, string $question, int $limit = 3): Collection
+    {
+        $all = $business->media()->active()->get();
+
+        if ($all->isEmpty()) {
+            return collect();
+        }
+
+        $normalized = $this->normalize($question);
+        $matched = collect();
+
+        // 1. Correspondance par mots-clés.
+        foreach ($all as $item) {
+            foreach ((array) $item->keywords as $keyword) {
+                $keywordNormalized = $this->normalize((string) $keyword);
+
+                if ($keywordNormalized !== '' && $this->containsAnyWord($normalized, [$keywordNormalized])) {
+                    $matched->push($item);
+
+                    break;
+                }
+            }
+        }
+
+        // 2. Recherche par similarité vectorielle si on n'a pas assez de résultats.
+        if ($matched->count() < $limit) {
+            try {
+                $vector = '['.implode(',', $this->embeddingService->embed($question)).']';
+
+                $rows = DB::select(
+                    'SELECT id, 1 - (keywords_embedding <=> ?::vector) as similarity
+                     FROM business_media
+                     WHERE business_id = ? AND is_active = true AND keywords_embedding IS NOT NULL
+                     ORDER BY similarity DESC
+                     LIMIT ?',
+                    [$vector, $business->id, $limit],
+                );
+
+                foreach ($rows as $row) {
+                    if ((float) $row->similarity > self::SIMILARITY_THRESHOLD) {
+                        $item = $all->firstWhere('id', $row->id);
+
+                        if ($item !== null) {
+                            $matched->push($item);
+                        }
+                    }
+                }
+            } catch (\Throwable $e) {
+                Log::warning('AIResponseService::findRelevantMedia — recherche vectorielle ignorée', [
+                    'business_id' => $business->id,
+                    'message' => $e->getMessage(),
+                ]);
+            }
+        }
+
+        return $matched->unique('id')->take($limit)->values();
     }
 
     /**
@@ -440,6 +539,7 @@ class AIResponseService
             'confidence' => 1.0,
             'should_escalate' => false,
             'context_used' => [],
+            'media_ids' => [],
         ];
     }
 

@@ -55,6 +55,95 @@ class WhatsAppService
     }
 
     /**
+     * Envoyer une image via un lien URL public.
+     *
+     * @return array<string, mixed>
+     */
+    public function sendImage(string $to, string $imageUrl, ?string $caption = null): array
+    {
+        $image = ['link' => $imageUrl];
+        if ($caption !== null && $caption !== '') {
+            $image['caption'] = $caption;
+        }
+
+        return $this->postMessage($to, [
+            'type' => 'image',
+            'image' => $image,
+        ], ['to' => $to, 'image_url' => $imageUrl]);
+    }
+
+    /**
+     * Envoyer un document (PDF, etc.) via un lien URL public.
+     *
+     * @return array<string, mixed>
+     */
+    public function sendDocument(string $to, string $documentUrl, string $filename, ?string $caption = null): array
+    {
+        $document = [
+            'link' => $documentUrl,
+            'filename' => $filename,
+        ];
+        if ($caption !== null && $caption !== '') {
+            $document['caption'] = $caption;
+        }
+
+        return $this->postMessage($to, [
+            'type' => 'document',
+            'document' => $document,
+        ], ['to' => $to, 'document_url' => $documentUrl]);
+    }
+
+    /**
+     * Envoyer un média générique en choisissant la bonne méthode selon le type.
+     *
+     * @param  array{type: string, url: string, caption?: ?string, filename?: ?string}  $media
+     * @return array<string, mixed>
+     */
+    public function sendMediaMessage(string $to, array $media): array
+    {
+        $url = $media['url'] ?? '';
+        $caption = $media['caption'] ?? null;
+
+        if ($url === '') {
+            return [];
+        }
+
+        return match ($media['type'] ?? null) {
+            'document' => $this->sendDocument($to, $url, $media['filename'] ?? 'document', $caption),
+            'image', 'catalog' => $this->sendImage($to, $url, $caption),
+            default => [],
+        };
+    }
+
+    /**
+     * Envoyer une charge utile "messages" à l'API WhatsApp Cloud.
+     *
+     * @param  array<string, mixed>  $payload
+     * @param  array<string, mixed>  $logContext
+     * @return array<string, mixed>
+     */
+    private function postMessage(string $to, array $payload, array $logContext): array
+    {
+        try {
+            $response = $this->client->post("{$this->phoneNumberId}/messages", [
+                'json' => array_merge([
+                    'messaging_product' => 'whatsapp',
+                    'recipient_type' => 'individual',
+                    'to' => $to,
+                ], $payload),
+            ]);
+
+            return json_decode((string) $response->getBody(), true) ?? [];
+        } catch (GuzzleException $e) {
+            Log::error('WhatsAppService::postMessage a échoué', array_merge($logContext, [
+                'message' => $e->getMessage(),
+            ]));
+
+            return [];
+        }
+    }
+
+    /**
      * Parser un webhook WhatsApp entrant.
      *
      * @param  array<string, mixed>  $payload
