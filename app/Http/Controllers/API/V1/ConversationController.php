@@ -31,9 +31,16 @@ class ConversationController extends Controller
         $this->checkOwnership($business);
 
         $conversations = $business->conversations()
-            ->with('latestMessage')
+            ->with(['escalations' => fn ($q) => $q->where('status', 'pending')])
             ->orderByDesc('last_message_at')
             ->paginate(15);
+
+        $conversations->getCollection()->transform(function ($conversation) {
+            $lastMsg = $conversation->messages()->orderByDesc('created_at')->first();
+            $conversation->setAttribute('latest_message', $lastMsg);
+
+            return $conversation;
+        });
 
         return response()->json($conversations);
     }
