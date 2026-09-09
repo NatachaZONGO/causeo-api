@@ -10,6 +10,7 @@ use App\Models\Escalation;
 use App\Models\Message;
 use App\Services\AI\AIResponseService;
 use App\Services\WhatsApp\WhatsAppService;
+use Illuminate\Database\QueryException;
 use Illuminate\Http\Request;
 use Illuminate\Http\Response;
 use Illuminate\Support\Facades\Log;
@@ -38,27 +39,60 @@ class WebhookController extends Controller
 
     /**
      * Réception des messages entrants WhatsApp.
+     *
+     * Répond 200 immédiatement puis traite le message après la réponse, pour
+     * éviter que Meta ne réémette le webhook (timeout ~5 s) et ne provoque des
+     * réponses en double.
      */
     public function handle(Request $request): Response
     {
+        $payload = $request->all();
+
+        $incoming = $this->whatsApp->parseIncomingMessage($payload);
+
+        if ($incoming === null || $incoming['message_id'] === '') {
+            return response('', 200);
+        }
+
+        // Déduplication : si ce message entrant a déjà été enregistré, on l'ignore.
+        $alreadySeen = Message::where('whatsapp_message_id', $incoming['message_id'])
+            ->where('direction', 'inbound')
+            ->exists();
+
+        if ($alreadySeen) {
+            Log::info('WebhookController: message WhatsApp déjà reçu, ignoré (doublon).', [
+                'whatsapp_message_id' => $incoming['message_id'],
+            ]);
+
+            return response('', 200);
+        }
+
+        $phoneNumberId = data_get($payload, 'entry.0.changes.0.value.metadata.phone_number_id');
+
+        // Traitement lourd (IA + envois WhatsApp) exécuté après l'envoi de la réponse 200.
+        dispatch(function () use ($incoming, $phoneNumberId): void {
+            $this->process($incoming, $phoneNumberId);
+        })->afterResponse();
+
+        return response('', 200);
+    }
+
+    /**
+     * Traiter effectivement un message entrant : génération de la réponse IA,
+     * envoi WhatsApp, escalade éventuelle.
+     *
+     * @param  array{from: string, message_id: string, text: string, customer_name: ?string}  $incoming
+     */
+    private function process(array $incoming, ?string $phoneNumberId): void
+    {
         try {
-            $payload = $request->all();
-
-            $incoming = $this->whatsApp->parseIncomingMessage($payload);
-
-            if ($incoming === null) {
-                return response('', 200);
-            }
-
-            $this->whatsApp->markAsRead($incoming['message_id']);
-
-            $phoneNumberId = data_get($payload, 'entry.0.changes.0.value.metadata.phone_number_id');
-
             $business = Business::where('whatsapp_number', $phoneNumberId)->first();
 
             if ($business === null) {
-                return response('', 200);
+                return;
             }
+
+            $this->whatsApp->markAsRead($incoming['message_id']);
 
             $conversation = Conversation::firstOrCreate(
                 [
@@ -76,13 +110,23 @@ class WebhookController extends Controller
                 'is_active' => true,
             ]);
 
-            $inboundMessage = $conversation->messages()->create([
-                'direction' => 'inbound',
-                'sender_type' => 'customer',
-                'content' => $incoming['text'],
-                'status' => 'pending',
-                'whatsapp_message_id' => $incoming['message_id'],
-            ]);
+            try {
+                $inboundMessage = $conversation->messages()->create([
+                    'direction' => 'inbound',
+                    'sender_type' => 'customer',
+                    'content' => $incoming['text'],
+                    'status' => 'pending',
+                    'whatsapp_message_id' => $incoming['message_id'],
+                ]);
+            } catch (QueryException $e) {
+                // Violation de l'index unique : un autre traitement du même
+                // webhook (doublon Meta) a déjà pris ce message en charge.
+                Log::info('WebhookController: message entrant déjà traité, abandon.', [
+                    'whatsapp_message_id' => $incoming['message_id'],
+                ]);
+
+                return;
+            }
 
             $result = $this->ai->answer($business, $incoming['text'], $conversation->id);
 
@@ -137,14 +181,11 @@ class WebhookController extends Controller
             }
 
             $business->increment('monthly_message_count');
-
-            return response('', 200);
         } catch (Throwable $e) {
-            Log::error('WebhookController::handle a échoué', [
+            Log::error('WebhookController::process a échoué', [
+                'whatsapp_message_id' => $incoming['message_id'] ?? null,
                 'message' => $e->getMessage(),
             ]);
-
-            return response('', 200);
         }
     }
 
