@@ -20,7 +20,7 @@ class WhatsAppService
                 'Authorization' => 'Bearer '.config('services.whatsapp.token'),
                 'Content-Type' => 'application/json',
             ],
-            'verify' => 'C:\wamp64\bin\php\php8.2.0\extras\ssl\cacert.pem',
+            'verify' => config('services.curl_ca_bundle', true),
         ]);
 
         $this->phoneNumberId = (string) config('services.whatsapp.phone_number_id');

@@ -1,0 +1,15 @@
+.env
+.env.*
+!.env.example
+.git
+.gitignore
+.gitattributes
+node_modules
+vendor
+storage/logs
+tests
+Dockerfile
+.dockerignore
+README.md
+test-rag.php
+.github

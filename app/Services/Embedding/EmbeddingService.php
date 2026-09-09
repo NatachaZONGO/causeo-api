@@ -24,7 +24,7 @@ class EmbeddingService
             'headers' => [
                 'Content-Type' => 'application/json',
             ],
-            'verify' => 'C:\wamp64\bin\php\php8.2.0\extras\ssl\cacert.pem',
+            'verify' => config('services.curl_ca_bundle', true),
         ]);
 
         $this->apiKey = (string) config('services.gemini.api_key');

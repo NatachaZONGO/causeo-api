@@ -35,6 +35,10 @@ return [
         ],
     ],
 
+    // Chemin vers un bundle CA personnalisé pour les requêtes HTTPS sortantes
+    // (utile en dev Windows/WAMP). Laisser vide en production Linux : true = CA système.
+    'curl_ca_bundle' => env('CURL_CA_BUNDLE', true),
+
     'openai' => [
         'api_key' => env('OPENAI_API_KEY'),
         'embedding_model' => env('OPENAI_EMBEDDING_MODEL', 'text-embedding-3-small'),

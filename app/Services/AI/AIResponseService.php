@@ -27,7 +27,7 @@ class AIResponseService
                 'anthropic-version' => '2023-06-01',
                 'Content-Type' => 'application/json',
             ],
-            'verify' => 'C:\wamp64\bin\php\php8.2.0\extras\ssl\cacert.pem',
+            'verify' => config('services.curl_ca_bundle', true),
         ]);
 
         $this->model = config('services.anthropic.model', 'claude-haiku-4-5-20251001');
