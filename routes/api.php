@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\API\V1\Admin\AdminDashboardController;
 use App\Http\Controllers\API\V1\AuthController;
 use App\Http\Controllers\API\V1\ConversationController;
 use Illuminate\Support\Facades\Route;
@@ -46,4 +47,15 @@ Route::prefix('v1')->middleware('auth:sanctum')->group(function () {
 
         return response()->json($result);
     });
+});
+
+Route::prefix('v1/admin')->middleware(['auth:sanctum', 'admin'])->group(function () {
+    Route::get('stats', [AdminDashboardController::class, 'stats']);
+    Route::get('businesses', [AdminDashboardController::class, 'businesses']);
+    Route::put('businesses/{business}', [AdminDashboardController::class, 'updateBusiness']);
+    Route::get('users', [AdminDashboardController::class, 'users']);
+    Route::put('users/{user}', [AdminDashboardController::class, 'updateUser']);
+    Route::delete('users/{user}', [AdminDashboardController::class, 'deleteUser']);
+    Route::get('conversations', [AdminDashboardController::class, 'conversations']);
+    Route::get('escalations', [AdminDashboardController::class, 'escalations']);
 });
