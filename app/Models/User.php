@@ -28,6 +28,7 @@ class User extends Authenticatable
         'whatsapp_phone',
         'city',
         'country',
+        'google_id',
     ];
 
     /**
