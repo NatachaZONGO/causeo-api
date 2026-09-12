@@ -115,12 +115,13 @@ class WhatsAppSetupController extends Controller
     private function getAccessToken(string $code): string
     {
         try {
-            $response = $this->client->get('oauth/access_token', [
-                'query' => [
+            $response = $this->client->post('oauth/access_token', [
+                'form_params' => [
                     'client_id' => config('services.facebook.app_id'),
                     'client_secret' => config('services.facebook.app_secret'),
                     'code' => $code,
-                    'redirect_uri' => config('app.frontend_url', 'https://causeo-dashboard.vercel.app'),
+                    'redirect_uri' => '',
+                    'grant_type' => 'authorization_code',
                 ],
             ]);
 
@@ -132,7 +133,11 @@ class WhatsAppSetupController extends Controller
 
             return $payload['access_token'];
         } catch (GuzzleException $e) {
-            throw new RuntimeException('Échec de l\'échange du code contre un token.', 0, $e);
+            $body = '';
+            if ($e->hasResponse()) {
+                $body = (string) $e->getResponse()->getBody();
+            }
+            throw new RuntimeException('Échec échange token: '.$body, 0, $e);
         }
     }
 
