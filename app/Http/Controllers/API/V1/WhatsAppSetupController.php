@@ -31,57 +31,123 @@ class WhatsAppSetupController extends Controller
     {
         $this->checkOwnership($business);
 
-        $data = $request->validate([
-            'code' => ['nullable', 'string'],
-            'token' => ['nullable', 'string'],
-        ], [
-            'code.string' => 'Le code doit être une chaîne.',
-            'token.string' => 'Le token doit être une chaîne.',
-        ]);
+        // Le code n'est plus échangé - on utilise le System User Token
+        // pour récupérer les WABAs partagés avec notre app
+        $systemToken = config('services.whatsapp.token');
 
-        if (empty($data['code']) && empty($data['token'])) {
-            return response()->json(['message' => 'Un code ou un token est requis.'], 422);
+        if (empty($systemToken)) {
+            return response()->json(['message' => 'Configuration serveur manquante.'], 500);
         }
 
         try {
-            // Si on a un token directement (depuis le JS SDK), on l'utilise tel quel
-            // Si on a un code, on l'échange contre un token
-            if (! empty($data['token'])) {
-                $token = $data['token'];
-            } else {
-                $token = $this->getAccessToken($data['code']);
+            $client = new Client([
+                'base_uri' => 'https://graph.facebook.com/v21.0/',
+                'headers' => ['Authorization' => 'Bearer '.$systemToken],
+                'verify' => config('services.curl_ca_bundle', true),
+            ]);
+
+            // Récupérer tous les WABAs partagés avec notre app via le Business Portfolio
+            $appId = config('services.facebook.app_id');
+
+            // Lister les WABAs accessibles
+            $response = $client->get('app/subscribed_apps_to_wabas');
+            $payload = json_decode((string) $response->getBody(), true);
+
+            Log::info('WABAs response', ['payload' => $payload]);
+
+            // Si ça ne marche pas, essayer via le debug_token du code reçu
+            // pour au moins identifier le WABA partagé
+            $data = $request->validate([
+                'code' => ['nullable', 'string'],
+                'token' => ['nullable', 'string'],
+            ]);
+
+            // Approche alternative : lister les WABAs du Business Portfolio de Devora
+            $businessPortfolioId = config('services.facebook.business_id', '');
+
+            if (! empty($businessPortfolioId)) {
+                $wabasResponse = $client->get("{$businessPortfolioId}/owned_whatsapp_business_accounts", [
+                    'query' => ['fields' => 'id,name,account_review_status'],
+                ]);
+                $wabas = json_decode((string) $wabasResponse->getBody(), true);
+                Log::info('Owned WABAs', ['wabas' => $wabas]);
             }
 
-            $wabaId = $this->getWabaId($token);
-            $phoneNumber = $this->getPhoneNumber($wabaId, $token);
+            // Lister tous les phone numbers accessibles
+            // On cherche le dernier WABA ajouté (celui que le client vient de partager)
+            $sharedWabasResponse = $client->get('me/whatsapp_business_accounts', [
+                'query' => ['fields' => 'id,name,account_review_status'],
+            ]);
+            $sharedWabas = json_decode((string) $sharedWabasResponse->getBody(), true);
 
-            $this->subscribeAppToWebhooks($wabaId, $token);
+            Log::info('Shared WABAs via me/', ['wabas' => $sharedWabas]);
 
+            $wabaData = $sharedWabas['data'] ?? [];
+
+            if (empty($wabaData)) {
+                return response()->json([
+                    'message' => 'Aucun compte WhatsApp Business trouvé. Assurez-vous d\'avoir complété toutes les étapes.',
+                    'debug' => $sharedWabas,
+                ], 422);
+            }
+
+            // Prendre le dernier WABA (le plus récemment partagé)
+            $waba = end($wabaData);
+            $wabaId = $waba['id'];
+
+            // Récupérer les numéros de téléphone de ce WABA
+            $phonesResponse = $client->get("{$wabaId}/phone_numbers", [
+                'query' => ['fields' => 'id,verified_name,display_phone_number,quality_rating'],
+            ]);
+            $phones = json_decode((string) $phonesResponse->getBody(), true);
+
+            Log::info('Phone numbers for WABA', ['waba_id' => $wabaId, 'phones' => $phones]);
+
+            $phoneData = $phones['data'] ?? [];
+
+            if (empty($phoneData)) {
+                return response()->json([
+                    'message' => 'Aucun numéro WhatsApp trouvé. Veuillez ajouter un numéro dans la configuration.',
+                ], 422);
+            }
+
+            $phone = end($phoneData);
+
+            // S'abonner aux webhooks pour ce WABA
+            try {
+                $client->post("{$wabaId}/subscribed_apps");
+            } catch (\Throwable $e) {
+                Log::warning('Webhook subscription failed', ['error' => $e->getMessage()]);
+            }
+
+            // Mettre à jour le business
             $business->update([
-                'whatsapp_phone_number_id' => $phoneNumber['id'],
+                'whatsapp_phone_number_id' => $phone['id'],
                 'whatsapp_waba_id' => $wabaId,
-                'whatsapp_token' => $token,
-                'whatsapp_display_name' => $phoneNumber['verified_name'] ?? null,
+                'whatsapp_token' => $systemToken,
+                'whatsapp_display_name' => $phone['verified_name'] ?? $phone['display_phone_number'] ?? null,
                 'whatsapp_verified' => true,
                 'whatsapp_connected_at' => now(),
             ]);
+
+            return response()->json([
+                'message' => 'WhatsApp a été connecté avec succès.',
+                'connected' => true,
+                'display_name' => $business->whatsapp_display_name,
+                'phone_number_id' => $phone['id'],
+                'connected_at' => $business->whatsapp_connected_at,
+            ]);
+
         } catch (\Throwable $e) {
             Log::error('WhatsApp connect failed', [
                 'business_id' => $business->id,
                 'message' => $e->getMessage(),
-                'previous' => $e->getPrevious()?->getMessage(),
             ]);
 
             return response()->json([
                 'message' => 'Erreur: '.$e->getMessage(),
-                'detail' => $e->getPrevious()?->getMessage(),
             ], 422);
         }
-
-        return response()->json([
-            'message' => 'WhatsApp a été connecté avec succès.',
-            'business' => $business,
-        ]);
     }
 
     /**
@@ -120,114 +186,6 @@ class WhatsAppSetupController extends Controller
         return response()->json([
             'message' => 'WhatsApp a été déconnecté avec succès.',
         ]);
-    }
-
-    /**
-     * Échanger le code Embedded Signup contre un token d'accès longue durée.
-     */
-    private function getAccessToken(string $code): string
-    {
-        try {
-            $response = $this->client->post('oauth/access_token', [
-                'form_params' => [
-                    'client_id' => config('services.facebook.app_id'),
-                    'client_secret' => config('services.facebook.app_secret'),
-                    'code' => $code,
-                    'redirect_uri' => '',
-                    'grant_type' => 'authorization_code',
-                ],
-            ]);
-
-            $payload = json_decode((string) $response->getBody(), true);
-
-            if (empty($payload['access_token'])) {
-                throw new RuntimeException('Aucun token retourné par Meta.');
-            }
-
-            return $payload['access_token'];
-        } catch (GuzzleException $e) {
-            $body = '';
-            if ($e->hasResponse()) {
-                $body = (string) $e->getResponse()->getBody();
-            }
-            throw new RuntimeException('Échec échange token: '.$body, 0, $e);
-        }
-    }
-
-    /**
-     * Récupérer l'identifiant du WhatsApp Business Account (WABA) partagé
-     * lors de l'Embedded Signup, via l'introspection du token.
-     */
-    private function getWabaId(string $token): string
-    {
-        try {
-            $response = $this->client->get('debug_token', [
-                'query' => [
-                    'input_token' => $token,
-                    'access_token' => config('services.facebook.app_id').'|'.config('services.facebook.app_secret'),
-                ],
-            ]);
-
-            $payload = json_decode((string) $response->getBody(), true);
-
-            $scopes = $payload['data']['granular_scopes'] ?? [];
-
-            foreach ($scopes as $scope) {
-                if (($scope['scope'] ?? null) === 'whatsapp_business_management' && ! empty($scope['target_ids'])) {
-                    return $scope['target_ids'][0];
-                }
-            }
-
-            throw new RuntimeException('Aucun WABA trouvé pour ce token.');
-        } catch (GuzzleException $e) {
-            throw new RuntimeException('Échec de la récupération du WABA.', 0, $e);
-        }
-    }
-
-    /**
-     * Récupérer le numéro de téléphone WhatsApp associé au WABA.
-     *
-     * @return array{id: string, verified_name: ?string}
-     */
-    private function getPhoneNumber(string $wabaId, string $token): array
-    {
-        try {
-            $response = $this->client->get("{$wabaId}/phone_numbers", [
-                'headers' => ['Authorization' => "Bearer {$token}"],
-            ]);
-
-            $payload = json_decode((string) $response->getBody(), true);
-
-            $phoneNumber = $payload['data'][0] ?? null;
-
-            if ($phoneNumber === null || empty($phoneNumber['id'])) {
-                throw new RuntimeException('Aucun numéro WhatsApp trouvé pour ce WABA.');
-            }
-
-            return [
-                'id' => $phoneNumber['id'],
-                'verified_name' => $phoneNumber['verified_name'] ?? null,
-            ];
-        } catch (GuzzleException $e) {
-            throw new RuntimeException('Échec de la récupération du numéro WhatsApp.', 0, $e);
-        }
-    }
-
-    /**
-     * Abonner l'application aux webhooks du WABA.
-     */
-    private function subscribeAppToWebhooks(string $wabaId, string $token): void
-    {
-        try {
-            $this->client->post("{$wabaId}/subscribed_apps", [
-                'headers' => ['Authorization' => "Bearer {$token}"],
-            ]);
-        } catch (GuzzleException $e) {
-            Log::error('WhatsAppSetupController::subscribeAppToWebhooks a échoué', [
-                'waba_id' => $wabaId,
-                'message' => $e->getMessage(),
-            ]);
-        }
     }
 
     /**
