@@ -11,5 +11,12 @@ enum BusinessType: string
     case Hotel = 'hotel';
     case Salon = 'salon';
     case Pharmacy = 'pharmacy';
+    case Photographe = 'photographe';
+    case SalonBeaute = 'salon_beaute';
+    case CabinetMedical = 'cabinet_medical';
+    case AgenceServices = 'agence_services';
+    case Nettoyage = 'nettoyage';
+    case Communication = 'communication';
+    case Formation = 'formation';
     case Other = 'other';
 }

@@ -3,6 +3,8 @@
 use App\Http\Controllers\API\V1\Admin\AdminDashboardController;
 use App\Http\Controllers\API\V1\AuthController;
 use App\Http\Controllers\API\V1\ConversationController;
+use App\Http\Controllers\API\V1\OnboardingController;
+use App\Models\BusinessTemplate;
 use Illuminate\Support\Facades\Route;
 
 Route::prefix('webhook')->group(function () {
@@ -10,6 +12,12 @@ Route::prefix('webhook')->group(function () {
     Route::post('whatsapp', [\App\Http\Controllers\API\V1\WebhookController::class, 'handle']);
     Route::post('payment', [\App\Http\Controllers\API\V1\WebhookController::class, 'payment']);
 });
+
+Route::get('v1/templates', fn () => response()->json(
+    BusinessTemplate::where('is_active', true)->orderBy('sort_order')->get()
+));
+
+Route::post('v1/onboarding', [OnboardingController::class, 'store'])->middleware('auth:sanctum');
 
 Route::prefix('v1/auth')->group(function () {
     Route::post('register', [AuthController::class, 'register']);
