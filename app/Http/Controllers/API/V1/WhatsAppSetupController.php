@@ -120,7 +120,7 @@ class WhatsAppSetupController extends Controller
                     'client_id' => config('services.facebook.app_id'),
                     'client_secret' => config('services.facebook.app_secret'),
                     'code' => $code,
-                    'redirect_uri' => '',
+                    'grant_type' => 'authorization_code',
                 ],
             ]);
 
