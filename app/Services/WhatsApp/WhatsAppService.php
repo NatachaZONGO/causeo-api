@@ -2,6 +2,7 @@
 
 namespace App\Services\WhatsApp;
 
+use App\Models\Business;
 use GuzzleHttp\Client;
 use GuzzleHttp\Exception\GuzzleException;
 use Illuminate\Support\Facades\Log;
@@ -12,18 +13,30 @@ class WhatsAppService
 
     private string $phoneNumberId;
 
-    public function __construct()
+    public function __construct(?string $token = null, ?string $phoneNumberId = null)
     {
         $this->client = new Client([
             'base_uri' => rtrim(config('services.whatsapp.api_url', 'https://graph.facebook.com/v21.0/'), '/').'/',
             'headers' => [
-                'Authorization' => 'Bearer '.config('services.whatsapp.token'),
+                'Authorization' => 'Bearer '.($token ?? config('services.whatsapp.token')),
                 'Content-Type' => 'application/json',
             ],
             'verify' => config('services.curl_ca_bundle', true),
         ]);
 
-        $this->phoneNumberId = (string) config('services.whatsapp.phone_number_id');
+        $this->phoneNumberId = $phoneNumberId ?? (string) config('services.whatsapp.phone_number_id');
+    }
+
+    /**
+     * Construire une instance pour un business : utilise son token/numéro
+     * propres si connecté via Embedded Signup, sinon retombe sur le .env.
+     */
+    public static function forBusiness(Business $business): self
+    {
+        return new self(
+            $business->whatsapp_token ?: null,
+            $business->whatsapp_phone_number_id ?: null,
+        );
     }
 
     /**

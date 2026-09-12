@@ -4,6 +4,7 @@ use App\Http\Controllers\API\V1\Admin\AdminDashboardController;
 use App\Http\Controllers\API\V1\AuthController;
 use App\Http\Controllers\API\V1\ConversationController;
 use App\Http\Controllers\API\V1\OnboardingController;
+use App\Http\Controllers\API\V1\WhatsAppSetupController;
 use App\Models\BusinessTemplate;
 use Illuminate\Support\Facades\Route;
 
@@ -47,6 +48,10 @@ Route::prefix('v1')->middleware('auth:sanctum')->group(function () {
     Route::get('businesses/{business}/conversations', [ConversationController::class, 'index']);
     Route::get('conversations/{conversation}', [ConversationController::class, 'show']);
     Route::post('conversations/{conversation}/reply', [ConversationController::class, 'manualReply']);
+
+    Route::post('businesses/{business}/whatsapp/connect', [WhatsAppSetupController::class, 'exchangeToken']);
+    Route::get('businesses/{business}/whatsapp/status', [WhatsAppSetupController::class, 'status']);
+    Route::delete('businesses/{business}/whatsapp/disconnect', [WhatsAppSetupController::class, 'disconnect']);
 
     // TODO: route temporaire de test du RAG — à retirer.
     Route::post('businesses/{business}/ask', function (\App\Models\Business $business, \Illuminate\Http\Request $request) {

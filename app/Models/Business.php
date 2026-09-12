@@ -25,7 +25,12 @@ class Business extends Model
         'type',
         'description',
         'phone',
-        'whatsapp_number',
+        'whatsapp_phone_number_id',
+        'whatsapp_waba_id',
+        'whatsapp_token',
+        'whatsapp_verified',
+        'whatsapp_connected_at',
+        'whatsapp_display_name',
         'address',
         'city',
         'country',
@@ -35,6 +40,15 @@ class Business extends Model
         'ai_instructions',
         'plan',
         'is_active',
+    ];
+
+    /**
+     * The attributes that should be hidden for serialization.
+     *
+     * @var list<string>
+     */
+    protected $hidden = [
+        'whatsapp_token',
     ];
 
     /**
@@ -49,6 +63,8 @@ class Business extends Model
             'plan' => SubscriptionPlan::class,
             'opening_hours' => 'array',
             'is_active' => 'boolean',
+            'whatsapp_verified' => 'boolean',
+            'whatsapp_connected_at' => 'datetime',
         ];
     }
 

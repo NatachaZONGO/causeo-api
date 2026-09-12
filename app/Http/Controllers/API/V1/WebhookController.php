@@ -86,13 +86,15 @@ class WebhookController extends Controller
     private function process(array $incoming, ?string $phoneNumberId): void
     {
         try {
-            $business = Business::where('whatsapp_number', $phoneNumberId)->first();
+            $business = Business::where('whatsapp_phone_number_id', $phoneNumberId)->first();
 
             if ($business === null) {
                 return;
             }
 
-            $this->whatsApp->markAsRead($incoming['message_id']);
+            $whatsApp = WhatsAppService::forBusiness($business);
+
+            $whatsApp->markAsRead($incoming['message_id']);
 
             $conversation = Conversation::firstOrCreate(
                 [
@@ -144,7 +146,7 @@ class WebhookController extends Controller
                 $waitingMessage = $result['answer']
                     ?? 'Merci pour votre message ! 😊 Je vérifie cette information avec l\'équipe et je reviens vers vous très vite.';
 
-                $sent = $this->whatsApp->sendMessage($incoming['from'], $waitingMessage);
+                $sent = $whatsApp->sendMessage($incoming['from'], $waitingMessage);
 
                 $conversation->messages()->create([
                     'direction' => 'outbound',
@@ -159,7 +161,7 @@ class WebhookController extends Controller
                     ],
                 ]);
             } else {
-                $sent = $this->whatsApp->sendMessage($incoming['from'], $result['answer']);
+                $sent = $whatsApp->sendMessage($incoming['from'], $result['answer']);
 
                 $conversation->messages()->create([
                     'direction' => 'outbound',
@@ -177,7 +179,7 @@ class WebhookController extends Controller
             }
 
             if (! empty($result['media_ids'])) {
-                $this->sendMediaFiles($incoming['from'], $result['media_ids']);
+                $this->sendMediaFiles($whatsApp, $incoming['from'], $result['media_ids']);
             }
 
             $business->increment('monthly_message_count');
@@ -194,7 +196,7 @@ class WebhookController extends Controller
      *
      * @param  array<int, string>  $mediaIds
      */
-    private function sendMediaFiles(string $to, array $mediaIds): void
+    private function sendMediaFiles(WhatsAppService $whatsApp, string $to, array $mediaIds): void
     {
         foreach ($mediaIds as $mediaId) {
             $media = BusinessMedia::find($mediaId);
@@ -206,9 +208,9 @@ class WebhookController extends Controller
             if ($media->type === 'document') {
                 $extension = pathinfo((string) $media->file_path, PATHINFO_EXTENSION);
                 $filename = $media->title.($extension !== '' ? ".{$extension}" : '');
-                $response = $this->whatsApp->sendDocument($to, $media->public_url, $filename, $media->description);
+                $response = $whatsApp->sendDocument($to, $media->public_url, $filename, $media->description);
             } else {
-                $response = $this->whatsApp->sendImage($to, $media->public_url, $media->title);
+                $response = $whatsApp->sendImage($to, $media->public_url, $media->title);
             }
 
             Log::info('WebhookController: média envoyé au client', [
