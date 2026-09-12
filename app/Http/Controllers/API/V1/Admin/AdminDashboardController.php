@@ -107,6 +107,30 @@ class AdminDashboardController extends Controller
     }
 
     /**
+     * Finaliser manuellement la configuration WhatsApp d'une entreprise
+     * (WABA ID + phone_number_id saisis par l'admin après vérification côté Meta).
+     */
+    public function configureBusinessWhatsapp(Request $request, Business $business): JsonResponse
+    {
+        $data = $request->validate([
+            'waba_id' => ['required', 'string'],
+            'phone_number_id' => ['required', 'string'],
+        ]);
+
+        $business->update([
+            'whatsapp_waba_id' => $data['waba_id'],
+            'whatsapp_phone_number_id' => $data['phone_number_id'],
+            'whatsapp_verified' => true,
+            'whatsapp_connected_at' => now(),
+        ]);
+
+        return response()->json([
+            'message' => 'WhatsApp configuré avec succès pour cette entreprise.',
+            'business' => $business,
+        ]);
+    }
+
+    /**
      * Lister tous les utilisateurs de la plateforme.
      */
     public function users(Request $request): JsonResponse

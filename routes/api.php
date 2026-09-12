@@ -50,6 +50,7 @@ Route::prefix('v1')->middleware('auth:sanctum')->group(function () {
     Route::post('conversations/{conversation}/reply', [ConversationController::class, 'manualReply']);
 
     Route::post('businesses/{business}/whatsapp/connect', [WhatsAppSetupController::class, 'exchangeToken']);
+    Route::post('businesses/{business}/whatsapp/request', [WhatsAppSetupController::class, 'requestActivation']);
     Route::get('businesses/{business}/whatsapp/status', [WhatsAppSetupController::class, 'status']);
     Route::delete('businesses/{business}/whatsapp/disconnect', [WhatsAppSetupController::class, 'disconnect']);
 
@@ -66,6 +67,7 @@ Route::prefix('v1/admin')->middleware(['auth:sanctum', 'admin'])->group(function
     Route::get('stats', [AdminDashboardController::class, 'stats']);
     Route::get('businesses', [AdminDashboardController::class, 'businesses']);
     Route::put('businesses/{business}', [AdminDashboardController::class, 'updateBusiness']);
+    Route::put('businesses/{business}/whatsapp', [AdminDashboardController::class, 'configureBusinessWhatsapp']);
     Route::get('users', [AdminDashboardController::class, 'users']);
     Route::put('users/{user}', [AdminDashboardController::class, 'updateUser']);
     Route::delete('users/{user}', [AdminDashboardController::class, 'deleteUser']);
