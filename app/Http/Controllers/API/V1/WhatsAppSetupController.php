@@ -53,13 +53,19 @@ class WhatsAppSetupController extends Controller
                 'whatsapp_connected_at' => now(),
             ]);
         } catch (RuntimeException $e) {
-            Log::error('WhatsAppSetupController::exchangeToken a échoué', [
+            Log::error('WhatsApp connect failed', [
                 'business_id' => $business->id,
                 'message' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+                'code' => $e->getCode(),
             ]);
 
+            $message = config('app.debug')
+                ? 'La connexion à WhatsApp a échoué: '.$e->getMessage()
+                : 'La connexion à WhatsApp a échoué. Veuillez réessayer.';
+
             return response()->json([
-                'message' => 'La connexion à WhatsApp a échoué. Veuillez réessayer.',
+                'message' => $message,
             ], 422);
         }
 
