@@ -32,13 +32,26 @@ class WhatsAppSetupController extends Controller
         $this->checkOwnership($business);
 
         $data = $request->validate([
-            'code' => ['required', 'string'],
+            'code' => ['nullable', 'string'],
+            'token' => ['nullable', 'string'],
         ], [
-            'code.required' => 'Le code d\'échange est obligatoire.',
+            'code.string' => 'Le code doit être une chaîne.',
+            'token.string' => 'Le token doit être une chaîne.',
         ]);
 
+        if (empty($data['code']) && empty($data['token'])) {
+            return response()->json(['message' => 'Un code ou un token est requis.'], 422);
+        }
+
         try {
-            $token = $this->getAccessToken($data['code']);
+            // Si on a un token directement (depuis le JS SDK), on l'utilise tel quel
+            // Si on a un code, on l'échange contre un token
+            if (! empty($data['token'])) {
+                $token = $data['token'];
+            } else {
+                $token = $this->getAccessToken($data['code']);
+            }
+
             $wabaId = $this->getWabaId($token);
             $phoneNumber = $this->getPhoneNumber($wabaId, $token);
 
