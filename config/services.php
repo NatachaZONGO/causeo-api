@@ -62,6 +62,11 @@ return [
         'api_url' => env('WHATSAPP_API_URL', 'https://graph.facebook.com/v21.0/'),
     ],
 
+    'whatsapp_bridge' => [
+        'url' => env('WHATSAPP_BRIDGE_URL', 'http://localhost:3001'),
+        'token' => env('WHATSAPP_BRIDGE_TOKEN', 'secret_bridge_token_2024'),
+    ],
+
     'google' => [
         'client_id' => env('GOOGLE_CLIENT_ID'),
         'client_secret' => env('GOOGLE_CLIENT_SECRET'),

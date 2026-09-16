@@ -11,6 +11,7 @@ use App\Models\Message;
 use App\Services\AI\AIResponseService;
 use App\Services\WhatsApp\WhatsAppService;
 use Illuminate\Database\QueryException;
+use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Response;
 use Illuminate\Support\Facades\Log;
@@ -230,5 +231,129 @@ class WebhookController extends Controller
         Log::info('Webhook paiement reçu', $request->all());
 
         return response('', 200);
+    }
+
+    private function verifyBridgeToken(Request $request): bool
+    {
+        return $request->header('X-Bridge-Token') === config('services.whatsapp_bridge.token');
+    }
+
+    /**
+     * Réception des messages entrants depuis le bridge WhatsApp Express (Baileys).
+     */
+    public function handleExpress(Request $request): JsonResponse
+    {
+        if (! $this->verifyBridgeToken($request)) {
+            return response()->json(['error' => 'Non autorisé'], 401);
+        }
+
+        $data = $request->validate([
+            'business_id' => 'required|string',
+            'from' => 'required|string',
+            'text' => 'required|string',
+            'message_id' => 'required|string',
+            'customer_name' => 'nullable|string',
+        ]);
+
+        $business = Business::find($data['business_id']);
+        if (! $business || ! $business->is_active) {
+            return response()->json(['error' => 'Business non trouvé'], 404);
+        }
+
+        // Déduplication
+        $exists = Message::where('whatsapp_message_id', $data['message_id'])
+            ->where('direction', 'inbound')->exists();
+        if ($exists) {
+            return response()->json(['answer' => null, 'duplicate' => true]);
+        }
+
+        // Trouver ou créer la conversation
+        $conversation = Conversation::firstOrCreate(
+            ['business_id' => $business->id, 'customer_phone' => $data['from']],
+            ['customer_name' => $data['customer_name'], 'is_active' => true, 'last_message_at' => now()]
+        );
+        $conversation->update(['last_message_at' => now(), 'customer_name' => $data['customer_name']]);
+
+        // Sauvegarder le message entrant
+        $message = Message::create([
+            'conversation_id' => $conversation->id,
+            'direction' => 'inbound',
+            'content' => $data['text'],
+            'whatsapp_message_id' => $data['message_id'],
+            'sender_type' => 'customer',
+        ]);
+
+        // Traitement IA
+        $result = app(AIResponseService::class)->answer($business, $data['text'], $conversation->id);
+
+        // Sauvegarder la réponse
+        if ($result['answer']) {
+            Message::create([
+                'conversation_id' => $conversation->id,
+                'direction' => 'outbound',
+                'content' => $result['answer'],
+                'sender_type' => 'ai',
+                'metadata' => ['confidence' => $result['confidence']],
+            ]);
+        }
+
+        // Gérer l'escalade
+        if ($result['should_escalate']) {
+            Escalation::create([
+                'conversation_id' => $conversation->id,
+                'message_id' => $message->id,
+                'customer_question' => $data['text'],
+                'status' => 'pending',
+            ]);
+        }
+
+        $business->increment('monthly_message_count');
+
+        // Retourner la réponse + les URLs des médias
+        $mediaUrls = [];
+        if (! empty($result['media_ids'])) {
+            $mediaUrls = BusinessMedia::whereIn('id', $result['media_ids'])
+                ->get()
+                ->map(fn ($m) => ['url' => $m->public_url, 'caption' => $m->title, 'type' => $m->type])
+                ->toArray();
+        }
+
+        return response()->json([
+            'answer' => $result['answer'],
+            'media_urls' => $mediaUrls,
+            'media_ids' => $result['media_ids'] ?? [],
+            'should_escalate' => $result['should_escalate'],
+        ]);
+    }
+
+    /**
+     * Réception des changements de statut de connexion depuis le bridge WhatsApp Express.
+     */
+    public function handleExpressStatus(Request $request): JsonResponse
+    {
+        if (! $this->verifyBridgeToken($request)) {
+            return response()->json(['error' => 'Non autorisé'], 401);
+        }
+
+        $data = $request->validate([
+            'business_id' => 'required|string',
+            'status' => 'required|string',
+            'phone' => 'nullable|string',
+        ]);
+
+        $business = Business::find($data['business_id']);
+        if ($business) {
+            if ($data['status'] === 'connected') {
+                $business->update([
+                    'whatsapp_verified' => true,
+                    'whatsapp_connected_at' => now(),
+                    'whatsapp_display_name' => $business->name,
+                ]);
+            } elseif ($data['status'] === 'disconnected') {
+                $business->update(['whatsapp_verified' => false]);
+            }
+        }
+
+        return response()->json(['ok' => true]);
     }
 }

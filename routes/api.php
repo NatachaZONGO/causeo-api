@@ -12,6 +12,8 @@ Route::prefix('webhook')->group(function () {
     Route::get('whatsapp', [\App\Http\Controllers\API\V1\WebhookController::class, 'verify']);
     Route::post('whatsapp', [\App\Http\Controllers\API\V1\WebhookController::class, 'handle']);
     Route::post('payment', [\App\Http\Controllers\API\V1\WebhookController::class, 'payment']);
+    Route::post('whatsapp-express', [\App\Http\Controllers\API\V1\WebhookController::class, 'handleExpress']);
+    Route::post('whatsapp-express/status', [\App\Http\Controllers\API\V1\WebhookController::class, 'handleExpressStatus']);
 });
 
 Route::get('v1/templates', fn () => response()->json(
