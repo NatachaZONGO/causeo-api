@@ -49,6 +49,16 @@ class WebhookController extends Controller
     {
         $payload = $request->all();
 
+        $field = data_get($payload, 'entry.0.changes.0.field');
+
+        if ($field !== 'messages') {
+            $value = data_get($payload, 'entry.0.changes.0.value');
+
+            $this->logNonMessageEvent(is_string($field) ? $field : null, is_array($value) ? $value : []);
+
+            return response('', 200);
+        }
+
         $incoming = $this->whatsApp->parseIncomingMessage($payload);
 
         if ($incoming === null || $incoming['message_id'] === '') {
@@ -76,6 +86,28 @@ class WebhookController extends Controller
         })->afterResponse();
 
         return response('', 200);
+    }
+
+    /**
+     * Journaliser les événements webhook autres que `messages` (Coexistence),
+     * sans réponse IA. Les fields inconnus sont ignorés.
+     *
+     * @param  array<string, mixed>  $value
+     */
+    private function logNonMessageEvent(?string $field, array $value): void
+    {
+        $phoneNumberId = data_get($value, 'metadata.phone_number_id');
+
+        match ($field) {
+            'smb_message_echoes' => Log::info('WebhookController: écho de message reçu (smb_message_echoes).', [
+                'phone_number_id' => $phoneNumberId,
+                'message_echoes' => $value['message_echoes'] ?? [],
+            ]),
+            'history', 'smb_app_state_sync' => Log::info("WebhookController: événement {$field} reçu.", [
+                'phone_number_id' => $phoneNumberId,
+            ]),
+            default => null,
+        };
     }
 
     /**
