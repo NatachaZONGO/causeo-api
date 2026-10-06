@@ -13,7 +13,6 @@ use Illuminate\Http\Request;
 class ConversationController extends Controller
 {
     public function __construct(
-        private readonly WhatsAppService $whatsApp,
         private readonly LearningService $learningService,
     ) {
     }
@@ -90,11 +89,23 @@ class ConversationController extends Controller
             'status' => 'answered_by_human',
         ]);
 
-        $sent = $this->whatsApp->sendMessage($conversation->customer_phone, $data['response']);
+        // Envoyer depuis le numéro de l'entreprise, pas depuis la config globale.
+        $sent = WhatsAppService::forBusiness($conversation->business)
+            ->sendMessage($conversation->customer_phone, $data['response']);
 
-        if (! empty($sent['messages'][0]['id'])) {
-            $message->update(['whatsapp_message_id' => $sent['messages'][0]['id']]);
+        $wamid = $sent['messages'][0]['id'] ?? null;
+
+        if (empty($wamid)) {
+            // Échec Meta : l'escalade reste en attente et rien n'est appris.
+            $message->update(['status' => 'failed']);
+
+            return response()->json([
+                'message' => 'L\'envoi a échoué, veuillez réessayer.',
+                'data' => $message,
+            ], 502);
         }
+
+        $message->update(['whatsapp_message_id' => $wamid]);
 
         if ($escalation !== null) {
             $escalation->update([
