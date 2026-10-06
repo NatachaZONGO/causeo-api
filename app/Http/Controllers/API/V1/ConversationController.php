@@ -115,6 +115,8 @@ class ConversationController extends Controller
             ]);
 
             $this->learningService->learnFromEscalation($escalation);
+        } else {
+            $this->learningService->answerPendingEscalation($conversation, $data['response']);
         }
 
         return response()->json([

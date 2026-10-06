@@ -2,6 +2,7 @@
 
 namespace App\Services\AI;
 
+use App\Models\Conversation;
 use App\Models\Escalation;
 use App\Models\LearnedResponse;
 use App\Services\Embedding\EmbeddingService;
@@ -14,6 +15,32 @@ class LearningService
     public function __construct(
         private readonly EmbeddingService $embeddingService,
     ) {
+    }
+
+    /**
+     * Rattacher une réponse humaine à la dernière escalade en attente de la
+     * conversation (créée dans les dernières 24 h), puis en apprendre.
+     * Ne fait rien s'il n'y en a pas.
+     */
+    public function answerPendingEscalation(Conversation $conversation, string $response): void
+    {
+        $escalation = $conversation->escalations()
+            ->where('status', 'pending')
+            ->where('created_at', '>=', now()->subDay())
+            ->latest()
+            ->first();
+
+        if ($escalation === null) {
+            return;
+        }
+
+        $escalation->update([
+            'human_response' => $response,
+            'status' => 'answered',
+            'answered_at' => now(),
+        ]);
+
+        $this->learnFromEscalation($escalation);
     }
 
     /**
