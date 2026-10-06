@@ -9,6 +9,7 @@ use App\Models\Conversation;
 use App\Models\Escalation;
 use App\Models\Message;
 use App\Services\AI\AIResponseService;
+use App\Services\AI\LearningService;
 use App\Services\WhatsApp\WhatsAppService;
 use Illuminate\Database\QueryException;
 use Illuminate\Http\JsonResponse;
@@ -22,6 +23,7 @@ class WebhookController extends Controller
     public function __construct(
         private readonly WhatsAppService $whatsApp,
         private readonly AIResponseService $ai,
+        private readonly LearningService $learningService,
     ) {
     }
 
@@ -159,6 +161,16 @@ class WebhookController extends Controller
                     'status' => 'answered_by_human',
                     'whatsapp_message_id' => $messageId,
                 ]);
+
+                // Une erreur d'apprentissage ne doit pas bloquer les échos suivants.
+                try {
+                    $this->learningService->answerPendingEscalation($conversation, $text);
+                } catch (Throwable $e) {
+                    Log::error('WebhookController: apprentissage depuis un écho échoué', [
+                        'business_id' => $business->id,
+                        'exception' => $e::class,
+                    ]);
+                }
 
                 $conversation->update(['last_message_at' => now()]);
 
