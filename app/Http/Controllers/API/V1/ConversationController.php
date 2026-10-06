@@ -96,7 +96,7 @@ class ConversationController extends Controller
         }
 
         if (! empty($data['escalation_id'])) {
-            $escalation = Escalation::findOrFail($data['escalation_id']);
+            $escalation = $conversation->escalations()->findOrFail($data['escalation_id']);
 
             $escalation->update([
                 'human_response' => $data['response'],
