@@ -82,6 +82,12 @@ class ConversationController extends Controller
             'escalation_id.exists' => 'L\'escalation indiquée est introuvable.',
         ]);
 
+        // Charger l'escalade avant tout envoi : un escalation_id invalide
+        // renvoie 404 sans que le client ne reçoive de message.
+        $escalation = ! empty($data['escalation_id'])
+            ? $conversation->escalations()->findOrFail($data['escalation_id'])
+            : null;
+
         $message = $conversation->messages()->create([
             'direction' => 'outbound',
             'sender_type' => 'human',
@@ -95,9 +101,7 @@ class ConversationController extends Controller
             $message->update(['whatsapp_message_id' => $sent['messages'][0]['id']]);
         }
 
-        if (! empty($data['escalation_id'])) {
-            $escalation = $conversation->escalations()->findOrFail($data['escalation_id']);
-
+        if ($escalation !== null) {
             $escalation->update([
                 'human_response' => $data['response'],
                 'status' => 'answered',
