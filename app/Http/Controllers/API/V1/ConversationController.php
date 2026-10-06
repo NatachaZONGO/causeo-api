@@ -5,21 +5,16 @@ namespace App\Http\Controllers\API\V1;
 use App\Http\Controllers\Controller;
 use App\Models\Business;
 use App\Models\Conversation;
-use App\Models\Escalation;
-use App\Models\LearnedResponse;
-use App\Services\Embedding\EmbeddingService;
+use App\Services\AI\LearningService;
 use App\Services\WhatsApp\WhatsAppService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Log;
-use Throwable;
 
 class ConversationController extends Controller
 {
     public function __construct(
         private readonly WhatsAppService $whatsApp,
-        private readonly EmbeddingService $embeddingService,
+        private readonly LearningService $learningService,
     ) {
     }
 
@@ -108,41 +103,13 @@ class ConversationController extends Controller
                 'answered_at' => now(),
             ]);
 
-            $this->learnFromReply($escalation);
+            $this->learningService->learnFromEscalation($escalation);
         }
 
         return response()->json([
             'message' => 'Votre réponse a été envoyée au client.',
             'data' => $message,
         ]);
-    }
-
-    /**
-     * Apprendre d'une réponse manuelle en créant une réponse apprise vectorisée.
-     */
-    private function learnFromReply(Escalation $escalation): void
-    {
-        try {
-            $learned = LearnedResponse::create([
-                'business_id' => $escalation->business_id,
-                'escalation_id' => $escalation->id,
-                'question' => $escalation->customer_question,
-                'answer' => $escalation->human_response,
-                'usage_count' => 0,
-            ]);
-
-            $vector = '['.implode(',', $this->embeddingService->embed($escalation->customer_question)).']';
-
-            DB::statement(
-                'UPDATE learned_responses SET question_embedding = ?::vector WHERE id = ?',
-                [$vector, $learned->id],
-            );
-        } catch (Throwable $e) {
-            Log::error('ConversationController::learnFromReply a échoué', [
-                'escalation_id' => $escalation->id,
-                'message' => $e->getMessage(),
-            ]);
-        }
     }
 
     /**
