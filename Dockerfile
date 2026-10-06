@@ -5,7 +5,7 @@ FROM php:8.2-cli
 RUN apt-get update && apt-get install -y --no-install-recommends \
         git unzip libzip-dev libpq-dev libxml2-dev libonig-dev libcurl4-openssl-dev \
     && docker-php-ext-install -j"$(nproc)" \
-        pdo_pgsql pgsql mbstring xml curl zip bcmath \
+        pdo_pgsql pgsql mbstring xml curl zip bcmath pcntl \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # Composer
