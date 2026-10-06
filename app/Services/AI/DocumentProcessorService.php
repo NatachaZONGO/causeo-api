@@ -8,7 +8,10 @@ use App\Services\Embedding\EmbeddingService;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
+use RuntimeException;
+use Smalot\PdfParser\Parser as PdfParser;
 use Throwable;
+use ZipArchive;
 
 class DocumentProcessorService
 {
@@ -27,7 +30,13 @@ class DocumentProcessorService
         try {
             $raw = Storage::disk('supabase_documents')->get($document->file_path);
 
-            $text = $this->extractText($document->file_type, $raw);
+            $text = $this->normalizeText($this->extractText($document->file_type, $raw));
+
+            if (trim($text) === '') {
+                throw new RuntimeException($document->file_type === 'pdf'
+                    ? "Aucun texte extractible dans ce PDF : il s'agit probablement d'un document scanné (image). Fournissez un PDF contenant du texte."
+                    : 'Le document ne contient aucun texte exploitable.');
+            }
 
             $chunks = $this->splitIntoChunks($text);
 
@@ -102,14 +111,76 @@ class DocumentProcessorService
     /**
      * Extraire le texte brut d'un fichier selon son type.
      */
-    private function extractText(string $fileType, string $raw): string
+    public function extractText(string $fileType, string $raw): string
     {
         return match ($fileType) {
-            'txt', 'csv' => $raw,
-            // TODO: brancher un parser dédié (pdf, docx) — contenu brut en attendant.
-            'pdf', 'docx' => $raw,
+            'pdf' => (new PdfParser())->parseContent($raw)->getText(),
+            'docx' => $this->extractDocxText($raw),
             default => $raw,
         };
+    }
+
+    /**
+     * Extraire le texte d'un fichier DOCX (contenu de word/document.xml).
+     */
+    private function extractDocxText(string $raw): string
+    {
+        $path = tempnam(sys_get_temp_dir(), 'docx');
+
+        try {
+            file_put_contents($path, $raw);
+
+            $zip = new ZipArchive();
+
+            if ($zip->open($path) !== true) {
+                throw new RuntimeException('Le fichier DOCX est illisible.');
+            }
+
+            $xml = $zip->getFromName('word/document.xml');
+            $zip->close();
+        } finally {
+            @unlink($path);
+        }
+
+        if ($xml === false) {
+            throw new RuntimeException('Le fichier DOCX ne contient pas de document Word.');
+        }
+
+        $xml = str_replace(['</w:p>', '<w:tab/>', '<w:br/>'], ["\n", ' ', "\n"], $xml);
+
+        return html_entity_decode(strip_tags($xml), ENT_QUOTES | ENT_XML1, 'UTF-8');
+    }
+
+    /**
+     * Garantir un texte UTF-8 valide : conversion depuis Windows-1252 si le texte
+     * ne contient aucun caractère UTF-8 multi-octets (sinon on garde l'UTF-8 et on
+     * retire seulement les octets invalides), puis suppression des caractères nuls.
+     */
+    public function normalizeText(string $text): string
+    {
+        if (! mb_check_encoding($text, 'UTF-8') && ! $this->containsUtf8Multibyte($text)) {
+            $text = mb_convert_encoding($text, 'UTF-8', 'Windows-1252');
+        }
+
+        $substitute = mb_substitute_character();
+        mb_substitute_character('none');
+        $text = mb_scrub($text, 'UTF-8');
+        mb_substitute_character($substitute);
+
+        return str_replace("\0", '', $text);
+    }
+
+    /**
+     * Indiquer si le texte contient au moins une séquence UTF-8 multi-octets valide.
+     */
+    private function containsUtf8Multibyte(string $text): bool
+    {
+        return preg_match(
+            '/[\xC2-\xDF][\x80-\xBF]'
+            .'|\xE0[\xA0-\xBF][\x80-\xBF]|[\xE1-\xEC\xEE\xEF][\x80-\xBF]{2}|\xED[\x80-\x9F][\x80-\xBF]'
+            .'|\xF0[\x90-\xBF][\x80-\xBF]{2}|[\xF1-\xF3][\x80-\xBF]{3}|\xF4[\x80-\x8F][\x80-\xBF]{2}/',
+            $text,
+        ) === 1;
     }
 
     /**

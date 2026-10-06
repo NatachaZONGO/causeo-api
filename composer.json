@@ -13,6 +13,7 @@
         "laravel/tinker": "^2.10.1",
         "league/flysystem-aws-s3-v3": "^3.0",
         "pgvector/pgvector": "^0.2.2",
+        "smalot/pdfparser": "^2.12",
         "spatie/laravel-permission": "^6.25"
     },
     "require-dev": {
