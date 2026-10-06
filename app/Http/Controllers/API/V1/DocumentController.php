@@ -50,7 +50,7 @@ class DocumentController extends Controller
         $title = $data['title']
             ?? pathinfo($file->getClientOriginalName(), PATHINFO_FILENAME);
 
-        $path = $file->store("documents/{$business->id}", 'local');
+        $path = $file->store("documents/{$business->id}", 'supabase_documents');
 
         $document = $business->documents()->create([
             'title' => $title,
@@ -94,8 +94,8 @@ class DocumentController extends Controller
 
         $this->checkOwnership($document->business);
 
-        if ($document->file_path && Storage::disk('local')->exists($document->file_path)) {
-            Storage::disk('local')->delete($document->file_path);
+        if ($document->file_path && Storage::disk('supabase_documents')->exists($document->file_path)) {
+            Storage::disk('supabase_documents')->delete($document->file_path);
         }
 
         $document->delete();

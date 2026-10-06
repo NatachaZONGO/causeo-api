@@ -25,7 +25,7 @@ class DocumentProcessorService
         $document->update(['status' => 'processing']);
 
         try {
-            $raw = Storage::disk('local')->get($document->file_path);
+            $raw = Storage::disk('supabase_documents')->get($document->file_path);
 
             $text = $this->extractText($document->file_type, $raw);
 

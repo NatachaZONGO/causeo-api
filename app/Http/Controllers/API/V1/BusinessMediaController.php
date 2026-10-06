@@ -62,8 +62,8 @@ class BusinessMediaController extends Controller
         $mimeType = $file->getClientMimeType();
         $type = $data['type'] ?? (str_starts_with($mimeType, 'image/') ? 'image' : 'document');
 
-        $path = $file->store("media/{$business->id}", 'public');
-        $publicUrl = Storage::disk('public')->url($path);
+        $path = $file->store("media/{$business->id}", 'supabase_media');
+        $publicUrl = Storage::disk('supabase_media')->url($path);
 
         $media = $business->media()->create([
             'type' => $type,
@@ -108,8 +108,8 @@ class BusinessMediaController extends Controller
 
         $this->checkOwnership($media->business);
 
-        if ($media->file_path && Storage::disk('public')->exists($media->file_path)) {
-            Storage::disk('public')->delete($media->file_path);
+        if ($media->file_path && Storage::disk('supabase_media')->exists($media->file_path)) {
+            Storage::disk('supabase_media')->delete($media->file_path);
         }
 
         $media->delete();
