@@ -54,7 +54,7 @@ class WebhookController extends Controller
         if ($field !== 'messages') {
             $value = data_get($payload, 'entry.0.changes.0.value');
 
-            $this->logNonMessageEvent(is_string($field) ? $field : null, is_array($value) ? $value : []);
+            $this->handleNonMessageEvent(is_string($field) ? $field : null, is_array($value) ? $value : []);
 
             return response('', 200);
         }
@@ -89,25 +89,95 @@ class WebhookController extends Controller
     }
 
     /**
-     * Journaliser les événements webhook autres que `messages` (Coexistence),
+     * Traiter les événements webhook autres que `messages` (Coexistence),
      * sans réponse IA. Les fields inconnus sont ignorés.
      *
      * @param  array<string, mixed>  $value
      */
-    private function logNonMessageEvent(?string $field, array $value): void
+    private function handleNonMessageEvent(?string $field, array $value): void
     {
-        $phoneNumberId = data_get($value, 'metadata.phone_number_id');
-
         match ($field) {
-            'smb_message_echoes' => Log::info('WebhookController: écho de message reçu (smb_message_echoes).', [
-                'phone_number_id' => $phoneNumberId,
-                'message_echoes' => $value['message_echoes'] ?? [],
-            ]),
+            'smb_message_echoes' => $this->recordMessageEchoes($value),
             'history', 'smb_app_state_sync' => Log::info("WebhookController: événement {$field} reçu.", [
-                'phone_number_id' => $phoneNumberId,
+                'phone_number_id' => data_get($value, 'metadata.phone_number_id'),
             ]),
             default => null,
         };
+    }
+
+    /**
+     * Enregistrer les échos (messages envoyés par le gérant depuis l'app
+     * WhatsApp Business) comme des réponses humaines dans la conversation.
+     * Seuls les échos texte sont pris en compte pour l'instant.
+     *
+     * @param  array<string, mixed>  $value
+     */
+    private function recordMessageEchoes(array $value): void
+    {
+        $phoneNumberId = data_get($value, 'metadata.phone_number_id');
+
+        if (empty($phoneNumberId)) {
+            return;
+        }
+
+        $business = Business::where('whatsapp_phone_number_id', $phoneNumberId)->first();
+
+        if ($business === null) {
+            return;
+        }
+
+        $recorded = 0;
+
+        try {
+            foreach ($value['message_echoes'] ?? [] as $echo) {
+                if (! is_array($echo) || ($echo['type'] ?? null) !== 'text') {
+                    continue;
+                }
+
+                $to = $echo['to'] ?? '';
+                $messageId = $echo['id'] ?? '';
+                $text = $echo['text']['body'] ?? '';
+
+                if ($to === '' || $messageId === '' || $text === '') {
+                    continue;
+                }
+
+                // Déduplication : Meta peut réémettre le webhook.
+                if (Message::where('whatsapp_message_id', $messageId)->exists()) {
+                    continue;
+                }
+
+                $conversation = Conversation::firstOrCreate([
+                    'business_id' => $business->id,
+                    'customer_phone' => $to,
+                ]);
+
+                $conversation->messages()->create([
+                    'direction' => 'outbound',
+                    'sender_type' => 'human',
+                    'content' => $text,
+                    'status' => 'answered_by_human',
+                    'whatsapp_message_id' => $messageId,
+                ]);
+
+                $conversation->update(['last_message_at' => now()]);
+
+                $recorded++;
+            }
+        } catch (Throwable $e) {
+            // Pas de getMessage() : une QueryException contient le SQL avec
+            // les valeurs (texte et numéro du client).
+            Log::error('WebhookController::recordMessageEchoes a échoué', [
+                'business_id' => $business->id,
+                'exception' => $e::class,
+            ]);
+        }
+
+        Log::info('WebhookController: échos enregistrés.', [
+            'field' => 'smb_message_echoes',
+            'business_id' => $business->id,
+            'recorded' => $recorded,
+        ]);
     }
 
     /**
