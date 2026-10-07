@@ -4,6 +4,7 @@ namespace App\Services\AI;
 
 use App\Models\Business;
 use App\Models\Conversation;
+use App\Models\Order;
 use App\Services\Embedding\EmbeddingService;
 use App\Services\OrderService;
 use Illuminate\Support\Collection;
@@ -20,6 +21,9 @@ class AIResponseService
 
     /** Nombre maximal d'allers-retours tool_use / tool_result par réponse. */
     private const MAX_TOOL_ROUNDS = 3;
+
+    /** Message d'attente envoyé quand une réponse est bloquée puis escaladée. */
+    private const WAITING_MESSAGE = 'Je vérifie ça et je reviens vers vous très vite 😊';
 
     /** Libellés des modes de remise, tels que présentés au client. */
     private const FULFILLMENT_LABELS = [
@@ -50,6 +54,7 @@ class AIResponseService
         }
 
         $context = collect();
+        $trace = ['orders' => [], 'tool_errors' => [], 'blocked_claim' => false];
 
         try {
             $context = $this->findRelevantContext($business, $question);
@@ -128,19 +133,47 @@ class AIResponseService
                 $request['tools'] = $tools;
             }
 
-            $payload = $this->callClaude($request);
-
-            for ($round = 0; ($payload['stop_reason'] ?? null) === 'tool_use' && $round < self::MAX_TOOL_ROUNDS; $round++) {
-                $request['messages'][] = ['role' => 'assistant', 'content' => $payload['content']];
-                $request['messages'][] = [
-                    'role' => 'user',
-                    'content' => $this->runTools($payload['content'], $business, $conversation),
-                ];
-
-                $payload = $this->callClaude($request);
-            }
-
+            $payload = $this->converse($request, $business, $conversation, $trace);
             $text = $this->extractText($payload);
+
+            // Une réponse qui annonce une commande enregistrée (ou cite une référence)
+            // sans appel réussi à create_order n'est jamais envoyée : un seul nouvel
+            // essai avec une consigne de correction, puis escalade.
+            $violation = $this->unverifiedOrderClaim($text, $trace, $conversation);
+
+            if ($violation !== null) {
+                Log::warning('AIResponseService: confirmation de commande non vérifiée bloquée', [
+                    'conversation_id' => $conversationId,
+                    'reason' => $violation,
+                    'text' => $text,
+                ]);
+
+                $request['messages'][] = ['role' => 'assistant', 'content' => $payload['content']];
+                $request['messages'][] = ['role' => 'user', 'content' => $this->orderClaimCorrection($violation)];
+
+                $payload = $this->converse($request, $business, $conversation, $trace);
+                $text = $this->extractText($payload);
+                $violation = $this->unverifiedOrderClaim($text, $trace, $conversation);
+
+                if ($violation !== null) {
+                    Log::warning('AIResponseService: confirmation de commande non vérifiée bloquée deux fois, escalade', [
+                        'conversation_id' => $conversationId,
+                        'reason' => $violation,
+                        'text' => $text,
+                    ]);
+
+                    $trace['blocked_claim'] = true;
+
+                    return [
+                        'answer' => self::WAITING_MESSAGE,
+                        'confidence' => 0.2,
+                        'should_escalate' => true,
+                        'context_used' => $context->pluck('id')->all(),
+                        'media_ids' => [],
+                        'tool_trace' => $this->traceForMetadata($trace),
+                    ];
+                }
+            }
 
             // Extrait puis retire la ligne technique MEDIA:id1,id2 de la réponse.
             $mediaIds = [];
@@ -159,6 +192,7 @@ class AIResponseService
                     'should_escalate' => true,
                     'context_used' => $context->pluck('id')->all(),
                     'media_ids' => [],
+                    'tool_trace' => $this->traceForMetadata($trace),
                 ];
             }
 
@@ -171,6 +205,7 @@ class AIResponseService
                     'should_escalate' => true,
                     'context_used' => $context->pluck('id')->all(),
                     'media_ids' => [],
+                    'tool_trace' => $this->traceForMetadata($trace),
                 ];
             }
 
@@ -180,6 +215,7 @@ class AIResponseService
                 'should_escalate' => false,
                 'context_used' => $context->pluck('id')->all(),
                 'media_ids' => $mediaIds,
+                'tool_trace' => $this->traceForMetadata($trace),
             ];
         } catch (\Throwable $e) {
             Log::error('AIResponseService::answer a échoué', [
@@ -193,8 +229,184 @@ class AIResponseService
                 'should_escalate' => true,
                 'context_used' => $context->pluck('id')->all(),
                 'media_ids' => [],
+                'tool_trace' => $this->traceForMetadata($trace),
             ];
         }
+    }
+
+    /**
+     * Appeler Claude puis exécuter les appels d'outils jusqu'à la réponse finale.
+     *
+     * @param  array<string, mixed>  $request  complété avec les échanges tool_use / tool_result
+     * @param  array{orders: array<int, array{id: string, reference: string}>, tool_errors: array<int, string>, blocked_claim: bool}  $trace
+     * @return array<string, mixed>
+     */
+    private function converse(array &$request, Business $business, ?Conversation $conversation, array &$trace): array
+    {
+        $payload = $this->callClaude($request);
+
+        for ($round = 0; ($payload['stop_reason'] ?? null) === 'tool_use' && $round < self::MAX_TOOL_ROUNDS; $round++) {
+            $request['messages'][] = ['role' => 'assistant', 'content' => $payload['content']];
+            $request['messages'][] = [
+                'role' => 'user',
+                'content' => $this->runTools($payload['content'], $business, $conversation, $trace),
+            ];
+
+            $payload = $this->callClaude($request);
+        }
+
+        return $payload;
+    }
+
+    /**
+     * Vérifier qu'une réponse n'annonce pas une commande qui n'existe pas.
+     * Renvoie la raison du blocage, ou null si la réponse peut être envoyée.
+     *
+     * @param  array{orders: array<int, array{id: string, reference: string}>, tool_errors: array<int, string>, blocked_claim: bool}  $trace
+     */
+    private function unverifiedOrderClaim(string $text, array $trace, ?Conversation $conversation): ?string
+    {
+        $cited = $this->citedOrderReferences($text);
+        $claims = $this->claimsOrderRecorded($text);
+
+        if ($cited === [] && ! $claims) {
+            return null;
+        }
+
+        $known = array_merge(
+            array_column($trace['orders'], 'reference'),
+            $this->conversationOrderReferences($conversation),
+        );
+
+        $unknown = array_values(array_diff($cited, $known));
+        if ($unknown !== []) {
+            return 'référence sans commande correspondante : '.implode(', ', $unknown);
+        }
+
+        if ($claims && $trace['orders'] === [] && $cited === []) {
+            return 'commande annoncée comme enregistrée sans appel réussi à create_order';
+        }
+
+        return null;
+    }
+
+    /**
+     * Références de commande citées dans un texte (« Référence : 871086 », « réf. 3F2A9C »…).
+     *
+     * @return array<int, string>
+     */
+    private function citedOrderReferences(string $text): array
+    {
+        // Soit un identifiant après « : », « # » ou « n° », soit 6 caractères hexadécimaux
+        // (format des références réelles, qui peuvent ne contenir que des lettres).
+        preg_match_all(
+            '/\br[ée]f(?:[ée]rence)?\.?\s*(?:de\s+(?:la\s+|votre\s+)?commande\s*)?'
+            .'(?:(?:n[°o]\.?|[:#])\s*[*_]*\s*([a-z0-9][a-z0-9-]{2,15})|[*_]*\s*([0-9a-f]{6}))\b/iu',
+            $text,
+            $matches,
+        );
+
+        $references = array_filter(array_merge($matches[1], $matches[2]));
+
+        return array_values(array_unique(array_map('strtoupper', $references)));
+    }
+
+    /**
+     * Indiquer si un texte annonce une commande comme enregistrée, confirmée ou validée.
+     */
+    private function claimsOrderRecorded(string $text): bool
+    {
+        if (preg_match('/\bnum[ée]ro de commande\b/iu', $text) === 1) {
+            return true;
+        }
+
+        preg_match_all(
+            '/\bcommandes?\b[^.!?\n]{0,60}?\b(?:enregistr[ée]+e?s?|confirm[ée]+e?s?|valid[ée]+e?s?|prise en compte)\b/iu',
+            $text,
+            $matches,
+        );
+
+        foreach ($matches[0] as $match) {
+            // « sera enregistrée après confirmation » ou « n'a pas été enregistrée » ne sont pas des annonces.
+            if (preg_match('/\b(?:sera|seront|serait|pourra|dès que|une fois|après|avant|si|pas|aucune?|jamais|n[\'’](?:a|est|ont))\b/iu', $match) !== 1) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Références des commandes déjà enregistrées pour cette conversation.
+     *
+     * @return array<int, string>
+     */
+    private function conversationOrderReferences(?Conversation $conversation): array
+    {
+        if ($conversation === null) {
+            return [];
+        }
+
+        return Order::query()
+            ->where('conversation_id', $conversation->id)
+            ->pluck('id')
+            ->map(fn (string $id) => strtoupper(substr($id, -6)))
+            ->all();
+    }
+
+    /**
+     * Note interne ajoutée à un message passé du bot qui parle d'une commande, pour
+     * que le modèle sache si elle a réellement été enregistrée et n'imite pas une
+     * confirmation passée.
+     *
+     * @param  array<int, string>  $knownReferences
+     */
+    private function orderNote(string $content, ?string $metadata, array $knownReferences): string
+    {
+        $recorded = array_column((array) data_get(json_decode((string) $metadata, true), 'orders', []), 'reference');
+        $cited = $this->citedOrderReferences($content);
+
+        if ($recorded === [] && $cited === [] && ! $this->claimsOrderRecorded($content)) {
+            return '';
+        }
+
+        $valid = array_values(array_unique(array_merge($recorded, array_intersect($cited, $knownReferences))));
+        $invalid = array_values(array_diff($cited, $knownReferences, $recorded));
+
+        if ($valid !== [] && $invalid === []) {
+            return "\n[Note système : commande ".implode(', ', $valid).' réellement enregistrée par l\'outil create_order.]';
+        }
+
+        return "\n[Note système : aucune commande n'a été enregistrée pour ce message"
+            .($invalid !== [] ? ' ; la référence '.implode(', ', $invalid).' n\'existe pas' : '')
+            .'. Ne t\'en sers pas comme modèle.]';
+    }
+
+    /**
+     * Consigne de correction envoyée à Claude quand sa réponse a été bloquée.
+     */
+    private function orderClaimCorrection(string $reason): string
+    {
+        return "[Message système, pas du client : ne le mentionne pas dans ta réponse] Ta réponse précédente n'a pas été envoyée ({$reason}). "
+            ."Aucune commande n'a été enregistrée par l'outil create_order dans cet échange. "
+            ."Si le client a clairement confirmé le récapitulatif complet, appelle maintenant create_order. "
+            ."Sinon, réécris ta réponse au client sans dire que la commande est enregistrée et sans citer de référence. "
+            ."Une référence ne vient que du résultat de l'outil.";
+    }
+
+    /**
+     * Trace des appels d'outils à enregistrer dans le metadata du message sortant.
+     *
+     * @param  array{orders: array<int, array{id: string, reference: string}>, tool_errors: array<int, string>, blocked_claim: bool}  $trace
+     * @return array<string, mixed>
+     */
+    private function traceForMetadata(array $trace): array
+    {
+        return array_filter([
+            'orders' => $trace['orders'],
+            'tool_errors' => $trace['tool_errors'],
+            'blocked_claim' => $trace['blocked_claim'],
+        ]);
     }
 
     /**
@@ -224,10 +436,13 @@ class AIResponseService
      */
     private function extractText(array $payload): string
     {
-        return trim(collect($payload['content'] ?? [])
+        $text = collect($payload['content'] ?? [])
             ->where('type', 'text')
             ->pluck('text')
-            ->implode("\n\n"));
+            ->implode("\n\n");
+
+        // Les notes internes de l'historique ne doivent jamais atteindre le client.
+        return trim(preg_replace('/^[ \t]*\[Note système[^\]]*\][ \t]*$/mu', '', $text) ?? $text);
     }
 
     /**
@@ -235,9 +450,10 @@ class AIResponseService
      * tous dans un même message utilisateur.
      *
      * @param  array<int, array<string, mixed>>  $content
+     * @param  array{orders: array<int, array{id: string, reference: string}>, tool_errors: array<int, string>, blocked_claim: bool}  $trace
      * @return array<int, array<string, mixed>>
      */
-    private function runTools(array $content, Business $business, ?Conversation $conversation): array
+    private function runTools(array $content, Business $business, ?Conversation $conversation, array &$trace): array
     {
         $results = [];
 
@@ -249,13 +465,25 @@ class AIResponseService
             $result = ['type' => 'tool_result', 'tool_use_id' => $block['id']];
 
             if ($block['name'] !== 'create_order' || $conversation === null) {
+                $trace['tool_errors'][] = "Outil inconnu : {$block['name']}.";
                 $results[] = $result + ['content' => "Outil inconnu : {$block['name']}.", 'is_error' => true];
 
                 continue;
             }
 
+            $input = (array) ($block['input'] ?? []);
+
             try {
-                $order = $this->orderService->createFromAi($business, $conversation, (array) ($block['input'] ?? []));
+                $order = $this->orderService->createFromAi($business, $conversation, $input);
+
+                $trace['orders'][] = ['id' => $order->id, 'reference' => $order->reference()];
+
+                Log::info('AIResponseService: create_order a enregistré une commande', [
+                    'conversation_id' => $conversation->id,
+                    'order_id' => $order->id,
+                    'reference' => $order->reference(),
+                    'input' => $input,
+                ]);
 
                 $results[] = $result + ['content' => json_encode([
                     'status' => 'commande enregistrée',
@@ -265,6 +493,14 @@ class AIResponseService
                     'items' => $order->items,
                 ], JSON_UNESCAPED_UNICODE)];
             } catch (InvalidArgumentException $e) {
+                $trace['tool_errors'][] = $e->getMessage();
+
+                Log::info('AIResponseService: create_order refusé', [
+                    'conversation_id' => $conversation->id,
+                    'error' => $e->getMessage(),
+                    'input' => $input,
+                ]);
+
                 $results[] = $result + ['content' => $e->getMessage(), 'is_error' => true];
             }
         }
@@ -323,10 +559,19 @@ class AIResponseService
      */
     private function orderInstructions(Business $business): string
     {
+        $enabled = $business->enabledFulfillmentTypes();
+
         $modes = implode("\n", array_map(
             fn (string $type) => '- '.self::FULFILLMENT_LABELS[$type],
-            $business->enabledFulfillmentTypes(),
+            $enabled,
         ));
+
+        // Sans expédition, une ville où les documents disent « nous livrons » reste une livraison.
+        if (in_array('delivery', $enabled, true) && ! in_array('shipping', $enabled, true)) {
+            $modes .= "\nL'expédition n'est pas proposée en tant que telle : si le contexte indique que la boutique livre dans une ville "
+                ."(par exemple « Nous livrons à Bobo-Dioulasso »), traite la commande comme une livraison (delivery) vers cette ville, "
+                .'avec les frais, délais et conditions de paiement indiqués dans le contexte, au lieu d\'escalader.';
+        }
 
         return <<<PROMPT
 # Prise de commande
@@ -340,7 +585,10 @@ Tu peux enregistrer une commande avec l'outil create_order. Procède ainsi :
 4. Fais un récapitulatif clair : chaque article avec sa quantité et son prix unitaire, le total (somme des quantités × prix unitaires), le mode de remise et le paiement. Termine en demandant une confirmation explicite, par exemple « Je confirme la commande ? ».
 5. N'appelle create_order qu'après un « oui » clair du client à ce récapitulatif. Si le client modifie quelque chose, refais le récapitulatif et redemande confirmation. N'appelle jamais l'outil deux fois pour la même commande.
 6. Une fois l'outil exécuté, confirme la commande au client : donne la référence et le total renvoyés par l'outil, puis un court récapitulatif (articles et quantités, mode de remise, paiement). Termine par une phrase neutre, par exemple « Nous revenons vers vous très vite pour finaliser la livraison et le paiement 😊 » (ou « le retrait et le paiement » pour un retrait). Ne décris JAMAIS une procédure qui ne figure pas dans le contexte : pas d'appel d'un conseiller, pas d'heure ou de jour de livraison, pas de modalités de paiement (numéro, lien, moment du paiement) que le contexte n'indique pas.
-7. N'annonce jamais une commande comme enregistrée si l'outil ne l'a pas confirmé ; s'il renvoie une erreur, demande au client l'information manquante.
+7. N'annonce jamais une commande comme enregistrée si l'outil ne l'a pas confirmé dans ce même échange ; s'il renvoie une erreur, demande au client l'information manquante.
+8. La référence d'une commande vient uniquement du résultat de l'outil create_order. N'invente jamais de référence et ne réutilise jamais celle d'une commande précédente pour une nouvelle demande : chaque nouvelle commande passe par un nouveau récapitulatif, une nouvelle confirmation et un nouvel appel à l'outil.
+9. Si un récapitulatif attend encore une réponse du client et qu'il demande autre chose (un autre article, une autre ville, un autre mode de remise…), demande-lui d'abord s'il souhaite ajouter cela à sa commande en cours ou remplacer sa commande, puis refais le récapitulatif en conséquence.
+10. Les notes « [Note système …] » de l'historique sont internes : elles indiquent si une commande a réellement été enregistrée. Ne les recopie jamais au client.
 PROMPT;
     }
 
@@ -489,9 +737,11 @@ PROMPT;
             ->where('created_at', '>=', now()->subDay())
             ->orderByDesc('created_at')
             ->limit(10)
-            ->get(['direction', 'content', 'created_at'])
+            ->get(['direction', 'content', 'metadata', 'created_at'])
             ->reverse()
             ->values();
+
+        $knownReferences = $this->conversationOrderReferences(Conversation::find($conversationId));
 
         // Le message entrant courant est déjà en base : on le retire s'il est en dernier.
         if ($rows->isNotEmpty()) {
@@ -509,6 +759,10 @@ PROMPT;
             }
 
             $role = $row->direction === 'inbound' ? 'user' : 'assistant';
+
+            if ($role === 'assistant') {
+                $content .= $this->orderNote($content, $row->metadata, $knownReferences);
+            }
 
             // Fusionne les messages consécutifs de même rôle (contrainte de l'API).
             if ($messages !== [] && end($messages)['role'] === $role) {

@@ -64,6 +64,7 @@ class OrderTest extends TestCase
             $table->string('direction');
             $table->string('sender_type')->nullable();
             $table->text('content');
+            $table->json('metadata')->nullable();
             $table->timestamps();
         });
         (require base_path('database/migrations/2026_10_07_100000_create_notifications_table.php'))->up();
@@ -469,6 +470,181 @@ class OrderTest extends TestCase
         $this->getJson("/api/v1/businesses/{$this->business->id}/orders?fulfillment_type=drone")
             ->assertUnprocessable()
             ->assertJsonValidationErrors('fulfillment_type');
+    }
+
+    public function test_invented_confirmation_is_blocked_and_never_returned(): void
+    {
+        $this->seedRecapConversation();
+        Http::fake(['api.anthropic.com/*' => Http::sequence()
+            ->push($this->textResponse("Votre commande est enregistrée ! ✓\n\n*Référence : 871087*\n*Total : 16 000 FCFA*"))
+            ->push($this->textResponse("C'est noté, votre commande est confirmée 😊")),
+        ]);
+
+        $result = $this->service()->answer($this->business, 'oui', $this->conversationId);
+
+        $this->assertSame('Je vérifie ça et je reviens vers vous très vite 😊', $result['answer']);
+        $this->assertTrue($result['should_escalate']);
+        $this->assertTrue($result['tool_trace']['blocked_claim']);
+        $this->assertSame(0, Order::count());
+        Http::assertSentCount(2);
+
+        // Le nouvel essai reçoit la réponse bloquée puis la consigne de correction, outil toujours disponible.
+        $retry = Http::recorded()[1][0]->data();
+        $this->assertSame('create_order', $retry['tools'][0]['name']);
+        $this->assertStringContainsString('871087', $retry['messages'][3]['content'][0]['text']);
+        $this->assertStringContainsString('[Message système, pas du client', $retry['messages'][4]['content']);
+        $this->assertStringContainsString('référence sans commande correspondante : 871087', $retry['messages'][4]['content']);
+    }
+
+    public function test_blocked_confirmation_retry_can_record_the_order(): void
+    {
+        $this->seedRecapConversation();
+        Http::fake(['api.anthropic.com/*' => Http::sequence()
+            ->push($this->textResponse('Votre commande est bien enregistrée ✅'))
+            ->push($this->toolUseResponse([
+                'items' => [['name' => 'Pagne wax', 'options' => 'bleu', 'quantity' => 2, 'unit_price' => 7500]],
+                'fulfillment_type' => 'delivery',
+                'customer_name' => 'Awa',
+                'delivery_city' => 'Ouagadougou',
+                'delivery_address' => 'Secteur 15',
+                'payment_method' => 'Orange Money',
+            ]))
+            ->push($this->textResponse('Votre commande est enregistrée ✅ Total : 15 000 FCFA.')),
+        ]);
+
+        $result = $this->service()->answer($this->business, 'oui', $this->conversationId);
+
+        $order = Order::sole();
+        $this->assertSame('Votre commande est enregistrée ✅ Total : 15 000 FCFA.', $result['answer']);
+        $this->assertFalse($result['should_escalate']);
+        $this->assertSame([['id' => $order->id, 'reference' => $order->reference()]], $result['tool_trace']['orders']);
+        $this->assertArrayNotHasKey('blocked_claim', $result['tool_trace']);
+        Http::assertSentCount(3);
+        $this->assertStringContainsString(
+            'commande annoncée comme enregistrée sans appel réussi à create_order',
+            Http::recorded()[1][0]->data()['messages'][4]['content'],
+        );
+    }
+
+    public function test_reference_of_an_existing_order_is_allowed(): void
+    {
+        $existing = $this->makeOrder('confirmed');
+        Http::fake(['api.anthropic.com/*' => Http::response($this->textResponse(
+            "Votre commande est bien enregistrée sous la référence {$existing->reference()} 😊"
+        ))]);
+
+        $result = $this->service()->answer($this->business, 'Où en est ma commande ?', $this->conversationId);
+
+        $this->assertSame("Votre commande est bien enregistrée sous la référence {$existing->reference()} 😊", $result['answer']);
+        $this->assertFalse($result['should_escalate']);
+        Http::assertSentCount(1);
+    }
+
+    public function test_letter_only_reference_is_recognised(): void
+    {
+        $order = $this->makeOrder('new');
+        DB::table('orders')->where('id', $order->id)->update(['id' => '01a11866-0000-7000-8000-000000dafacf']);
+        Http::fake(['api.anthropic.com/*' => Http::sequence()
+            ->push($this->textResponse('Votre commande DAFACF est bien enregistrée, référence DAFACF.'))
+            ->push($this->textResponse('Votre commande est confirmée, référence FACADE.'))
+            ->push($this->textResponse('Pouvez-vous me rappeler votre nom ?')),
+        ]);
+
+        $allowed = $this->service()->answer($this->business, 'Où en est ma commande ?', $this->conversationId);
+        $blocked = $this->service()->answer($this->business, 'Où en est ma commande ?', $this->conversationId);
+
+        $this->assertSame('Votre commande DAFACF est bien enregistrée, référence DAFACF.', $allowed['answer']);
+        $this->assertSame('Pouvez-vous me rappeler votre nom ?', $blocked['answer']);
+        $this->assertStringContainsString('référence sans commande correspondante : FACADE', Http::recorded()[2][0]->data()['messages'][2]['content']);
+    }
+
+    public function test_reference_of_another_conversation_order_is_blocked(): void
+    {
+        $otherConversation = (string) Str::uuid();
+        DB::table('conversations')->insert(['id' => $otherConversation, 'business_id' => $this->business->id, 'customer_phone' => '22670000009']);
+        $foreign = $this->makeOrder('new', ['conversation_id' => $otherConversation]);
+
+        Http::fake(['api.anthropic.com/*' => Http::sequence()
+            ->push($this->textResponse("Votre commande {$foreign->reference()} est confirmée."))
+            ->push($this->textResponse('Pouvez-vous me rappeler votre nom ?')),
+        ]);
+
+        $result = $this->service()->answer($this->business, 'Où en est ma commande ?', $this->conversationId);
+
+        $this->assertSame('Pouvez-vous me rappeler votre nom ?', $result['answer']);
+        Http::assertSentCount(2);
+    }
+
+    public function test_recap_questions_and_future_tense_are_not_treated_as_claims(): void
+    {
+        Http::fake(['api.anthropic.com/*' => Http::response($this->textResponse(
+            "Voici le récapitulatif de votre commande :\n2 × Pagne wax : 15 000 FCFA\nVotre commande sera enregistrée après votre confirmation. Je confirme la commande ?"
+        ))]);
+
+        $result = $this->service()->answer($this->business, 'Je veux 2 pagnes wax', $this->conversationId);
+
+        $this->assertFalse($result['should_escalate']);
+        Http::assertSentCount(1);
+    }
+
+    public function test_history_marks_real_and_invented_confirmations(): void
+    {
+        $real = $this->makeOrder('confirmed');
+        foreach ([
+            ['inbound', 'Oui', null],
+            ['outbound', "Votre commande est enregistrée ! Référence : {$real->reference()}", null],
+            ['inbound', 'Oui', null],
+            ['outbound', 'Votre commande est enregistrée ! Référence : 871087', null],
+            ['inbound', 'Je veux aussi un sac', null],
+            ['outbound', 'Commande enregistrée ✅', json_encode(['orders' => [['id' => 'x', 'reference' => 'ABC123']]])],
+        ] as $index => [$direction, $content, $metadata]) {
+            DB::table('messages')->insert([
+                'id' => (string) Str::uuid(),
+                'conversation_id' => $this->conversationId,
+                'direction' => $direction,
+                'content' => $content,
+                'metadata' => $metadata,
+                'created_at' => now()->subMinutes(20 - $index),
+                'updated_at' => now()->subMinutes(20 - $index),
+            ]);
+        }
+        Http::fake(['api.anthropic.com/*' => Http::response($this->textResponse('Avec plaisir !'))]);
+
+        $this->service()->answer($this->business, 'Merci, et pour la livraison ?', $this->conversationId);
+
+        $messages = Http::recorded()[0][0]->data()['messages'];
+        $this->assertStringEndsWith("[Note système : commande {$real->reference()} réellement enregistrée par l'outil create_order.]", $messages[1]['content']);
+        $this->assertStringEndsWith("[Note système : aucune commande n'a été enregistrée pour ce message ; la référence 871087 n'existe pas. Ne t'en sers pas comme modèle.]", $messages[3]['content']);
+        $this->assertStringEndsWith("[Note système : commande ABC123 réellement enregistrée par l'outil create_order.]", $messages[5]['content']);
+    }
+
+    public function test_system_notes_never_reach_the_customer(): void
+    {
+        Http::fake(['api.anthropic.com/*' => Http::response($this->textResponse(
+            "Avec plaisir !\n[Note système : aucune commande n'a été enregistrée pour ce message.]"
+        ))]);
+
+        $result = $this->service()->answer($this->business, 'Merci pour les infos sur le pagne', $this->conversationId);
+
+        $this->assertSame('Avec plaisir !', $result['answer']);
+    }
+
+    public function test_prompt_covers_pending_recaps_and_delivery_to_documented_cities(): void
+    {
+        Http::fake(['api.anthropic.com/*' => Http::response($this->textResponse('Très bien.'))]);
+
+        $this->service()->answer($this->business, 'Je veux un pagne wax à Bobo', $this->conversationId);
+        $system = Http::recorded()[0][0]->data()['system'];
+
+        $this->assertStringContainsString('ajouter cela à sa commande en cours ou remplacer sa commande', $system);
+        $this->assertStringContainsString("traite la commande comme une livraison (delivery) vers cette ville", $system);
+        $this->assertStringContainsString('ne réutilise jamais celle d\'une commande précédente', $system);
+
+        // Avec l'expédition activée, la consigne de repli n'a plus lieu d'être.
+        $this->business->update(['shipping_enabled' => true]);
+        $this->service()->answer($this->business, 'Je veux un pagne wax à Bobo', $this->conversationId);
+
+        $this->assertStringNotContainsString('traite la commande comme une livraison (delivery) vers cette ville', Http::recorded()[1][0]->data()['system']);
     }
 
     /**

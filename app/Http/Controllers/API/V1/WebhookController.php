@@ -273,7 +273,7 @@ class WebhookController extends Controller
                     'metadata' => [
                         'context_used' => $result['context_used'],
                         'escalated' => true,
-                    ],
+                    ] + ($result['tool_trace'] ?? []),
                 ]);
             } else {
                 $sent = $whatsApp->sendMessage($incoming['from'], $result['answer']);
@@ -287,7 +287,7 @@ class WebhookController extends Controller
                     'whatsapp_message_id' => data_get($sent, 'messages.0.id'),
                     'metadata' => [
                         'context_used' => $result['context_used'],
-                    ],
+                    ] + ($result['tool_trace'] ?? []),
                 ]);
 
                 $inboundMessage->update(['status' => 'answered_by_ai']);
@@ -407,7 +407,7 @@ class WebhookController extends Controller
                 'direction' => 'outbound',
                 'content' => $result['answer'],
                 'sender_type' => 'ai',
-                'metadata' => ['confidence' => $result['confidence']],
+                'metadata' => ['confidence' => $result['confidence']] + ($result['tool_trace'] ?? []),
             ]);
         }
 
