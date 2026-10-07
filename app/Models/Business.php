@@ -117,6 +117,14 @@ class Business extends Model
     }
 
     /**
+     * @return HasMany<Order>
+     */
+    public function orders(): HasMany
+    {
+        return $this->hasMany(Order::class);
+    }
+
+    /**
      * @return HasMany<LearnedResponse>
      */
     public function learnedResponses(): HasMany

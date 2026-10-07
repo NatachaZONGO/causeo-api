@@ -3,33 +3,28 @@
 namespace App\Services\AI;
 
 use App\Models\Business;
+use App\Models\Conversation;
 use App\Services\Embedding\EmbeddingService;
-use GuzzleHttp\Client;
+use App\Services\OrderService;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use InvalidArgumentException;
 
 class AIResponseService
 {
-    private Client $client;
-
     private string $model;
 
     private const SIMILARITY_THRESHOLD = 0.5;
 
+    /** Nombre maximal d'allers-retours tool_use / tool_result par réponse. */
+    private const MAX_TOOL_ROUNDS = 3;
+
     public function __construct(
         private readonly EmbeddingService $embeddingService,
+        private readonly OrderService $orderService,
     ) {
-        $this->client = new Client([
-            'base_uri' => 'https://api.anthropic.com/v1/',
-            'headers' => [
-                'x-api-key' => config('services.anthropic.api_key'),
-                'anthropic-version' => '2023-06-01',
-                'Content-Type' => 'application/json',
-            ],
-            'verify' => config('services.curl_ca_bundle', true),
-        ]);
-
         $this->model = config('services.anthropic.model', 'claude-haiku-4-5-20251001');
     }
 
@@ -40,7 +35,9 @@ class AIResponseService
      */
     public function answer(Business $business, string $question, ?string $conversationId = null): array
     {
-        $simple = $this->handleSimpleMessage($business, $question);
+        $conversation = $conversationId !== null ? Conversation::find($conversationId) : null;
+
+        $simple = $this->handleSimpleMessage($business, $question, $this->hasRecentBotReply($conversationId));
         if ($simple !== null) {
             return $simple;
         }
@@ -84,6 +81,7 @@ class AIResponseService
                     ."Aucune information spécifique n'a été trouvée dans la base documentaire. "
                     ."Si le client fait de la conversation simple (salutation, remerciement, question générale sur l'entreprise), "
                     ."réponds naturellement et chaleureusement. "
+                    ."Les informations déjà données dans l'historique de cette conversation (par exemple un récapitulatif de commande) restent valables. "
                     ."Si le client pose une question technique ou spécifique sur un produit / service / prix / horaire "
                     ."que tu ne connais pas, ne confirme rien et n'infirme rien : réponds par un message d'attente court, "
                     ."par exemple « Je vérifie ça et je reviens vers vous très vite 😊 », sans mentionner d'équipe, "
@@ -105,18 +103,36 @@ class AIResponseService
                 $messages[] = ['role' => 'user', 'content' => $userMessage];
             }
 
-            $response = $this->client->post('messages', [
-                'json' => [
-                    'model' => $this->model,
-                    'max_tokens' => 1024,
-                    'system' => $systemPrompt,
-                    'messages' => $messages,
-                ],
-            ]);
+            // La prise de commande n'est possible que dans une vraie conversation client.
+            $tools = [];
+            if ($conversation !== null) {
+                $systemPrompt .= "\n\n".$this->orderInstructions();
+                $tools = [$this->createOrderTool()];
+            }
 
-            $payload = json_decode((string) $response->getBody(), true);
+            $request = [
+                'model' => $this->model,
+                'max_tokens' => 1024,
+                'system' => $systemPrompt,
+                'messages' => $messages,
+            ];
+            if ($tools !== []) {
+                $request['tools'] = $tools;
+            }
 
-            $text = trim($payload['content'][0]['text'] ?? '');
+            $payload = $this->callClaude($request);
+
+            for ($round = 0; ($payload['stop_reason'] ?? null) === 'tool_use' && $round < self::MAX_TOOL_ROUNDS; $round++) {
+                $request['messages'][] = ['role' => 'assistant', 'content' => $payload['content']];
+                $request['messages'][] = [
+                    'role' => 'user',
+                    'content' => $this->runTools($payload['content'], $business, $conversation),
+                ];
+
+                $payload = $this->callClaude($request);
+            }
+
+            $text = $this->extractText($payload);
 
             // Extrait puis retire la ligne technique MEDIA:id1,id2 de la réponse.
             $mediaIds = [];
@@ -171,6 +187,153 @@ class AIResponseService
                 'media_ids' => [],
             ];
         }
+    }
+
+    /**
+     * Appeler l'API Messages d'Anthropic et renvoyer la réponse décodée.
+     *
+     * @param  array<string, mixed>  $request
+     * @return array<string, mixed>
+     */
+    private function callClaude(array $request): array
+    {
+        return Http::withHeaders([
+            'x-api-key' => config('services.anthropic.api_key'),
+            'anthropic-version' => '2023-06-01',
+        ])
+            ->withOptions(['verify' => config('services.curl_ca_bundle', true)])
+            ->timeout(60)
+            ->post('https://api.anthropic.com/v1/messages', $request)
+            ->throw()
+            ->json();
+    }
+
+    /**
+     * Concaténer les blocs de texte d'une réponse (une réponse avec outils peut
+     * contenir plusieurs blocs, et pas forcément un texte en premier).
+     *
+     * @param  array<string, mixed>  $payload
+     */
+    private function extractText(array $payload): string
+    {
+        return trim(collect($payload['content'] ?? [])
+            ->where('type', 'text')
+            ->pluck('text')
+            ->implode("\n\n"));
+    }
+
+    /**
+     * Exécuter les appels d'outils d'une réponse et produire les tool_result,
+     * tous dans un même message utilisateur.
+     *
+     * @param  array<int, array<string, mixed>>  $content
+     * @return array<int, array<string, mixed>>
+     */
+    private function runTools(array $content, Business $business, ?Conversation $conversation): array
+    {
+        $results = [];
+
+        foreach ($content as $block) {
+            if (($block['type'] ?? null) !== 'tool_use') {
+                continue;
+            }
+
+            $result = ['type' => 'tool_result', 'tool_use_id' => $block['id']];
+
+            if ($block['name'] !== 'create_order' || $conversation === null) {
+                $results[] = $result + ['content' => "Outil inconnu : {$block['name']}.", 'is_error' => true];
+
+                continue;
+            }
+
+            try {
+                $order = $this->orderService->createFromAi($business, $conversation, (array) ($block['input'] ?? []));
+
+                $results[] = $result + ['content' => json_encode([
+                    'status' => 'commande enregistrée',
+                    'reference' => $order->reference(),
+                    'total_amount' => $order->total_amount,
+                    'currency' => 'FCFA',
+                    'items' => $order->items,
+                ], JSON_UNESCAPED_UNICODE)];
+            } catch (InvalidArgumentException $e) {
+                $results[] = $result + ['content' => $e->getMessage(), 'is_error' => true];
+            }
+        }
+
+        return $results;
+    }
+
+    /**
+     * Définition de l'outil create_order.
+     *
+     * @return array<string, mixed>
+     */
+    private function createOrderTool(): array
+    {
+        return [
+            'name' => 'create_order',
+            'description' => "Enregistre la commande du client. À appeler une seule fois, et uniquement après que le client a "
+                ."répondu clairement « oui » au récapitulatif complet (articles, quantités, prix unitaires, total, livraison, paiement). "
+                .'Les prix unitaires doivent provenir du contexte ; le total est recalculé par le serveur.',
+            'input_schema' => [
+                'type' => 'object',
+                'properties' => [
+                    'items' => [
+                        'type' => 'array',
+                        'description' => 'Articles commandés, y compris une ligne « Frais de livraison » si le contexte en indique.',
+                        'items' => [
+                            'type' => 'object',
+                            'properties' => [
+                                'name' => ['type' => 'string', 'description' => 'Nom de l\'article tel qu\'il figure dans le contexte.'],
+                                'options' => ['type' => 'string', 'description' => 'Options choisies (taille, couleur…), vide si aucune.'],
+                                'quantity' => ['type' => 'integer', 'minimum' => 1],
+                                'unit_price' => ['type' => 'number', 'minimum' => 0, 'description' => 'Prix unitaire en FCFA, tel qu\'indiqué dans le contexte.'],
+                            ],
+                            'required' => ['name', 'quantity', 'unit_price'],
+                        ],
+                    ],
+                    'customer_name' => ['type' => 'string', 'description' => 'Nom du client.'],
+                    'delivery_city' => ['type' => 'string', 'description' => 'Ville de livraison (ou ville de la boutique en cas de retrait).'],
+                    'delivery_address' => ['type' => 'string', 'description' => 'Adresse ou quartier de livraison, ou « Retrait en boutique ».'],
+                    'payment_method' => ['type' => 'string', 'description' => 'Mode de paiement choisi parmi ceux indiqués dans le contexte.'],
+                    'notes' => ['type' => 'string', 'description' => 'Précisions utiles du client, facultatif.'],
+                ],
+                'required' => ['items', 'customer_name', 'delivery_city', 'delivery_address', 'payment_method'],
+            ],
+        ];
+    }
+
+    /**
+     * Règles de prise de commande ajoutées au prompt quand l'outil est disponible.
+     */
+    private function orderInstructions(): string
+    {
+        return <<<'PROMPT'
+# Prise de commande
+Tu peux enregistrer une commande avec l'outil create_order. Procède ainsi :
+1. Collecte les informations manquantes, sans redemander ce que le client a déjà donné : les articles (nom, options comme la taille ou la couleur si elles existent, quantité), le nom du client, la ville et l'adresse de livraison (ou « Retrait en boutique »), et le mode de paiement. Ne propose que des articles, options, villes de livraison et modes de paiement présents dans le contexte ; sinon, applique la règle d'escalade.
+2. Utilise uniquement les prix du contexte, ou ceux d'un récapitulatif déjà fait dans cette conversation. N'invente JAMAIS un prix absent : dans ce cas, n'enregistre pas la commande et applique la règle d'escalade. Si le contexte indique des frais de livraison pour la ville du client, ajoute-les comme une ligne « Frais de livraison » (quantité 1).
+3. Fais un récapitulatif clair : chaque article avec sa quantité et son prix unitaire, le total (somme des quantités × prix unitaires), la livraison et le paiement. Termine en demandant une confirmation explicite, par exemple « Je confirme la commande ? ».
+4. N'appelle create_order qu'après un « oui » clair du client à ce récapitulatif. Si le client modifie quelque chose, refais le récapitulatif et redemande confirmation. N'appelle jamais l'outil deux fois pour la même commande.
+5. Une fois l'outil exécuté, confirme la commande au client avec la référence et le total renvoyés par l'outil. N'annonce jamais une commande comme enregistrée si l'outil ne l'a pas confirmé ; s'il renvoie une erreur, demande au client l'information manquante.
+PROMPT;
+    }
+
+    /**
+     * Indiquer si le bot a déjà répondu dans cette conversation au cours des dernières 24 h.
+     */
+    private function hasRecentBotReply(?string $conversationId): bool
+    {
+        if ($conversationId === null) {
+            return false;
+        }
+
+        return DB::table('messages')
+            ->where('conversation_id', $conversationId)
+            ->where('direction', 'outbound')
+            ->where('created_at', '>=', now()->subDay())
+            ->exists();
     }
 
     /**
@@ -347,7 +510,7 @@ class AIResponseService
      *
      * @return array{answer: ?string, confidence: float, should_escalate: bool, context_used: array<int, mixed>}|null
      */
-    private function handleSimpleMessage(Business $business, string $question): ?array
+    private function handleSimpleMessage(Business $business, string $question, bool $inConversation = false): ?array
     {
         $normalized = $this->normalize($question);
 
@@ -454,7 +617,9 @@ class AIResponseService
             return $this->simpleResponse($this->pickRandom($variants));
         }
 
-        if ($isAffirmation) {
+        // Après une réponse du bot, un « oui » / « ok » répond à sa question
+        // (par exemple la confirmation d'une commande) : on laisse l'IA le traiter.
+        if ($isAffirmation && ! $inConversation) {
             $variants = [
                 'Très bien ! Comment puis-je vous aider davantage ?',
                 "Parfait 👍 Que puis-je faire d'autre pour vous ?",

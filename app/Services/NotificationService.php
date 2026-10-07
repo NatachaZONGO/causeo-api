@@ -4,6 +4,7 @@ namespace App\Services;
 
 use App\Models\Escalation;
 use App\Models\Notification;
+use App\Models\Order;
 use Illuminate\Support\Facades\Log;
 use Throwable;
 
@@ -58,6 +59,42 @@ class NotificationService
             // Une notification manquée ne doit pas bloquer l'escalade elle-même.
             Log::error('NotificationService::notifyEscalation a échoué', [
                 'escalation_id' => $escalation->id,
+                'message' => $e->getMessage(),
+            ]);
+        }
+    }
+
+    /**
+     * Notifier le gérant d'une nouvelle commande.
+     */
+    public function notifyOrder(Order $order): void
+    {
+        try {
+            $customer = $order->customer_name ?: $order->customer_phone;
+
+            $lines = array_map(
+                fn (array $item) => "{$item['quantity']} × {$item['name']}".(! empty($item['options']) ? " ({$item['options']})" : ''),
+                $order->items,
+            );
+
+            $body = implode(', ', $lines)
+                .' — total '.number_format($order->total_amount, 0, ',', ' ').' FCFA'
+                .($order->delivery_city ? ", livraison {$order->delivery_city}" : '');
+
+            Notification::create([
+                'business_id' => $order->business_id,
+                'type' => 'order',
+                'title' => "Nouvelle commande de {$customer}",
+                'body' => $body,
+                'data' => [
+                    'conversation_id' => $order->conversation_id,
+                    'order_id' => $order->id,
+                ],
+            ]);
+        } catch (Throwable $e) {
+            // Une notification manquée ne doit pas annuler la commande.
+            Log::error('NotificationService::notifyOrder a échoué', [
+                'order_id' => $order->id,
                 'message' => $e->getMessage(),
             ]);
         }

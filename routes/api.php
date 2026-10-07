@@ -5,6 +5,7 @@ use App\Http\Controllers\API\V1\AuthController;
 use App\Http\Controllers\API\V1\ConversationController;
 use App\Http\Controllers\API\V1\NotificationController;
 use App\Http\Controllers\API\V1\OnboardingController;
+use App\Http\Controllers\API\V1\OrderController;
 use App\Http\Controllers\API\V1\WhatsAppSetupController;
 use App\Models\BusinessTemplate;
 use Illuminate\Support\Facades\Route;
@@ -55,6 +56,10 @@ Route::prefix('v1')->middleware('auth:sanctum')->group(function () {
     Route::get('businesses/{business}/notifications', [NotificationController::class, 'index']);
     Route::post('businesses/{business}/notifications/read-all', [NotificationController::class, 'readAll']);
     Route::post('notifications/{notification}/read', [NotificationController::class, 'read']);
+
+    Route::get('businesses/{business}/orders', [OrderController::class, 'index']);
+    Route::get('orders/{order}', [OrderController::class, 'show']);
+    Route::patch('orders/{order}/status', [OrderController::class, 'updateStatus']);
 
     Route::post('businesses/{business}/whatsapp/connect', [WhatsAppSetupController::class, 'exchangeToken']);
     Route::post('businesses/{business}/whatsapp/request', [WhatsAppSetupController::class, 'requestActivation']);
