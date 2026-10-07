@@ -85,8 +85,9 @@ class AIResponseService
                     ."Si le client fait de la conversation simple (salutation, remerciement, question générale sur l'entreprise), "
                     ."réponds naturellement et chaleureusement. "
                     ."Si le client pose une question technique ou spécifique sur un produit / service / prix / horaire "
-                    ."que tu ne connais pas, réponds naturellement que tu vas te renseigner puis ajoute JE_NE_SAIS_PAS "
-                    .'sur la dernière ligne.';
+                    ."que tu ne connais pas, ne confirme rien et n'infirme rien : réponds par un message d'attente court, "
+                    ."par exemple « Je vérifie ça et je reviens vers vous très vite 😊 », sans mentionner d'équipe, "
+                    ."de responsable ni de transmission, puis ajoute JE_NE_SAIS_PAS seul sur la dernière ligne.";
 
                 $userMessage = $question;
             }
@@ -663,7 +664,7 @@ class AIResponseService
     {
         $type = $business->type instanceof \BackedEnum ? $business->type->value : $business->type;
 
-        $identite = "Tu fais partie de l'équipe de *{$business->name}*";
+        $identite = "Tu réponds aux clients de *{$business->name}*";
         if (! empty($type)) {
             $identite .= " ({$type})";
         }

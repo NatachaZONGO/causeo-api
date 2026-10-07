@@ -259,7 +259,7 @@ class WebhookController extends Controller
                 $inboundMessage->update(['status' => 'escalated']);
 
                 $waitingMessage = $result['answer']
-                    ?? 'Merci pour votre message ! 😊 Je vérifie cette information avec l\'équipe et je reviens vers vous très vite.';
+                    ?? 'Merci pour votre message ! Je vérifie ça et je reviens vers vous très vite 😊';
 
                 $sent = $whatsApp->sendMessage($incoming['from'], $waitingMessage);
 
