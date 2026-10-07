@@ -416,6 +416,7 @@ class WebhookController extends Controller
             Escalation::create([
                 'conversation_id' => $conversation->id,
                 'message_id' => $message->id,
+                'business_id' => $business->id,
                 'customer_question' => $data['text'],
                 'status' => 'pending',
             ]);
