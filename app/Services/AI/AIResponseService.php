@@ -116,9 +116,9 @@ class AIResponseService
             }
 
             // La prise de commande n'est possible que dans une vraie conversation client,
-            // et seulement si la boutique propose au moins un mode de remise.
+            // avec le module Commandes actif et au moins un mode de remise proposé.
             $tools = [];
-            if ($conversation !== null && $business->enabledFulfillmentTypes() !== []) {
+            if ($conversation !== null && $business->hasModule('orders') && $business->enabledFulfillmentTypes() !== []) {
                 $systemPrompt .= "\n\n".$this->orderInstructions($business);
                 $tools = [$this->createOrderTool($business)];
             }

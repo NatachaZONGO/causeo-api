@@ -14,6 +14,18 @@ class Business extends Model
 {
     use HasFactory, HasUuids;
 
+    /** Modules activables par entreprise. */
+    public const MODULES = ['orders'];
+
+    /**
+     * Valeurs par défaut avant enregistrement : aucun module tant qu'on ne l'a pas choisi.
+     *
+     * @var array<string, mixed>
+     */
+    protected $attributes = [
+        'modules' => '[]',
+    ];
+
     /**
      * The attributes that are mass assignable.
      *
@@ -43,6 +55,7 @@ class Business extends Model
         'delivery_enabled',
         'pickup_enabled',
         'shipping_enabled',
+        'modules',
     ];
 
     /**
@@ -71,7 +84,30 @@ class Business extends Model
             'delivery_enabled' => 'boolean',
             'pickup_enabled' => 'boolean',
             'shipping_enabled' => 'boolean',
+            'modules' => 'array',
         ];
+    }
+
+    /**
+     * Indiquer si un module (voir MODULES) est actif pour cette entreprise.
+     */
+    public function hasModule(string $module): bool
+    {
+        return in_array($module, $this->modules ?? [], true);
+    }
+
+    /**
+     * Modules par défaut d'un type d'entreprise, repris du template de même type.
+     *
+     * @return list<string>
+     */
+    public static function defaultModulesFor(?string $type): array
+    {
+        if ($type === null) {
+            return [];
+        }
+
+        return BusinessTemplate::query()->where('type', $type)->value('default_modules') ?? [];
     }
 
     /**

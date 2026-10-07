@@ -24,6 +24,7 @@ class BusinessTemplate extends Model
         'default_greeting',
         'default_ai_instructions',
         'sample_faq',
+        'default_modules',
         'is_active',
         'sort_order',
     ];
@@ -37,6 +38,7 @@ class BusinessTemplate extends Model
     {
         return [
             'sample_faq' => 'array',
+            'default_modules' => 'array',
             'is_active' => 'boolean',
         ];
     }

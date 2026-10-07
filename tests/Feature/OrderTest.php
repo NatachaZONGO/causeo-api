@@ -70,11 +70,17 @@ class OrderTest extends TestCase
         (require base_path('database/migrations/2026_10_07_100000_create_notifications_table.php'))->up();
         (require base_path('database/migrations/2026_10_07_110000_create_orders_table.php'))->up();
         (require base_path('database/migrations/2026_10_07_120000_add_fulfillment_options.php'))->up();
+        Schema::create('business_templates', function (Blueprint $table) {
+            $table->uuid('id')->primary();
+            $table->string('slug');
+            $table->string('type');
+        });
+        (require base_path('database/migrations/2026_10_08_100000_add_modules_to_businesses.php'))->up();
 
         $this->owner = User::forceCreate(['name' => 'Gérant', 'email' => 'owner@example.test', 'password' => 'x']);
 
         $businessId = (string) Str::uuid();
-        DB::table('businesses')->insert(['id' => $businessId, 'user_id' => $this->owner->id, 'name' => 'Joyce Boutique']);
+        DB::table('businesses')->insert(['id' => $businessId, 'user_id' => $this->owner->id, 'name' => 'Joyce Boutique', 'modules' => '["orders"]']);
         $this->business = Business::findOrFail($businessId);
 
         $this->conversationId = (string) Str::uuid();
@@ -281,6 +287,36 @@ class OrderTest extends TestCase
         $this->patchJson("/api/v1/orders/{$order->id}/status", ['status' => 'shipped'])->assertUnprocessable();
         $this->patchJson("/api/v1/orders/{$order->id}/status", [])->assertUnprocessable();
         $this->assertSame('confirmed', $order->fresh()->status);
+    }
+
+    public function test_orders_endpoints_are_forbidden_without_the_orders_module(): void
+    {
+        $order = $this->makeOrder('new');
+        $this->business->update(['modules' => []]);
+
+        Sanctum::actingAs($this->owner);
+
+        $this->getJson("/api/v1/businesses/{$this->business->id}/orders")
+            ->assertForbidden()
+            ->assertJsonPath('message', "Le module Commandes n'est pas activé pour cette entreprise.");
+        $this->getJson("/api/v1/orders/{$order->id}")->assertForbidden();
+        $this->patchJson("/api/v1/orders/{$order->id}/status", ['status' => 'cancelled'])->assertForbidden();
+
+        $this->assertSame('new', $order->fresh()->status);
+    }
+
+    public function test_order_tool_and_prompt_are_not_offered_without_the_orders_module(): void
+    {
+        $this->seedRecapConversation();
+        $this->business->update(['modules' => []]);
+        Http::fake(['api.anthropic.com/*' => Http::response($this->textResponse('Je vérifie ça et je reviens vers vous très vite 😊'))]);
+
+        $this->service()->answer($this->business, 'oui', $this->conversationId);
+
+        $request = Http::recorded()[0][0]->data();
+        $this->assertArrayNotHasKey('tools', $request);
+        $this->assertStringNotContainsString('# Prise de commande', $request['system']);
+        $this->assertSame(0, Order::count());
     }
 
     public function test_other_users_cannot_access_orders(): void

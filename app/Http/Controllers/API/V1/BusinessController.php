@@ -32,6 +32,9 @@ class BusinessController extends Controller
         $data = $request->validate($this->rules(), $this->messages());
 
         $data['country'] = $data['country'] ?? 'BF';
+        $data['modules'] = array_key_exists('modules', $data)
+            ? $this->normalizeModules($data['modules'])
+            : Business::defaultModulesFor($data['type']);
 
         $business = auth()->user()->businesses()->create($data);
 
@@ -67,6 +70,10 @@ class BusinessController extends Controller
         $this->checkOwnership($business);
 
         $data = $request->validate($this->rules(nullable: true), $this->messages());
+
+        if (array_key_exists('modules', $data)) {
+            $data['modules'] = $this->normalizeModules($data['modules']);
+        }
 
         $business->update($data);
 
@@ -120,7 +127,20 @@ class BusinessController extends Controller
             'delivery_enabled' => ['sometimes', 'boolean'],
             'pickup_enabled' => ['sometimes', 'boolean'],
             'shipping_enabled' => ['sometimes', 'boolean'],
+            'modules' => ['sometimes', 'array'],
+            'modules.*' => ['string', Rule::in(Business::MODULES)],
         ];
+    }
+
+    /**
+     * Dédoublonner la liste des modules en gardant l'ordre de Business::MODULES.
+     *
+     * @param  array<int, string>|null  $modules
+     * @return list<string>
+     */
+    private function normalizeModules(?array $modules): array
+    {
+        return array_values(array_intersect(Business::MODULES, $modules ?? []));
     }
 
     /**
@@ -146,6 +166,9 @@ class BusinessController extends Controller
             'delivery_enabled.boolean' => 'La livraison doit être activée ou désactivée (vrai ou faux).',
             'pickup_enabled.boolean' => 'Le retrait en boutique doit être activé ou désactivé (vrai ou faux).',
             'shipping_enabled.boolean' => 'L\'expédition doit être activée ou désactivée (vrai ou faux).',
+            'modules.array' => 'Les modules doivent être une liste.',
+            'modules.*.string' => 'Chaque module doit être une chaîne de caractères.',
+            'modules.*.in' => 'Module inconnu. Modules disponibles : '.implode(', ', Business::MODULES).'.',
         ];
     }
 }

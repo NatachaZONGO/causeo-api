@@ -26,6 +26,7 @@ class BusinessTemplateSeeder extends Seeder
                     ['question' => 'Faites-vous la livraison ?', 'answer' => 'Oui, nous livrons dans un rayon de 5 km. Commande minimum 2000 FCFA.'],
                     ['question' => 'Peut-on réserver une table ?', 'answer' => 'Bien sûr ! Précisez le nombre de personnes, la date et l\'heure souhaitées.'],
                 ],
+                'default_modules' => ['orders'],
                 'sort_order' => 1,
             ],
             [
@@ -41,6 +42,7 @@ class BusinessTemplateSeeder extends Seeder
                     ['question' => 'Faites-vous des retouches ?', 'answer' => 'Oui, nous proposons un service de retouche sur place.'],
                     ['question' => 'Avez-vous un service de livraison ?', 'answer' => 'Oui, nous livrons à domicile. Contactez-nous pour les détails.'],
                 ],
+                'default_modules' => ['orders'],
                 'sort_order' => 2,
             ],
             [
@@ -56,6 +58,7 @@ class BusinessTemplateSeeder extends Seeder
                     ['question' => 'Combien coûte un shooting ?', 'answer' => 'Nos tarifs varient selon le type de shooting. Contactez-nous pour un devis personnalisé.'],
                     ['question' => 'Comment réserver une séance ?', 'answer' => 'Choisissez une date et un créneau, nous confirmerons la disponibilité.'],
                 ],
+                'default_modules' => [],
                 'sort_order' => 3,
             ],
             [
@@ -71,6 +74,7 @@ class BusinessTemplateSeeder extends Seeder
                     ['question' => 'Prenez-vous sur rendez-vous ?', 'answer' => 'Oui, sur rendez-vous ou sans rendez-vous selon la disponibilité.'],
                     ['question' => 'Quels sont vos tarifs ?', 'answer' => 'Nos tarifs varient selon la prestation. N\'hésitez pas à nous demander.'],
                 ],
+                'default_modules' => [],
                 'sort_order' => 4,
             ],
             [
@@ -86,6 +90,7 @@ class BusinessTemplateSeeder extends Seeder
                     ['question' => 'Comment prendre rendez-vous ?', 'answer' => 'Appelez-nous ou envoyez un message avec la date et l\'heure souhaitées.'],
                     ['question' => 'Quelles spécialités proposez-vous ?', 'answer' => 'Médecine générale, pédiatrie et consultations spécialisées.'],
                 ],
+                'default_modules' => [],
                 'sort_order' => 5,
             ],
             [
@@ -101,6 +106,7 @@ class BusinessTemplateSeeder extends Seeder
                     ['question' => 'Comment obtenir un devis ?', 'answer' => 'Décrivez votre projet et nous vous enverrons un devis sous 24h.'],
                     ['question' => 'Quels sont vos délais ?', 'answer' => 'Les délais dépendent du projet. Nous vous informerons dès la validation du devis.'],
                 ],
+                'default_modules' => [],
                 'sort_order' => 6,
             ],
             [
@@ -116,6 +122,7 @@ class BusinessTemplateSeeder extends Seeder
                     ['question' => 'Intervenez-vous le week-end ?', 'answer' => 'Oui, nous intervenons 7j/7 selon vos besoins.'],
                     ['question' => 'Comment obtenir un devis ?', 'answer' => 'Décrivez la surface et le type de nettoyage souhaité, nous vous ferons un devis gratuit.'],
                 ],
+                'default_modules' => [],
                 'sort_order' => 7,
             ],
             [
@@ -131,6 +138,7 @@ class BusinessTemplateSeeder extends Seeder
                     ['question' => 'Combien coûte le community management ?', 'answer' => 'Nos forfaits démarrent à partir de 50 000 FCFA/mois. Contactez-nous pour un devis adapté.'],
                     ['question' => 'Travaillez-vous avec les petites entreprises ?', 'answer' => 'Absolument ! Nous avons des offres adaptées à chaque budget.'],
                 ],
+                'default_modules' => [],
                 'sort_order' => 8,
             ],
             [
@@ -146,6 +154,7 @@ class BusinessTemplateSeeder extends Seeder
                     ['question' => 'Les formations sont-elles certifiantes ?', 'answer' => 'Oui, la plupart de nos formations délivrent une attestation ou un certificat.'],
                     ['question' => 'Peut-on suivre les formations en ligne ?', 'answer' => 'Certaines formations sont disponibles en présentiel et en ligne.'],
                 ],
+                'default_modules' => [],
                 'sort_order' => 9,
             ],
             [
@@ -157,6 +166,7 @@ class BusinessTemplateSeeder extends Seeder
                 'default_greeting' => 'Bienvenue chez {nom} ! Comment puis-je vous aider ?',
                 'default_ai_instructions' => 'Tu es l\'assistant de {nom}. Réponds aux questions des clients de manière professionnelle et chaleureuse.',
                 'sample_faq' => [],
+                'default_modules' => [],
                 'sort_order' => 10,
             ],
         ];

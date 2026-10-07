@@ -56,6 +56,7 @@ class OnboardingController extends Controller
             'country' => $user->country,
             'plan' => 'free',
             'is_active' => true,
+            'modules' => $template->default_modules ?? [],
         ]);
 
         if (! empty($template->sample_faq)) {

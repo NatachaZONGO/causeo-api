@@ -20,6 +20,7 @@ class OrderController extends Controller
     public function index(Request $request, Business $business): JsonResponse
     {
         $this->checkOwnership($business);
+        $this->checkOrdersModule($business);
 
         $data = $request->validate([
             'status' => ['nullable', Rule::in(Order::STATUSES)],
@@ -49,6 +50,7 @@ class OrderController extends Controller
         $order->loadMissing('business');
 
         $this->checkOwnership($order->business);
+        $this->checkOrdersModule($order->business);
 
         return response()->json([
             'order' => $order,
@@ -63,6 +65,7 @@ class OrderController extends Controller
         $order->loadMissing('business');
 
         $this->checkOwnership($order->business);
+        $this->checkOrdersModule($order->business);
 
         $data = $request->validate([
             'status' => ['required', Rule::in(Order::STATUSES)],
@@ -102,6 +105,14 @@ class OrderController extends Controller
                 ->orWhereRaw("LOWER(orders.delivery_city) {$like}", [$pattern])
                 ->orWhereRaw($itemNames, [$pattern]);
         });
+    }
+
+    /**
+     * Refuser l'accès aux commandes si le module n'est pas activé pour l'entreprise.
+     */
+    private function checkOrdersModule(Business $business): void
+    {
+        abort_unless($business->hasModule('orders'), 403, "Le module Commandes n'est pas activé pour cette entreprise.");
     }
 
     /**
