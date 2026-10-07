@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Services\NotificationService;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
@@ -25,6 +26,16 @@ class Escalation extends Model
         'status',
         'answered_at',
     ];
+
+    /**
+     * Notifier le gérant à chaque nouvelle escalade.
+     */
+    protected static function booted(): void
+    {
+        static::created(function (Escalation $escalation): void {
+            app(NotificationService::class)->notifyEscalation($escalation);
+        });
+    }
 
     /**
      * Get the attributes that should be cast.

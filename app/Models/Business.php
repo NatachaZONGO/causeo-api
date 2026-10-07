@@ -109,6 +109,14 @@ class Business extends Model
     }
 
     /**
+     * @return HasMany<Notification>
+     */
+    public function notifications(): HasMany
+    {
+        return $this->hasMany(Notification::class);
+    }
+
+    /**
      * @return HasMany<LearnedResponse>
      */
     public function learnedResponses(): HasMany
