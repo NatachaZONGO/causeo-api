@@ -145,7 +145,7 @@ class AIResponseService
                 Log::warning('AIResponseService: confirmation de commande non vérifiée bloquée', [
                     'conversation_id' => $conversationId,
                     'reason' => $violation,
-                    'text' => $text,
+                    'text_length' => mb_strlen($text),
                 ]);
 
                 $request['messages'][] = ['role' => 'assistant', 'content' => $payload['content']];
@@ -159,7 +159,7 @@ class AIResponseService
                     Log::warning('AIResponseService: confirmation de commande non vérifiée bloquée deux fois, escalade', [
                         'conversation_id' => $conversationId,
                         'reason' => $violation,
-                        'text' => $text,
+                        'text_length' => mb_strlen($text),
                     ]);
 
                     $trace['blocked_claim'] = true;
@@ -478,11 +478,12 @@ class AIResponseService
 
                 $trace['orders'][] = ['id' => $order->id, 'reference' => $order->reference()];
 
+                // Pas de données client dans les logs : seulement les clés reçues.
                 Log::info('AIResponseService: create_order a enregistré une commande', [
+                    'business_id' => $business->id,
                     'conversation_id' => $conversation->id,
-                    'order_id' => $order->id,
                     'reference' => $order->reference(),
-                    'input' => $input,
+                    'fields' => array_keys($input),
                 ]);
 
                 $results[] = $result + ['content' => json_encode([
@@ -496,9 +497,10 @@ class AIResponseService
                 $trace['tool_errors'][] = $e->getMessage();
 
                 Log::info('AIResponseService: create_order refusé', [
+                    'business_id' => $business->id,
                     'conversation_id' => $conversation->id,
                     'error' => $e->getMessage(),
-                    'input' => $input,
+                    'fields' => array_keys($input),
                 ]);
 
                 $results[] = $result + ['content' => $e->getMessage(), 'is_error' => true];
