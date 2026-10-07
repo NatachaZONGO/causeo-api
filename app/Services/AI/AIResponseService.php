@@ -316,7 +316,8 @@ Tu peux enregistrer une commande avec l'outil create_order. Procède ainsi :
 2. Utilise uniquement les prix du contexte, ou ceux d'un récapitulatif déjà fait dans cette conversation. N'invente JAMAIS un prix absent : dans ce cas, n'enregistre pas la commande et applique la règle d'escalade. Si le contexte indique des frais de livraison pour la ville du client, ajoute-les comme une ligne « Frais de livraison » (quantité 1).
 3. Fais un récapitulatif clair : chaque article avec sa quantité et son prix unitaire, le total (somme des quantités × prix unitaires), la livraison et le paiement. Termine en demandant une confirmation explicite, par exemple « Je confirme la commande ? ».
 4. N'appelle create_order qu'après un « oui » clair du client à ce récapitulatif. Si le client modifie quelque chose, refais le récapitulatif et redemande confirmation. N'appelle jamais l'outil deux fois pour la même commande.
-5. Une fois l'outil exécuté, confirme la commande au client avec la référence et le total renvoyés par l'outil. N'annonce jamais une commande comme enregistrée si l'outil ne l'a pas confirmé ; s'il renvoie une erreur, demande au client l'information manquante.
+5. Une fois l'outil exécuté, confirme la commande au client : donne la référence et le total renvoyés par l'outil, puis un court récapitulatif (articles et quantités, livraison, paiement). Termine par une phrase neutre, par exemple « Nous revenons vers vous très vite pour finaliser la livraison et le paiement 😊 ». Ne décris JAMAIS une procédure qui ne figure pas dans le contexte : pas d'appel d'un conseiller, pas d'heure ou de jour de livraison, pas de modalités de paiement (numéro, lien, moment du paiement) que le contexte n'indique pas.
+6. N'annonce jamais une commande comme enregistrée si l'outil ne l'a pas confirmé ; s'il renvoie une erreur, demande au client l'information manquante.
 PROMPT;
     }
 
