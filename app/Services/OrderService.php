@@ -5,6 +5,7 @@ namespace App\Services;
 use App\Models\Business;
 use App\Models\Conversation;
 use App\Models\Order;
+use Illuminate\Support\Str;
 use InvalidArgumentException;
 
 class OrderService
@@ -26,15 +27,41 @@ class OrderService
     {
         $items = $this->normalizeItems($input['items'] ?? null);
 
+        $fulfillmentType = $this->string($input['fulfillment_type'] ?? null);
+        $enabled = $business->enabledFulfillmentTypes();
+
+        if ($fulfillmentType === null) {
+            throw new InvalidArgumentException('Mode de remise manquant (fulfillment_type). Demande au client comment il souhaite recevoir sa commande.');
+        }
+        if (! in_array($fulfillmentType, Order::FULFILLMENT_TYPES, true)) {
+            throw new InvalidArgumentException("Mode de remise inconnu : {$fulfillmentType}.");
+        }
+        if (! in_array($fulfillmentType, $enabled, true)) {
+            throw new InvalidArgumentException(
+                "Le mode de remise « {$fulfillmentType} » n'est pas proposé par la boutique. Modes disponibles : "
+                .($enabled === [] ? 'aucun' : implode(', ', $enabled)).'.'
+            );
+        }
+
+        $isPickup = $fulfillmentType === 'pickup';
+
+        if ($isPickup) {
+            foreach ($items as $item) {
+                if ($this->isDeliveryFee($item['name'])) {
+                    throw new InvalidArgumentException("Aucun frais de livraison ne doit être facturé pour un retrait en boutique : retire la ligne « {$item['name']} ».");
+                }
+            }
+        }
+
         $customerName = $this->string($input['customer_name'] ?? null) ?? $conversation->customer_name;
-        $deliveryCity = $this->string($input['delivery_city'] ?? null);
-        $deliveryAddress = $this->string($input['delivery_address'] ?? null);
+        $deliveryCity = $isPickup ? null : $this->string($input['delivery_city'] ?? null);
+        $deliveryAddress = $isPickup ? null : $this->string($input['delivery_address'] ?? null);
         $paymentMethod = $this->string($input['payment_method'] ?? null);
 
         $missing = array_keys(array_filter([
             'customer_name' => $customerName === null,
-            'delivery_city' => $deliveryCity === null,
-            'delivery_address' => $deliveryAddress === null,
+            'delivery_city' => ! $isPickup && $deliveryCity === null,
+            'delivery_address' => $fulfillmentType === 'delivery' && $deliveryAddress === null,
             'payment_method' => $paymentMethod === null,
         ]));
 
@@ -65,6 +92,8 @@ class OrderService
             'delivery_city' => $deliveryCity,
             'delivery_address' => $deliveryAddress,
             'payment_method' => $paymentMethod,
+            'fulfillment_type' => $fulfillmentType,
+            'pickup_time' => $isPickup ? $this->string($input['pickup_time'] ?? null) : null,
             'status' => 'new',
             'notes' => $this->string($input['notes'] ?? null),
         ]);
@@ -126,6 +155,17 @@ class OrderService
         }
 
         return $normalized;
+    }
+
+    /**
+     * Reconnaître une ligne de frais de livraison / d'expédition.
+     */
+    private function isDeliveryFee(string $name): bool
+    {
+        $normalized = Str::lower(Str::ascii($name));
+
+        return str_contains($normalized, 'livraison')
+            || (str_contains($normalized, 'frais') && preg_match('/\b(port|expedition|envoi|transport)\b/', $normalized) === 1);
     }
 
     private function string(mixed $value): ?string

@@ -13,6 +13,8 @@ class Order extends Model
 
     public const STATUSES = ['new', 'confirmed', 'paid', 'delivered', 'cancelled'];
 
+    public const FULFILLMENT_TYPES = ['delivery', 'pickup', 'shipping'];
+
     /**
      * The attributes that are mass assignable.
      *
@@ -28,6 +30,8 @@ class Order extends Model
         'delivery_city',
         'delivery_address',
         'payment_method',
+        'fulfillment_type',
+        'pickup_time',
         'status',
         'notes',
     ];

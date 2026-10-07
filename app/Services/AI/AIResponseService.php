@@ -21,6 +21,13 @@ class AIResponseService
     /** Nombre maximal d'allers-retours tool_use / tool_result par réponse. */
     private const MAX_TOOL_ROUNDS = 3;
 
+    /** Libellés des modes de remise, tels que présentés au client. */
+    private const FULFILLMENT_LABELS = [
+        'delivery' => 'livraison à domicile (delivery)',
+        'pickup' => 'retrait en boutique (pickup)',
+        'shipping' => 'expédition vers une autre ville (shipping)',
+    ];
+
     public function __construct(
         private readonly EmbeddingService $embeddingService,
         private readonly OrderService $orderService,
@@ -103,11 +110,12 @@ class AIResponseService
                 $messages[] = ['role' => 'user', 'content' => $userMessage];
             }
 
-            // La prise de commande n'est possible que dans une vraie conversation client.
+            // La prise de commande n'est possible que dans une vraie conversation client,
+            // et seulement si la boutique propose au moins un mode de remise.
             $tools = [];
-            if ($conversation !== null) {
-                $systemPrompt .= "\n\n".$this->orderInstructions();
-                $tools = [$this->createOrderTool()];
+            if ($conversation !== null && $business->enabledFulfillmentTypes() !== []) {
+                $systemPrompt .= "\n\n".$this->orderInstructions($business);
+                $tools = [$this->createOrderTool($business)];
             }
 
             $request = [
@@ -265,23 +273,23 @@ class AIResponseService
     }
 
     /**
-     * Définition de l'outil create_order.
+     * Définition de l'outil create_order, limitée aux modes de remise activés.
      *
      * @return array<string, mixed>
      */
-    private function createOrderTool(): array
+    private function createOrderTool(Business $business): array
     {
         return [
             'name' => 'create_order',
             'description' => "Enregistre la commande du client. À appeler une seule fois, et uniquement après que le client a "
-                ."répondu clairement « oui » au récapitulatif complet (articles, quantités, prix unitaires, total, livraison, paiement). "
+                ."répondu clairement « oui » au récapitulatif complet (articles, quantités, prix unitaires, total, mode de remise, paiement). "
                 .'Les prix unitaires doivent provenir du contexte ; le total est recalculé par le serveur.',
             'input_schema' => [
                 'type' => 'object',
                 'properties' => [
                     'items' => [
                         'type' => 'array',
-                        'description' => 'Articles commandés, y compris une ligne « Frais de livraison » si le contexte en indique.',
+                        'description' => 'Articles commandés, y compris une ligne « Frais de livraison » si le contexte en indique (jamais pour un retrait en boutique).',
                         'items' => [
                             'type' => 'object',
                             'properties' => [
@@ -293,13 +301,19 @@ class AIResponseService
                             'required' => ['name', 'quantity', 'unit_price'],
                         ],
                     ],
+                    'fulfillment_type' => [
+                        'type' => 'string',
+                        'enum' => $business->enabledFulfillmentTypes(),
+                        'description' => 'Mode de remise choisi par le client : delivery (livraison à domicile), pickup (retrait en boutique), shipping (expédition).',
+                    ],
                     'customer_name' => ['type' => 'string', 'description' => 'Nom du client.'],
-                    'delivery_city' => ['type' => 'string', 'description' => 'Ville de livraison (ou ville de la boutique en cas de retrait).'],
-                    'delivery_address' => ['type' => 'string', 'description' => 'Adresse ou quartier de livraison, ou « Retrait en boutique ».'],
+                    'delivery_city' => ['type' => 'string', 'description' => 'Ville de livraison ou d\'expédition. Obligatoire pour delivery et shipping, à omettre pour pickup.'],
+                    'delivery_address' => ['type' => 'string', 'description' => 'Adresse ou quartier de livraison. Obligatoire pour delivery, facultatif pour shipping, à omettre pour pickup.'],
+                    'pickup_time' => ['type' => 'string', 'description' => 'Pour un retrait : moment de passage indiqué par le client, s\'il l\'a précisé.'],
                     'payment_method' => ['type' => 'string', 'description' => 'Mode de paiement choisi parmi ceux indiqués dans le contexte.'],
                     'notes' => ['type' => 'string', 'description' => 'Précisions utiles du client, facultatif.'],
                 ],
-                'required' => ['items', 'customer_name', 'delivery_city', 'delivery_address', 'payment_method'],
+                'required' => ['items', 'fulfillment_type', 'customer_name', 'payment_method'],
             ],
         ];
     }
@@ -307,17 +321,26 @@ class AIResponseService
     /**
      * Règles de prise de commande ajoutées au prompt quand l'outil est disponible.
      */
-    private function orderInstructions(): string
+    private function orderInstructions(Business $business): string
     {
-        return <<<'PROMPT'
+        $modes = implode("\n", array_map(
+            fn (string $type) => '- '.self::FULFILLMENT_LABELS[$type],
+            $business->enabledFulfillmentTypes(),
+        ));
+
+        return <<<PROMPT
 # Prise de commande
+Modes de remise proposés par la boutique (n'en propose jamais d'autre) :
+{$modes}
+
 Tu peux enregistrer une commande avec l'outil create_order. Procède ainsi :
-1. Collecte les informations manquantes, sans redemander ce que le client a déjà donné : les articles (nom, options comme la taille ou la couleur si elles existent, quantité), le nom du client, la ville et l'adresse de livraison (ou « Retrait en boutique »), et le mode de paiement. Ne propose que des articles, options, villes de livraison et modes de paiement présents dans le contexte ; sinon, applique la règle d'escalade.
-2. Utilise uniquement les prix du contexte, ou ceux d'un récapitulatif déjà fait dans cette conversation. N'invente JAMAIS un prix absent : dans ce cas, n'enregistre pas la commande et applique la règle d'escalade. Si le contexte indique des frais de livraison pour la ville du client, ajoute-les comme une ligne « Frais de livraison » (quantité 1).
-3. Fais un récapitulatif clair : chaque article avec sa quantité et son prix unitaire, le total (somme des quantités × prix unitaires), la livraison et le paiement. Termine en demandant une confirmation explicite, par exemple « Je confirme la commande ? ».
-4. N'appelle create_order qu'après un « oui » clair du client à ce récapitulatif. Si le client modifie quelque chose, refais le récapitulatif et redemande confirmation. N'appelle jamais l'outil deux fois pour la même commande.
-5. Une fois l'outil exécuté, confirme la commande au client : donne la référence et le total renvoyés par l'outil, puis un court récapitulatif (articles et quantités, livraison, paiement). Termine par une phrase neutre, par exemple « Nous revenons vers vous très vite pour finaliser la livraison et le paiement 😊 ». Ne décris JAMAIS une procédure qui ne figure pas dans le contexte : pas d'appel d'un conseiller, pas d'heure ou de jour de livraison, pas de modalités de paiement (numéro, lien, moment du paiement) que le contexte n'indique pas.
-6. N'annonce jamais une commande comme enregistrée si l'outil ne l'a pas confirmé ; s'il renvoie une erreur, demande au client l'information manquante.
+1. Collecte les informations manquantes, sans redemander ce que le client a déjà donné : les articles (nom, options comme la taille ou la couleur si elles existent, quantité), le nom du client, le mode de remise et le mode de paiement. Si le client n'a pas dit comment il souhaite recevoir sa commande, demande-le-lui en citant uniquement les modes proposés ci-dessus. Ne propose que des articles, options, villes et modes de paiement présents dans le contexte ; sinon, applique la règle d'escalade.
+2. Selon le mode de remise : pour une livraison, demande la ville et l'adresse ; pour une expédition, demande la ville de destination ; pour un retrait en boutique, ne demande pas d'adresse, mais donne au client l'adresse et les horaires de la boutique figurant dans les informations générales (ne les invente pas s'ils n'y figurent pas).
+3. Utilise uniquement les prix du contexte, ou ceux d'un récapitulatif déjà fait dans cette conversation. N'invente JAMAIS un prix absent : dans ce cas, n'enregistre pas la commande et applique la règle d'escalade. Si le contexte indique des frais de livraison ou d'expédition pour la ville du client, ajoute-les comme une ligne « Frais de livraison » (quantité 1). Ne facture JAMAIS de frais de livraison pour un retrait en boutique.
+4. Fais un récapitulatif clair : chaque article avec sa quantité et son prix unitaire, le total (somme des quantités × prix unitaires), le mode de remise et le paiement. Termine en demandant une confirmation explicite, par exemple « Je confirme la commande ? ».
+5. N'appelle create_order qu'après un « oui » clair du client à ce récapitulatif. Si le client modifie quelque chose, refais le récapitulatif et redemande confirmation. N'appelle jamais l'outil deux fois pour la même commande.
+6. Une fois l'outil exécuté, confirme la commande au client : donne la référence et le total renvoyés par l'outil, puis un court récapitulatif (articles et quantités, mode de remise, paiement). Termine par une phrase neutre, par exemple « Nous revenons vers vous très vite pour finaliser la livraison et le paiement 😊 » (ou « le retrait et le paiement » pour un retrait). Ne décris JAMAIS une procédure qui ne figure pas dans le contexte : pas d'appel d'un conseiller, pas d'heure ou de jour de livraison, pas de modalités de paiement (numéro, lien, moment du paiement) que le contexte n'indique pas.
+7. N'annonce jamais une commande comme enregistrée si l'outil ne l'a pas confirmé ; s'il renvoie une erreur, demande au client l'information manquante.
 PROMPT;
     }
 

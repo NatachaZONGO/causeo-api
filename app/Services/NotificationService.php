@@ -77,9 +77,15 @@ class NotificationService
                 $order->items,
             );
 
+            $remise = match ($order->fulfillment_type) {
+                'pickup' => ', retrait en boutique'.($order->pickup_time ? " ({$order->pickup_time})" : ''),
+                'shipping' => $order->delivery_city ? ", expédition vers {$order->delivery_city}" : ', expédition',
+                default => $order->delivery_city ? ", livraison {$order->delivery_city}" : '',
+            };
+
             $body = implode(', ', $lines)
                 .' — total '.number_format($order->total_amount, 0, ',', ' ').' FCFA'
-                .($order->delivery_city ? ", livraison {$order->delivery_city}" : '');
+                .$remise;
 
             Notification::create([
                 'business_id' => $order->business_id,

@@ -5,8 +5,11 @@ namespace App\Http\Controllers\API\V1;
 use App\Http\Controllers\Controller;
 use App\Models\Business;
 use App\Models\Order;
+use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
 
 class OrderController extends Controller
@@ -20,12 +23,18 @@ class OrderController extends Controller
 
         $data = $request->validate([
             'status' => ['nullable', Rule::in(Order::STATUSES)],
+            'fulfillment_type' => ['nullable', Rule::in(Order::FULFILLMENT_TYPES)],
+            'q' => ['nullable', 'string', 'max:100'],
         ], [
             'status.in' => 'Le statut doit être l\'un des suivants : '.implode(', ', Order::STATUSES).'.',
+            'fulfillment_type.in' => 'Le mode de remise doit être l\'un des suivants : '.implode(', ', Order::FULFILLMENT_TYPES).'.',
+            'q.max' => 'La recherche ne doit pas dépasser 100 caractères.',
         ]);
 
         $orders = $business->orders()
             ->when($data['status'] ?? null, fn ($query, $status) => $query->where('status', $status))
+            ->when($data['fulfillment_type'] ?? null, fn ($query, $type) => $query->where('fulfillment_type', $type))
+            ->when(trim($data['q'] ?? ''), fn ($query, $search) => $this->search($query, $search))
             ->latest()
             ->paginate(20);
 
@@ -68,6 +77,31 @@ class OrderController extends Controller
             'message' => 'Le statut de la commande a été mis à jour.',
             'order' => $order,
         ]);
+    }
+
+    /**
+     * Rechercher, sans tenir compte de la casse, dans la référence (fin de l'id),
+     * le nom du client, le téléphone, la ville et les noms d'articles.
+     *
+     * @param  Builder<Order>|HasMany<Order>  $query
+     */
+    private function search(Builder|HasMany $query, string $search): void
+    {
+        $pattern = '%'.str_replace(['\\', '%', '_'], ['\\\\', '\\%', '\\_'], mb_strtolower($search)).'%';
+
+        $itemNames = DB::getDriverName() === 'pgsql'
+            ? "EXISTS (SELECT 1 FROM json_array_elements(orders.items) AS item WHERE LOWER(item->>'name') LIKE ?)"
+            : "EXISTS (SELECT 1 FROM json_each(orders.items) AS item WHERE LOWER(json_extract(item.value, '$.name')) LIKE ? ESCAPE '\\')";
+
+        $like = DB::getDriverName() === 'pgsql' ? 'LIKE ?' : "LIKE ? ESCAPE '\\'";
+
+        $query->where(function ($query) use ($pattern, $itemNames, $like) {
+            $query->whereRaw("LOWER(CAST(orders.id AS TEXT)) {$like}", [$pattern])
+                ->orWhereRaw("LOWER(orders.customer_name) {$like}", [$pattern])
+                ->orWhereRaw("LOWER(orders.customer_phone) {$like}", [$pattern])
+                ->orWhereRaw("LOWER(orders.delivery_city) {$like}", [$pattern])
+                ->orWhereRaw($itemNames, [$pattern]);
+        });
     }
 
     /**

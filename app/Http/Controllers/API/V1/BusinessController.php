@@ -117,6 +117,9 @@ class BusinessController extends Controller
             'country' => ['nullable', 'string', 'size:2'],
             'custom_greeting' => ['nullable', 'string'],
             'ai_instructions' => ['nullable', 'string'],
+            'delivery_enabled' => ['sometimes', 'boolean'],
+            'pickup_enabled' => ['sometimes', 'boolean'],
+            'shipping_enabled' => ['sometimes', 'boolean'],
         ];
     }
 
@@ -140,6 +143,9 @@ class BusinessController extends Controller
             'country.size' => 'Le pays doit être un code à 2 lettres.',
             'custom_greeting.string' => 'Le message d\'accueil doit être une chaîne de caractères.',
             'ai_instructions.string' => 'Les instructions IA doivent être une chaîne de caractères.',
+            'delivery_enabled.boolean' => 'La livraison doit être activée ou désactivée (vrai ou faux).',
+            'pickup_enabled.boolean' => 'Le retrait en boutique doit être activé ou désactivé (vrai ou faux).',
+            'shipping_enabled.boolean' => 'L\'expédition doit être activée ou désactivée (vrai ou faux).',
         ];
     }
 }

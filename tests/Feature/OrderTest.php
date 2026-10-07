@@ -68,6 +68,7 @@ class OrderTest extends TestCase
         });
         (require base_path('database/migrations/2026_10_07_100000_create_notifications_table.php'))->up();
         (require base_path('database/migrations/2026_10_07_110000_create_orders_table.php'))->up();
+        (require base_path('database/migrations/2026_10_07_120000_add_fulfillment_options.php'))->up();
 
         $this->owner = User::forceCreate(['name' => 'Gérant', 'email' => 'owner@example.test', 'password' => 'x']);
 
@@ -96,6 +97,7 @@ class OrderTest extends TestCase
                 'customer_name' => 'Awa Ouédraogo',
                 'delivery_city' => 'Ouagadougou',
                 'delivery_address' => 'Secteur 15',
+                'fulfillment_type' => 'delivery',
                 'payment_method' => 'Orange Money',
                 'total_amount' => 1, // ignoré : le serveur recalcule
             ]))
@@ -116,6 +118,8 @@ class OrderTest extends TestCase
         $this->assertSame('Ouagadougou', $order->delivery_city);
         $this->assertSame('Secteur 15', $order->delivery_address);
         $this->assertSame('Orange Money', $order->payment_method);
+        $this->assertSame('delivery', $order->fulfillment_type);
+        $this->assertNull($order->pickup_time);
         $this->assertEquals([
             ['name' => 'Pagne wax', 'options' => 'bleu', 'quantity' => 2, 'unit_price' => 7500],
             ['name' => 'Frais de livraison', 'options' => null, 'quantity' => 1, 'unit_price' => 1000],
@@ -132,6 +136,10 @@ class OrderTest extends TestCase
 
         // 1er appel : « oui » est bien envoyé à Claude avec l'outil et les règles de commande.
         $this->assertSame('create_order', $requests[0]['tools'][0]['name']);
+        $this->assertSame(['delivery', 'pickup'], $requests[0]['tools'][0]['input_schema']['properties']['fulfillment_type']['enum']);
+        $this->assertStringContainsString('- livraison à domicile (delivery)', $requests[0]['system']);
+        $this->assertStringContainsString('- retrait en boutique (pickup)', $requests[0]['system']);
+        $this->assertStringNotContainsString('(shipping)', $requests[0]['system']);
         $this->assertStringContainsString('# Prise de commande', $requests[0]['system']);
         $this->assertStringContainsString('Je confirme la commande ?', $requests[0]['messages'][1]['content']);
         $this->assertStringEndsWith('Question du client : oui', $requests[0]['messages'][2]['content']);
@@ -155,6 +163,7 @@ class OrderTest extends TestCase
                 'customer_name' => 'Awa',
                 'delivery_city' => 'Ouagadougou',
                 'delivery_address' => 'Secteur 15',
+                'fulfillment_type' => 'delivery',
                 'payment_method' => 'Orange Money',
             ]))
             ->push($this->textResponse('Je vérifie ça et je reviens vers vous très vite 😊')),
@@ -182,6 +191,7 @@ class OrderTest extends TestCase
         app(OrderService::class)->createFromAi($this->business, $conversation, [
             'items' => [['name' => 'Pagne wax', 'quantity' => 1, 'unit_price' => 7500]],
             'delivery_city' => 'Ouagadougou',
+            'fulfillment_type' => 'delivery',
             'payment_method' => 'Orange Money',
         ]);
     }
@@ -194,6 +204,7 @@ class OrderTest extends TestCase
             'customer_name' => 'Awa',
             'delivery_city' => 'Ouagadougou',
             'delivery_address' => 'Secteur 15',
+            'fulfillment_type' => 'delivery',
             'payment_method' => 'À la livraison',
         ];
 
@@ -284,6 +295,213 @@ class OrderTest extends TestCase
         $this->assertSame('new', $order->fresh()->status);
     }
 
+    public function test_pickup_order_needs_no_address_and_stores_pickup_time(): void
+    {
+        $order = app(OrderService::class)->createFromAi($this->business, $this->conversation(), [
+            'items' => [['name' => 'Pagne wax', 'quantity' => 2, 'unit_price' => 7500]],
+            'fulfillment_type' => 'pickup',
+            'pickup_time' => 'samedi matin',
+            'delivery_city' => 'Ouagadougou', // ignoré pour un retrait
+            'customer_name' => 'Awa',
+            'payment_method' => 'À la boutique',
+        ]);
+
+        $this->assertSame('pickup', $order->fulfillment_type);
+        $this->assertSame('samedi matin', $order->pickup_time);
+        $this->assertNull($order->delivery_city);
+        $this->assertNull($order->delivery_address);
+        $this->assertSame(15000.0, $order->total_amount);
+        $this->assertSame('2 × Pagne wax — total 15 000 FCFA, retrait en boutique (samedi matin)', Notification::sole()->body);
+    }
+
+    public function test_pickup_order_refuses_delivery_fees(): void
+    {
+        foreach (['Frais de livraison', 'Livraison Ouaga', 'Frais de port'] as $feeLine) {
+            try {
+                app(OrderService::class)->createFromAi($this->business, $this->conversation(), [
+                    'items' => [
+                        ['name' => 'Pagne wax', 'quantity' => 1, 'unit_price' => 7500],
+                        ['name' => $feeLine, 'quantity' => 1, 'unit_price' => 1000],
+                    ],
+                    'fulfillment_type' => 'pickup',
+                    'customer_name' => 'Awa',
+                    'payment_method' => 'À la boutique',
+                ]);
+                $this->fail("La ligne « {$feeLine} » aurait dû être refusée.");
+            } catch (\InvalidArgumentException $e) {
+                $this->assertStringContainsString('Aucun frais de livraison', $e->getMessage());
+            }
+        }
+
+        $this->assertSame(0, Order::count());
+    }
+
+    public function test_delivery_requires_city_and_address_and_shipping_requires_city(): void
+    {
+        $this->business->update(['shipping_enabled' => true]);
+        $base = [
+            'items' => [['name' => 'Pagne wax', 'quantity' => 1, 'unit_price' => 7500]],
+            'customer_name' => 'Awa',
+            'payment_method' => 'Orange Money',
+        ];
+
+        $this->assertOrderRejected($base + ['fulfillment_type' => 'delivery', 'delivery_city' => 'Ouagadougou'], 'delivery_address');
+        $this->assertOrderRejected($base + ['fulfillment_type' => 'delivery', 'delivery_address' => 'Secteur 15'], 'delivery_city');
+        $this->assertOrderRejected($base + ['fulfillment_type' => 'shipping'], 'delivery_city');
+
+        $shipped = app(OrderService::class)->createFromAi($this->business, $this->conversation(), $base + [
+            'fulfillment_type' => 'shipping',
+            'delivery_city' => 'Bobo-Dioulasso',
+        ]);
+
+        $this->assertSame('shipping', $shipped->fulfillment_type);
+        $this->assertSame('Bobo-Dioulasso', $shipped->delivery_city);
+        $this->assertNull($shipped->delivery_address);
+        $this->assertStringEndsWith('expédition vers Bobo-Dioulasso', Notification::sole()->body);
+    }
+
+    public function test_disabled_or_missing_fulfillment_type_is_refused(): void
+    {
+        $base = [
+            'items' => [['name' => 'Pagne wax', 'quantity' => 1, 'unit_price' => 7500]],
+            'customer_name' => 'Awa',
+            'delivery_city' => 'Bobo-Dioulasso',
+            'payment_method' => 'Orange Money',
+        ];
+
+        // Expédition désactivée par défaut.
+        $this->assertOrderRejected($base + ['fulfillment_type' => 'shipping'], "n'est pas proposé par la boutique. Modes disponibles : delivery, pickup.");
+        $this->assertOrderRejected($base + ['fulfillment_type' => 'teleportation'], 'Mode de remise inconnu');
+        $this->assertOrderRejected($base, 'Mode de remise manquant');
+
+        $this->business->update(['pickup_enabled' => false]);
+        $this->assertOrderRejected($base + ['fulfillment_type' => 'pickup'], 'Modes disponibles : delivery.');
+
+        $this->assertSame(0, Order::count());
+    }
+
+    public function test_prompt_and_tool_only_offer_enabled_modes(): void
+    {
+        $this->seedRecapConversation();
+        $this->business->update(['delivery_enabled' => false, 'pickup_enabled' => true, 'shipping_enabled' => true]);
+        Http::fake(['api.anthropic.com/*' => Http::response($this->textResponse('Comment souhaitez-vous recevoir votre commande ?'))]);
+
+        $this->service()->answer($this->business, 'Je veux un pagne wax', $this->conversationId);
+
+        $request = Http::recorded()[0][0]->data();
+        $this->assertSame(['pickup', 'shipping'], $request['tools'][0]['input_schema']['properties']['fulfillment_type']['enum']);
+        $this->assertSame(['items', 'fulfillment_type', 'customer_name', 'payment_method'], $request['tools'][0]['input_schema']['required']);
+        $this->assertStringContainsString('- retrait en boutique (pickup)', $request['system']);
+        $this->assertStringContainsString('- expédition vers une autre ville (shipping)', $request['system']);
+        $this->assertStringNotContainsString('(delivery)', $request['system']);
+        $this->assertStringContainsString('Ne facture JAMAIS de frais de livraison pour un retrait en boutique', $request['system']);
+    }
+
+    public function test_order_tool_is_not_offered_when_every_mode_is_disabled(): void
+    {
+        $this->seedRecapConversation();
+        $this->business->update(['delivery_enabled' => false, 'pickup_enabled' => false, 'shipping_enabled' => false]);
+        Http::fake(['api.anthropic.com/*' => Http::response($this->textResponse('Je vérifie ça et je reviens vers vous très vite 😊'))]);
+
+        $this->service()->answer($this->business, 'Je veux un pagne wax', $this->conversationId);
+
+        $request = Http::recorded()[0][0]->data();
+        $this->assertArrayNotHasKey('tools', $request);
+        $this->assertStringNotContainsString('# Prise de commande', $request['system']);
+    }
+
+    public function test_owner_can_toggle_fulfillment_modes(): void
+    {
+        Sanctum::actingAs($this->owner);
+
+        $this->patchJson("/api/v1/businesses/{$this->business->id}", ['shipping_enabled' => true, 'pickup_enabled' => false])
+            ->assertOk()
+            ->assertJsonPath('business.shipping_enabled', true)
+            ->assertJsonPath('business.pickup_enabled', false);
+
+        $fresh = $this->business->fresh();
+        $this->assertTrue($fresh->delivery_enabled);
+        $this->assertFalse($fresh->pickup_enabled);
+        $this->assertTrue($fresh->shipping_enabled);
+        $this->assertSame(['delivery', 'shipping'], $fresh->enabledFulfillmentTypes());
+
+        $this->patchJson("/api/v1/businesses/{$this->business->id}", ['delivery_enabled' => 'peut-être'])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('delivery_enabled');
+    }
+
+    public function test_search_matches_reference_customer_phone_city_and_item_names(): void
+    {
+        $awa = $this->makeOrder('new', ['customer_name' => 'Awa Ouédraogo']);
+        $issa = $this->makeOrder('new', [
+            'customer_name' => 'Issa Kaboré',
+            'customer_phone' => '22676543210',
+            'delivery_city' => 'Bobo-Dioulasso',
+            'items' => [['name' => 'Sac en cuir', 'options' => 'marron', 'quantity' => 1, 'unit_price' => 12000]],
+        ]);
+
+        Sanctum::actingAs($this->owner);
+
+        $this->assertSearch(['q' => strtolower($issa->reference())], [$issa]);
+        $this->assertSearch(['q' => 'AWA'], [$awa]);
+        $this->assertSearch(['q' => '6543'], [$issa]);
+        $this->assertSearch(['q' => 'bobo'], [$issa]);
+        $this->assertSearch(['q' => 'PAGNE'], [$awa]);
+        $this->assertSearch(['q' => 'cuir'], [$issa]);
+        $this->assertSearch(['q' => 'marron'], []); // les options ne sont pas cherchées
+        $this->assertSearch(['q' => '%'], []);
+        $this->assertSearch(['q' => 'introuvable'], []);
+    }
+
+    public function test_search_combines_with_status_and_fulfillment_type(): void
+    {
+        $deliveredPickup = $this->makeOrder('delivered', ['fulfillment_type' => 'pickup', 'delivery_city' => null, 'delivery_address' => null]);
+        $newPickup = $this->makeOrder('new', ['fulfillment_type' => 'pickup', 'delivery_city' => null, 'delivery_address' => null]);
+        $newDelivery = $this->makeOrder('new');
+
+        Sanctum::actingAs($this->owner);
+
+        $this->assertSearch(['fulfillment_type' => 'pickup'], [$deliveredPickup, $newPickup]);
+        $this->assertSearch(['fulfillment_type' => 'pickup', 'status' => 'new'], [$newPickup]);
+        $this->assertSearch(['q' => 'awa', 'status' => 'new'], [$newPickup, $newDelivery]);
+        $this->assertSearch(['q' => 'awa', 'status' => 'new', 'fulfillment_type' => 'delivery'], [$newDelivery]);
+
+        $this->getJson("/api/v1/businesses/{$this->business->id}/orders?fulfillment_type=drone")
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors('fulfillment_type');
+    }
+
+    /**
+     * @param  array<string, string>  $query
+     * @param  array<int, Order>  $expected
+     */
+    private function assertSearch(array $query, array $expected): void
+    {
+        $ids = $this->getJson("/api/v1/businesses/{$this->business->id}/orders?".http_build_query($query))
+            ->assertOk()
+            ->json('data.*.id');
+
+        $this->assertEqualsCanonicalizing(array_map(fn (Order $order) => $order->id, $expected), $ids, 'Recherche : '.json_encode($query));
+    }
+
+    /**
+     * @param  array<string, mixed>  $input
+     */
+    private function assertOrderRejected(array $input, string $message): void
+    {
+        try {
+            app(OrderService::class)->createFromAi($this->business, $this->conversation(), $input);
+            $this->fail('La commande aurait dû être refusée : '.$message);
+        } catch (\InvalidArgumentException $e) {
+            $this->assertStringContainsString($message, $e->getMessage());
+        }
+    }
+
+    private function conversation(): \App\Models\Conversation
+    {
+        return \App\Models\Conversation::findOrFail($this->conversationId);
+    }
+
     /**
      * Service réel, avec la recherche RAG (pgvector) remplacée par un contexte fixe.
      */
@@ -361,9 +579,12 @@ class OrderTest extends TestCase
         ];
     }
 
-    private function makeOrder(string $status): Order
+    /**
+     * @param  array<string, mixed>  $overrides
+     */
+    private function makeOrder(string $status, array $overrides = []): Order
     {
-        return Order::create([
+        return Order::create($overrides + [
             'business_id' => $this->business->id,
             'conversation_id' => $this->conversationId,
             'customer_phone' => '22670000001',
@@ -373,6 +594,7 @@ class OrderTest extends TestCase
             'delivery_city' => 'Ouagadougou',
             'delivery_address' => 'Secteur 15',
             'payment_method' => 'Orange Money',
+            'fulfillment_type' => 'delivery',
             'status' => $status,
         ]);
     }
