@@ -4,6 +4,7 @@ namespace App\Http\Controllers\API\V1;
 
 use App\Http\Controllers\Controller;
 use App\Models\Business;
+use App\Services\WhatsApp\WhatsAppAccountService;
 use GuzzleHttp\Client;
 use GuzzleHttp\Exception\GuzzleException;
 use Illuminate\Http\JsonResponse;
@@ -155,23 +156,21 @@ class WhatsAppSetupController extends Controller
     }
 
     /**
-     * Déconnecter WhatsApp d'une entreprise.
+     * Déconnecter WhatsApp d'une entreprise : désabonner l'app du WABA chez Meta
+     * (sans jamais désenregistrer le numéro), puis vider les colonnes, même si
+     * l'appel à Meta échoue.
      */
-    public function disconnect(Business $business): JsonResponse
+    public function disconnect(Business $business, WhatsAppAccountService $accounts): JsonResponse
     {
         $this->checkOwnership($business);
 
-        $business->update([
-            'whatsapp_phone_number_id' => null,
-            'whatsapp_waba_id' => null,
-            'whatsapp_token' => null,
-            'whatsapp_verified' => false,
-            'whatsapp_connected_at' => null,
-            'whatsapp_display_name' => null,
-        ]);
+        $unsubscribed = $accounts->unsubscribe($business);
+
+        $accounts->markDisconnected($business);
 
         return response()->json([
             'message' => 'WhatsApp a été déconnecté avec succès.',
+            'meta_unsubscribed' => $unsubscribed,
         ]);
     }
 

@@ -59,6 +59,8 @@ return [
         'token' => env('WHATSAPP_TOKEN'),
         'phone_number_id' => env('WHATSAPP_PHONE_NUMBER_ID'),
         'verify_token' => env('WHATSAPP_VERIFY_TOKEN'),
+        // Secret de l'app Meta qui reçoit les webhooks (vérification de X-Hub-Signature-256).
+        'app_secret' => env('WHATSAPP_APP_SECRET', env('FACEBOOK_APP_SECRET')),
         'api_url' => env('WHATSAPP_API_URL', 'https://graph.facebook.com/v21.0/'),
     ],
 

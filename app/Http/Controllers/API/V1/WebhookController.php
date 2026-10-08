@@ -10,6 +10,7 @@ use App\Models\Escalation;
 use App\Models\Message;
 use App\Services\AI\AIResponseService;
 use App\Services\AI\LearningService;
+use App\Services\WhatsApp\WhatsAppAccountService;
 use App\Services\WhatsApp\WhatsAppService;
 use Illuminate\Database\QueryException;
 use Illuminate\Http\JsonResponse;
@@ -20,10 +21,18 @@ use Throwable;
 
 class WebhookController extends Controller
 {
+    /**
+     * Événements account_update qui coupent la liaison avec Causeo (DISABLED_UPDATE
+     * n'en fait partie que pour l'état DISABLE). Référence :
+     * https://developers.facebook.com/documentation/business-messaging/whatsapp/webhooks/reference/account_update/
+     */
+    private const DISCONNECTING_ACCOUNT_EVENTS = ['PARTNER_REMOVED', 'PARTNER_APP_UNINSTALLED', 'ACCOUNT_DELETED', 'ACCOUNT_OFFBOARDED'];
+
     public function __construct(
         private readonly WhatsAppService $whatsApp,
         private readonly AIResponseService $ai,
         private readonly LearningService $learningService,
+        private readonly WhatsAppAccountService $accounts,
     ) {
     }
 
@@ -52,6 +61,12 @@ class WebhookController extends Controller
         $payload = $request->all();
 
         $field = data_get($payload, 'entry.0.changes.0.field');
+
+        if ($field === 'account_update') {
+            $this->handleAccountUpdates($request, $payload);
+
+            return response('', 200);
+        }
 
         if ($field !== 'messages') {
             $value = data_get($payload, 'entry.0.changes.0.value');
@@ -91,6 +106,96 @@ class WebhookController extends Controller
     }
 
     /**
+     * Traiter les événements account_update (signés par Meta) : certains indiquent
+     * que le client a retiré l'accès de Causeo ou que son compte n'est plus utilisable.
+     *
+     * @param  array<string, mixed>  $payload
+     */
+    private function handleAccountUpdates(Request $request, array $payload): void
+    {
+        // Un faux account_update suffirait à déconnecter un business : on exige la signature Meta.
+        if (! $this->hasValidMetaSignature($request)) {
+            Log::warning('WebhookController: account_update ignoré, signature Meta absente ou invalide.');
+
+            return;
+        }
+
+        foreach ((array) ($payload['entry'] ?? []) as $entry) {
+            foreach ((array) ($entry['changes'] ?? []) as $change) {
+                if (($change['field'] ?? null) === 'account_update' && is_array($change['value'] ?? null)) {
+                    $this->handleAccountUpdate(isset($entry['id']) ? (string) $entry['id'] : null, $change['value']);
+                }
+            }
+        }
+    }
+
+    /**
+     * @param  array<string, mixed>  $value
+     */
+    private function handleAccountUpdate(?string $entryId, array $value): void
+    {
+        $event = (string) ($value['event'] ?? '');
+        $banState = data_get($value, 'ban_info.waba_ban_state');
+
+        // Le WABA concerné est dans waba_info quand Meta le fournit (il peut différer de entry.id).
+        $wabaId = (string) (data_get($value, 'waba_info.waba_id') ?: $entryId);
+
+        $disconnects = in_array($event, self::DISCONNECTING_ACCOUNT_EVENTS, true)
+            || ($event === 'DISABLED_UPDATE' && $banState === 'DISABLE');
+
+        if (! $disconnects) {
+            Log::info('WebhookController: account_update reçu, sans effet.', [
+                'event' => $event,
+                'waba_id' => $wabaId,
+                'ban_state' => $banState,
+            ]);
+
+            return;
+        }
+
+        $businesses = $wabaId !== '' ? Business::where('whatsapp_waba_id', $wabaId)->get() : collect();
+
+        if ($businesses->isEmpty()) {
+            Log::info('WebhookController: account_update pour un WABA sans business connecté, ignoré.', [
+                'event' => $event,
+                'waba_id' => $wabaId,
+            ]);
+
+            return;
+        }
+
+        $reason = data_get($value, 'disconnection_info.reason');
+        $initiatedBy = data_get($value, 'disconnection_info.initiated_by');
+        $detail = $reason ? "motif : {$reason}".($initiatedBy ? ", à l'initiative de : {$initiatedBy}" : '') : null;
+
+        foreach ($businesses as $business) {
+            $this->accounts->disconnectFromMeta($business, $event, $detail);
+
+            Log::warning('WebhookController: business déconnecté de WhatsApp par Meta.', [
+                'business_id' => $business->id,
+                'event' => $event,
+                'waba_id' => $wabaId,
+                'disconnection_reason' => $reason,
+            ]);
+        }
+    }
+
+    /**
+     * Vérifier l'en-tête X-Hub-Signature-256 (HMAC SHA-256 du corps brut avec le secret de l'app).
+     */
+    private function hasValidMetaSignature(Request $request): bool
+    {
+        $secret = (string) config('services.whatsapp.app_secret');
+        $signature = (string) $request->header('X-Hub-Signature-256');
+
+        if ($secret === '' || $signature === '') {
+            return false;
+        }
+
+        return hash_equals('sha256='.hash_hmac('sha256', $request->getContent(), $secret), $signature);
+    }
+
+    /**
      * Traiter les événements webhook autres que `messages` (Coexistence),
      * sans réponse IA. Les fields inconnus sont ignorés.
      *
@@ -122,7 +227,7 @@ class WebhookController extends Controller
             return;
         }
 
-        $business = Business::where('whatsapp_phone_number_id', $phoneNumberId)->first();
+        $business = $this->connectedBusiness($phoneNumberId);
 
         if ($business === null) {
             return;
@@ -193,6 +298,25 @@ class WebhookController extends Controller
     }
 
     /**
+     * Business connecté à ce numéro WhatsApp, ou null (journalisé) : un message
+     * pour un numéro inconnu ou déconnecté est ignoré sans erreur.
+     */
+    private function connectedBusiness(?string $phoneNumberId): ?Business
+    {
+        $business = empty($phoneNumberId)
+            ? null
+            : Business::where('whatsapp_phone_number_id', $phoneNumberId)->where('whatsapp_verified', true)->first();
+
+        if ($business === null) {
+            Log::info('WebhookController: événement pour un numéro sans business connecté, ignoré.', [
+                'phone_number_id' => $phoneNumberId,
+            ]);
+        }
+
+        return $business;
+    }
+
+    /**
      * Traiter effectivement un message entrant : génération de la réponse IA,
      * envoi WhatsApp, escalade éventuelle.
      *
@@ -201,7 +325,7 @@ class WebhookController extends Controller
     private function process(array $incoming, ?string $phoneNumberId): void
     {
         try {
-            $business = Business::where('whatsapp_phone_number_id', $phoneNumberId)->first();
+            $business = $this->connectedBusiness($phoneNumberId);
 
             if ($business === null) {
                 return;

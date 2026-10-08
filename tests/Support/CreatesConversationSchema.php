@@ -28,6 +28,11 @@ trait CreatesConversationSchema
             $table->string('type')->nullable();
             $table->string('whatsapp_token')->nullable();
             $table->string('whatsapp_phone_number_id')->nullable();
+            $table->string('whatsapp_waba_id')->nullable();
+            $table->boolean('whatsapp_verified')->default(false);
+            $table->timestamp('whatsapp_connected_at')->nullable();
+            $table->string('whatsapp_display_name')->nullable();
+            $table->integer('monthly_message_count')->default(0);
             $table->timestamps();
         });
         Schema::create('conversations', function (Blueprint $table) {
@@ -60,6 +65,7 @@ trait CreatesConversationSchema
             '2026_10_07_120000_add_fulfillment_options.php',
             '2026_10_08_100000_add_modules_to_businesses.php',
             '2026_10_08_110000_add_appointments_module.php',
+            '2026_10_08_120000_add_whatsapp_notification_type.php',
         ] as $migration) {
             (require base_path("database/migrations/{$migration}"))->up();
         }
