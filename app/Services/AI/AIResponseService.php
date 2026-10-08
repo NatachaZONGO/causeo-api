@@ -2,11 +2,14 @@
 
 namespace App\Services\AI;
 
+use App\Models\Appointment;
 use App\Models\Business;
 use App\Models\Conversation;
 use App\Models\Order;
 use App\Services\Embedding\EmbeddingService;
+use App\Services\AppointmentService;
 use App\Services\OrderService;
+use Carbon\CarbonImmutable;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
@@ -35,6 +38,7 @@ class AIResponseService
     public function __construct(
         private readonly EmbeddingService $embeddingService,
         private readonly OrderService $orderService,
+        private readonly AppointmentService $appointmentService,
     ) {
         $this->model = config('services.anthropic.model', 'claude-haiku-4-5-20251001');
     }
@@ -54,7 +58,7 @@ class AIResponseService
         }
 
         $context = collect();
-        $trace = ['orders' => [], 'tool_errors' => [], 'blocked_claim' => false];
+        $trace = ['orders' => [], 'appointments' => [], 'tool_errors' => [], 'blocked_claim' => false];
 
         try {
             $context = $this->findRelevantContext($business, $question);
@@ -115,12 +119,17 @@ class AIResponseService
                 $messages[] = ['role' => 'user', 'content' => $userMessage];
             }
 
-            // La prise de commande n'est possible que dans une vraie conversation client,
-            // avec le module Commandes actif et au moins un mode de remise proposé.
+            // Commandes et rendez-vous ne sont possibles que dans une vraie conversation
+            // client, avec le module correspondant actif (et au moins un mode de remise
+            // proposé pour les commandes).
             $tools = [];
             if ($conversation !== null && $business->hasModule('orders') && $business->enabledFulfillmentTypes() !== []) {
                 $systemPrompt .= "\n\n".$this->orderInstructions($business);
-                $tools = [$this->createOrderTool($business)];
+                $tools[] = $this->createOrderTool($business);
+            }
+            if ($conversation !== null && $business->hasModule('appointments')) {
+                $systemPrompt .= "\n\n".$this->appointmentInstructions($business);
+                $tools[] = $this->createAppointmentTool();
             }
 
             $request = [
@@ -238,7 +247,7 @@ class AIResponseService
      * Appeler Claude puis exécuter les appels d'outils jusqu'à la réponse finale.
      *
      * @param  array<string, mixed>  $request  complété avec les échanges tool_use / tool_result
-     * @param  array{orders: array<int, array{id: string, reference: string}>, tool_errors: array<int, string>, blocked_claim: bool}  $trace
+     * @param  array{orders: array<int, array{id: string, reference: string}>, appointments: array<int, array{id: string, reference: string}>, tool_errors: array<int, string>, blocked_claim: bool}  $trace
      * @return array<string, mixed>
      */
     private function converse(array &$request, Business $business, ?Conversation $conversation, array &$trace): array
@@ -259,39 +268,52 @@ class AIResponseService
     }
 
     /**
-     * Vérifier qu'une réponse n'annonce pas une commande qui n'existe pas.
-     * Renvoie la raison du blocage, ou null si la réponse peut être envoyée.
+     * Vérifier qu'une réponse n'annonce pas une commande ou une demande de
+     * rendez-vous qui n'existe pas, ni un rendez-vous réservé que l'entreprise
+     * n'a pas confirmé. Renvoie la raison du blocage, ou null si la réponse peut
+     * être envoyée.
      *
-     * @param  array{orders: array<int, array{id: string, reference: string}>, tool_errors: array<int, string>, blocked_claim: bool}  $trace
+     * @param  array{orders: array<int, array{id: string, reference: string}>, appointments: array<int, array{id: string, reference: string}>, tool_errors: array<int, string>, blocked_claim: bool}  $trace
      */
     private function unverifiedOrderClaim(string $text, array $trace, ?Conversation $conversation): ?string
     {
         $cited = $this->citedOrderReferences($text);
-        $claims = $this->claimsOrderRecorded($text);
+        $claimsOrder = $this->claimsOrderRecorded($text);
+        $claimsRequest = $this->claimsAppointmentRequestRecorded($text);
+        $claimsBooked = $this->claimsAppointmentBooked($text);
 
-        if ($cited === [] && ! $claims) {
+        if ($cited === [] && ! $claimsOrder && ! $claimsRequest && ! $claimsBooked) {
             return null;
         }
 
         $known = array_merge(
             array_column($trace['orders'], 'reference'),
-            $this->conversationOrderReferences($conversation),
+            array_column($trace['appointments'], 'reference'),
+            array_keys($this->conversationReferences($conversation)),
         );
 
         $unknown = array_values(array_diff($cited, $known));
         if ($unknown !== []) {
-            return 'référence sans commande correspondante : '.implode(', ', $unknown);
+            return 'référence sans commande ni demande correspondante : '.implode(', ', $unknown);
         }
 
-        if ($claims && $trace['orders'] === [] && $cited === []) {
-            return 'commande annoncée comme enregistrée sans appel réussi à create_order';
+        if ($claimsBooked && ! $this->hasConfirmedAppointment($conversation)) {
+            return 'rendez-vous annoncé comme réservé ou confirmé alors que seule l\'entreprise peut le confirmer';
+        }
+
+        $recordedThisTurn = $trace['orders'] !== [] || $trace['appointments'] !== [];
+
+        if (($claimsOrder || $claimsRequest) && ! $recordedThisTurn && $cited === []) {
+            return $claimsOrder
+                ? 'commande annoncée comme enregistrée sans appel réussi à create_order'
+                : 'demande de rendez-vous annoncée comme enregistrée sans appel réussi à create_appointment';
         }
 
         return null;
     }
 
     /**
-     * Références de commande citées dans un texte (« Référence : 871086 », « réf. 3F2A9C »…).
+     * Références de commande ou de rendez-vous citées dans un texte (« Référence : 871086 », « réf. 3F2A9C »…).
      *
      * @return array<int, string>
      */
@@ -300,13 +322,16 @@ class AIResponseService
         // Soit un identifiant après « : », « # » ou « n° », soit 6 caractères hexadécimaux
         // (format des références réelles, qui peuvent ne contenir que des lettres).
         preg_match_all(
-            '/\br[ée]f(?:[ée]rence)?\.?\s*(?:de\s+(?:la\s+|votre\s+)?commande\s*)?'
+            '/\br[ée]f(?:[ée]rence)?\.?\s*(?:de\s+(?:la\s+|votre\s+)?(?:commande|demande|r[ée]servation)\s*)?'
             .'(?:(?:n[°o]\.?|[:#])\s*[*_]*\s*([a-z0-9][a-z0-9-]{2,15})|[*_]*\s*([0-9a-f]{6}))\b/iu',
             $text,
             $matches,
         );
 
-        $references = array_filter(array_merge($matches[1], $matches[2]));
+        // « Votre commande 871086… », « votre demande DAFACF… » : référence citée sans le mot « référence ».
+        preg_match_all('/\b(?:commande|demande)\s+(?:n[°o]\.?\s*)?#?[*_]*([0-9a-f]{6})\b/iu', $text, $direct);
+
+        $references = array_filter(array_merge($matches[1], $matches[2], $direct[1]));
 
         return array_values(array_unique(array_map('strtoupper', $references)));
     }
@@ -320,14 +345,50 @@ class AIResponseService
             return true;
         }
 
-        preg_match_all(
+        return $this->hasAffirmativeMatch(
             '/\bcommandes?\b[^.!?\n]{0,60}?\b(?:enregistr[ée]+e?s?|confirm[ée]+e?s?|valid[ée]+e?s?|prise en compte)\b/iu',
             $text,
-            $matches,
+        );
+    }
+
+    /**
+     * Indiquer si un texte annonce une demande de rendez-vous comme enregistrée.
+     */
+    private function claimsAppointmentRequestRecorded(string $text): bool
+    {
+        return $this->hasAffirmativeMatch(
+            '/\b(?:demandes?|rendez-vous|rdv|s[ée]ances?|r[ée]servations?)\b[^.!?\n]{0,60}?\b(?:enregistr[ée]+e?s?|prise en compte)\b/iu',
+            $text,
+        );
+    }
+
+    /**
+     * Indiquer si un texte présente un rendez-vous comme réservé ou confirmé
+     * (« rendez-vous confirmé », « séance réservée », « je vous confirme le rendez-vous »…).
+     */
+    private function claimsAppointmentBooked(string $text): bool
+    {
+        $booked = $this->hasAffirmativeMatch(
+            '/\b(?:rendez-vous|rdv|s[ée]ances?|cr[ée]neaux?|cr[ée]neau|r[ée]servations?)\b[^.!?\n]{0,60}?\b(?:r[ée]serv|confirm|valid|bloqu|fix|cal)[ée]+e?s?\b/iu',
+            $text,
         );
 
+        // « Je vous confirme le rendez-vous », sauf dans une question de récapitulatif.
+        return $booked || preg_match(
+            '/\b(?:je|nous)\s+(?:vous\s+)?(?:confirm|r[ée]serv|bloqu)\w*\s+(?:votre|le|la|ce|cette)\s+(?:rendez-vous|rdv|s[ée]ance|cr[ée]neau)\b(?![^.!?\n]*\?)/iu',
+            $text,
+        ) === 1;
+    }
+
+    /**
+     * Vrai si l'expression trouve une annonce affirmative : « sera enregistrée après
+     * confirmation » ou « n'a pas été enregistrée » ne sont pas des annonces.
+     */
+    private function hasAffirmativeMatch(string $pattern, string $text): bool
+    {
+        preg_match_all($pattern, $text, $matches);
+
         foreach ($matches[0] as $match) {
-            // « sera enregistrée après confirmation » ou « n'a pas été enregistrée » ne sont pas des annonces.
             if (preg_match('/\b(?:sera|seront|serait|pourra|dès que|une fois|après|avant|si|pas|aucune?|jamais|n[\'’](?:a|est|ont))\b/iu', $match) !== 1) {
                 return true;
             }
@@ -337,47 +398,85 @@ class AIResponseService
     }
 
     /**
-     * Références des commandes déjà enregistrées pour cette conversation.
+     * Références des commandes et demandes de rendez-vous de cette conversation,
+     * avec leur nature (order ou appointment).
      *
-     * @return array<int, string>
+     * @return array<string, string>
      */
-    private function conversationOrderReferences(?Conversation $conversation): array
+    private function conversationReferences(?Conversation $conversation): array
     {
         if ($conversation === null) {
             return [];
         }
 
-        return Order::query()
-            ->where('conversation_id', $conversation->id)
-            ->pluck('id')
-            ->map(fn (string $id) => strtoupper(substr($id, -6)))
-            ->all();
+        $references = [];
+
+        foreach (Order::query()->where('conversation_id', $conversation->id)->pluck('id') as $id) {
+            $references[strtoupper(substr($id, -6))] = 'order';
+        }
+
+        foreach (Appointment::query()->where('conversation_id', $conversation->id)->pluck('id') as $id) {
+            $references[strtoupper(substr($id, -6))] = 'appointment';
+        }
+
+        return $references;
     }
 
     /**
-     * Note interne ajoutée à un message passé du bot qui parle d'une commande, pour
-     * que le modèle sache si elle a réellement été enregistrée et n'imite pas une
-     * confirmation passée.
+     * Indiquer si l'entreprise a confirmé un rendez-vous dans cette conversation.
+     */
+    private function hasConfirmedAppointment(?Conversation $conversation): bool
+    {
+        return $conversation !== null && Appointment::query()
+            ->where('conversation_id', $conversation->id)
+            ->where('status', 'confirmed')
+            ->exists();
+    }
+
+    /**
+     * Note interne ajoutée à un message passé du bot qui parle d'une commande ou
+     * d'une demande de rendez-vous, pour que le modèle sache si elle a réellement
+     * été enregistrée et n'imite pas une confirmation passée.
      *
-     * @param  array<int, string>  $knownReferences
+     * @param  array<string, string>  $knownReferences  référence => order|appointment
      */
     private function orderNote(string $content, ?string $metadata, array $knownReferences): string
     {
-        $recorded = array_column((array) data_get(json_decode((string) $metadata, true), 'orders', []), 'reference');
-        $cited = $this->citedOrderReferences($content);
+        $meta = json_decode((string) $metadata, true) ?: [];
 
-        if ($recorded === [] && $cited === [] && ! $this->claimsOrderRecorded($content)) {
+        $recorded = [];
+        foreach (array_column((array) ($meta['orders'] ?? []), 'reference') as $reference) {
+            $recorded[$reference] = 'order';
+        }
+        foreach (array_column((array) ($meta['appointments'] ?? []), 'reference') as $reference) {
+            $recorded[$reference] = 'appointment';
+        }
+
+        $cited = $this->citedOrderReferences($content);
+        $claimsOrder = $this->claimsOrderRecorded($content);
+        $claimsRequest = $this->claimsAppointmentRequestRecorded($content);
+
+        if ($recorded === [] && $cited === [] && ! $claimsOrder && ! $claimsRequest) {
             return '';
         }
 
-        $valid = array_values(array_unique(array_merge($recorded, array_intersect($cited, $knownReferences))));
-        $invalid = array_values(array_diff($cited, $knownReferences, $recorded));
+        $valid = $recorded + array_intersect_key($knownReferences, array_flip($cited));
+        $invalid = array_values(array_diff($cited, array_keys($knownReferences), array_keys($recorded)));
 
         if ($valid !== [] && $invalid === []) {
-            return "\n[Note système : commande ".implode(', ', $valid).' réellement enregistrée par l\'outil create_order.]';
+            $labels = [];
+            foreach ($valid as $reference => $kind) {
+                $labels[] = $kind === 'order'
+                    ? "commande {$reference} réellement enregistrée par l'outil create_order"
+                    : "demande de rendez-vous {$reference} réellement enregistrée par l'outil create_appointment (créneau à confirmer par l'entreprise)";
+            }
+
+            return "\n[Note système : ".implode(' ; ', $labels).'.]';
         }
 
-        return "\n[Note système : aucune commande n'a été enregistrée pour ce message"
+        $what = $claimsRequest && ! $claimsOrder ? 'aucune demande de rendez-vous' : 'aucune commande';
+
+        return "\n[Note système : {$what} n'a été enregistrée pour ce message"
             .($invalid !== [] ? ' ; la référence '.implode(', ', $invalid).' n\'existe pas' : '')
             .'. Ne t\'en sers pas comme modèle.]';
     }
@@ -388,22 +487,24 @@ class AIResponseService
     private function orderClaimCorrection(string $reason): string
     {
         return "[Message système, pas du client : ne le mentionne pas dans ta réponse] Ta réponse précédente n'a pas été envoyée ({$reason}). "
-            ."Aucune commande n'a été enregistrée par l'outil create_order dans cet échange. "
-            ."Si le client a clairement confirmé le récapitulatif complet, appelle maintenant create_order. "
-            ."Sinon, réécris ta réponse au client sans dire que la commande est enregistrée et sans citer de référence. "
-            ."Une référence ne vient que du résultat de l'outil.";
+            ."N'annonce une commande ou une demande de rendez-vous comme enregistrée qu'après un appel réussi à l'outil correspondant "
+            ."dans cet échange (create_order ou create_appointment) : si le client a clairement confirmé le récapitulatif complet "
+            ."et que l'outil n'a pas encore été appelé, appelle-le maintenant. Ne cite que des références renvoyées par un outil. "
+            ."Ne dis jamais qu'un rendez-vous est réservé ou confirmé : dis que la demande est enregistrée et que le créneau sera confirmé. "
+            .'Réécris ta réponse au client en conséquence.';
     }
 
     /**
      * Trace des appels d'outils à enregistrer dans le metadata du message sortant.
      *
-     * @param  array{orders: array<int, array{id: string, reference: string}>, tool_errors: array<int, string>, blocked_claim: bool}  $trace
+     * @param  array{orders: array<int, array{id: string, reference: string}>, appointments: array<int, array{id: string, reference: string}>, tool_errors: array<int, string>, blocked_claim: bool}  $trace
      * @return array<string, mixed>
      */
     private function traceForMetadata(array $trace): array
     {
         return array_filter([
             'orders' => $trace['orders'],
+            'appointments' => $trace['appointments'],
             'tool_errors' => $trace['tool_errors'],
             'blocked_claim' => $trace['blocked_claim'],
         ]);
@@ -450,12 +551,18 @@ class AIResponseService
      * tous dans un même message utilisateur.
      *
      * @param  array<int, array<string, mixed>>  $content
-     * @param  array{orders: array<int, array{id: string, reference: string}>, tool_errors: array<int, string>, blocked_claim: bool}  $trace
+     * @param  array{orders: array<int, array{id: string, reference: string}>, appointments: array<int, array{id: string, reference: string}>, tool_errors: array<int, string>, blocked_claim: bool}  $trace
      * @return array<int, array<string, mixed>>
      */
     private function runTools(array $content, Business $business, ?Conversation $conversation, array &$trace): array
     {
         $results = [];
+
+        // Un outil n'est exécuté que si son module est actif (il n'est d'ailleurs proposé qu'à cette condition).
+        $available = array_filter([
+            'create_order' => $business->hasModule('orders'),
+            'create_appointment' => $business->hasModule('appointments'),
+        ]);
 
         foreach ($content as $block) {
             if (($block['type'] ?? null) !== 'tool_use') {
@@ -463,10 +570,11 @@ class AIResponseService
             }
 
             $result = ['type' => 'tool_result', 'tool_use_id' => $block['id']];
+            $tool = $block['name'];
 
-            if ($block['name'] !== 'create_order' || $conversation === null) {
-                $trace['tool_errors'][] = "Outil inconnu : {$block['name']}.";
-                $results[] = $result + ['content' => "Outil inconnu : {$block['name']}.", 'is_error' => true];
+            if ($conversation === null || ! isset($available[$tool])) {
+                $trace['tool_errors'][] = "Outil inconnu : {$tool}.";
+                $results[] = $result + ['content' => "Outil inconnu : {$tool}.", 'is_error' => true];
 
                 continue;
             }
@@ -474,29 +582,46 @@ class AIResponseService
             $input = (array) ($block['input'] ?? []);
 
             try {
-                $order = $this->orderService->createFromAi($business, $conversation, $input);
+                if ($tool === 'create_order') {
+                    $order = $this->orderService->createFromAi($business, $conversation, $input);
+                    $reference = $order->reference();
+                    $trace['orders'][] = ['id' => $order->id, 'reference' => $reference];
 
-                $trace['orders'][] = ['id' => $order->id, 'reference' => $order->reference()];
+                    $payload = [
+                        'status' => 'commande enregistrée',
+                        'reference' => $reference,
+                        'total_amount' => $order->total_amount,
+                        'currency' => 'FCFA',
+                        'items' => $order->items,
+                    ];
+                } else {
+                    $appointment = $this->appointmentService->createFromAi($business, $conversation, $input);
+                    $reference = $appointment->reference();
+                    $trace['appointments'][] = ['id' => $appointment->id, 'reference' => $reference];
+
+                    $payload = [
+                        'status' => 'demande de rendez-vous enregistrée, créneau à confirmer par l\'entreprise',
+                        'reference' => $reference,
+                        'service' => $appointment->service,
+                        'requested_date' => $appointment->requested_date->format('Y-m-d'),
+                        'requested_time' => $appointment->requested_time,
+                        'price' => $appointment->price,
+                    ];
+                }
 
                 // Pas de données client dans les logs : seulement les clés reçues.
-                Log::info('AIResponseService: create_order a enregistré une commande', [
+                Log::info("AIResponseService: {$tool} a enregistré une demande", [
                     'business_id' => $business->id,
                     'conversation_id' => $conversation->id,
-                    'reference' => $order->reference(),
+                    'reference' => $reference,
                     'fields' => array_keys($input),
                 ]);
 
-                $results[] = $result + ['content' => json_encode([
-                    'status' => 'commande enregistrée',
-                    'reference' => $order->reference(),
-                    'total_amount' => $order->total_amount,
-                    'currency' => 'FCFA',
-                    'items' => $order->items,
-                ], JSON_UNESCAPED_UNICODE)];
+                $results[] = $result + ['content' => json_encode($payload, JSON_UNESCAPED_UNICODE)];
             } catch (InvalidArgumentException $e) {
                 $trace['tool_errors'][] = $e->getMessage();
 
-                Log::info('AIResponseService: create_order refusé', [
+                Log::info("AIResponseService: {$tool} refusé", [
                     'business_id' => $business->id,
                     'conversation_id' => $conversation->id,
                     'error' => $e->getMessage(),
@@ -508,6 +633,56 @@ class AIResponseService
         }
 
         return $results;
+    }
+
+    /**
+     * Définition de l'outil create_appointment.
+     *
+     * @return array<string, mixed>
+     */
+    private function createAppointmentTool(): array
+    {
+        return [
+            'name' => 'create_appointment',
+            'description' => "Enregistre une demande de rendez-vous du client. Le créneau reste à confirmer par l'entreprise. "
+                ."À appeler une seule fois, et uniquement après que le client a répondu clairement « oui » au récapitulatif complet "
+                .'(prestation, date, heure, et lieu, participants et prix s\'il y a lieu).',
+            'input_schema' => [
+                'type' => 'object',
+                'properties' => [
+                    'service' => ['type' => 'string', 'description' => 'Prestation demandée, telle qu\'elle figure dans le contexte.'],
+                    'requested_date' => ['type' => 'string', 'description' => 'Date souhaitée au format AAAA-MM-JJ (jamais dans le passé).'],
+                    'requested_time' => ['type' => 'string', 'description' => 'Heure ou moment souhaité, par exemple « 15h » ou « après-midi ».'],
+                    'customer_name' => ['type' => 'string', 'description' => 'Nom du client.'],
+                    'location' => ['type' => 'string', 'description' => 'Lieu de la prestation, si elle n\'a pas lieu chez l\'entreprise.'],
+                    'participants' => ['type' => 'integer', 'minimum' => 1, 'description' => 'Nombre de personnes concernées, si utile.'],
+                    'price' => ['type' => 'number', 'minimum' => 0, 'description' => 'Prix en FCFA indiqué dans le contexte pour cette prestation. À omettre s\'il n\'y figure pas.'],
+                    'notes' => ['type' => 'string', 'description' => 'Précisions utiles du client, facultatif.'],
+                ],
+                'required' => ['service', 'requested_date', 'requested_time', 'customer_name'],
+            ],
+        ];
+    }
+
+    /**
+     * Règles de prise de rendez-vous ajoutées au prompt quand l'outil est disponible.
+     */
+    private function appointmentInstructions(Business $business): string
+    {
+        $today = CarbonImmutable::now($this->businessTimezone($business))->locale('fr')->isoFormat('dddd D MMMM YYYY');
+
+        return <<<PROMPT
+# Prise de rendez-vous
+Nous sommes le {$today}.
+Tu peux enregistrer une demande de rendez-vous avec l'outil create_appointment. Le créneau n'est jamais garanti : c'est l'entreprise qui le confirme ensuite.
+1. Collecte les informations manquantes, sans redemander ce que le client a déjà donné : la prestation, la date, l'heure ou le moment de la journée, son nom, et selon la prestation le lieu et le nombre de participants. Ne propose que des prestations présentes dans le contexte ; sinon, applique la règle d'escalade.
+2. Convertis les dates relatives (« demain », « samedi prochain ») en date précise à partir de la date du jour, et répète-la au client en toutes lettres (par exemple « samedi 10 octobre »). Ne propose jamais une date passée.
+3. Utilise uniquement le prix indiqué dans le contexte pour cette prestation. N'invente JAMAIS un prix : s'il n'y figure pas, n'annonce aucun prix et laisse price vide.
+4. Fais un récapitulatif : prestation, date en toutes lettres, heure, lieu et participants s'il y a lieu, prix s'il est connu. Termine en demandant une confirmation explicite, par exemple « J'enregistre votre demande ? ».
+5. N'appelle create_appointment qu'après un « oui » clair du client à ce récapitulatif. Si le client modifie quelque chose, refais le récapitulatif et redemande confirmation. N'appelle jamais l'outil deux fois pour la même demande.
+6. Une fois l'outil exécuté, dis au client que sa demande est enregistrée, donne la référence renvoyée par l'outil, et précise que le créneau lui sera confirmé très vite. Ne dis JAMAIS que le rendez-vous est réservé, confirmé, bloqué ou garanti, et ne décris aucune procédure absente du contexte (appel, acompte, rappel…).
+7. Si l'outil renvoie une erreur, demande au client l'information manquante ou une autre date. N'annonce jamais une demande comme enregistrée si l'outil ne l'a pas confirmé dans ce même échange.
+PROMPT;
     }
 
     /**
@@ -743,7 +918,7 @@ PROMPT;
             ->reverse()
             ->values();
 
-        $knownReferences = $this->conversationOrderReferences(Conversation::find($conversationId));
+        $knownReferences = $this->conversationReferences(Conversation::find($conversationId));
 
         // Le message entrant courant est déjà en base : on le retire s'il est en dernier.
         if ($rows->isNotEmpty()) {

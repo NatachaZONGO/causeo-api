@@ -26,7 +26,7 @@ class BusinessTemplateSeeder extends Seeder
                     ['question' => 'Faites-vous la livraison ?', 'answer' => 'Oui, nous livrons dans un rayon de 5 km. Commande minimum 2000 FCFA.'],
                     ['question' => 'Peut-on réserver une table ?', 'answer' => 'Bien sûr ! Précisez le nombre de personnes, la date et l\'heure souhaitées.'],
                 ],
-                'default_modules' => ['orders'],
+                'default_modules' => ['orders', 'appointments'],
                 'sort_order' => 1,
             ],
             [
@@ -55,10 +55,10 @@ class BusinessTemplateSeeder extends Seeder
                 'default_ai_instructions' => 'Tu es l\'assistant de {nom}, un studio photo/photographe. Aide les clients avec les forfaits, les tarifs, la prise de rendez-vous et le type de shooting (mariage, portrait, événement, produit). Sois enthousiaste sur les projets des clients.',
                 'sample_faq' => [
                     ['question' => 'Quels types de shooting proposez-vous ?', 'answer' => 'Nous faisons des shootings portrait, mariage, événements, mode et produits.'],
-                    ['question' => 'Combien coûte un shooting ?', 'answer' => 'Nos tarifs varient selon le type de shooting. Contactez-nous pour un devis personnalisé.'],
+                    ['question' => 'Combien coûte un shooting ?', 'answer' => 'Nos tarifs varient selon le type de shooting. Les prestations sur mesure font l\'objet d\'un devis établi au cas par cas.'],
                     ['question' => 'Comment réserver une séance ?', 'answer' => 'Choisissez une date et un créneau, nous confirmerons la disponibilité.'],
                 ],
-                'default_modules' => [],
+                'default_modules' => ['appointments'],
                 'sort_order' => 3,
             ],
             [
@@ -74,7 +74,7 @@ class BusinessTemplateSeeder extends Seeder
                     ['question' => 'Prenez-vous sur rendez-vous ?', 'answer' => 'Oui, sur rendez-vous ou sans rendez-vous selon la disponibilité.'],
                     ['question' => 'Quels sont vos tarifs ?', 'answer' => 'Nos tarifs varient selon la prestation. N\'hésitez pas à nous demander.'],
                 ],
-                'default_modules' => [],
+                'default_modules' => ['appointments'],
                 'sort_order' => 4,
             ],
             [
@@ -90,7 +90,7 @@ class BusinessTemplateSeeder extends Seeder
                     ['question' => 'Comment prendre rendez-vous ?', 'answer' => 'Appelez-nous ou envoyez un message avec la date et l\'heure souhaitées.'],
                     ['question' => 'Quelles spécialités proposez-vous ?', 'answer' => 'Médecine générale, pédiatrie et consultations spécialisées.'],
                 ],
-                'default_modules' => [],
+                'default_modules' => ['appointments'],
                 'sort_order' => 5,
             ],
             [
@@ -158,6 +158,38 @@ class BusinessTemplateSeeder extends Seeder
                 'sort_order' => 9,
             ],
             [
+                'slug' => 'garage',
+                'name' => 'Garage / Mécanique',
+                'icon' => '🔧',
+                'description' => 'Garage, mécanique, entretien auto ou moto',
+                'type' => 'garage',
+                'default_greeting' => 'Bienvenue chez {nom} ! 🔧 Comment puis-je vous aider pour votre véhicule ?',
+                'default_ai_instructions' => 'Tu es l\'assistant de {nom}, un garage. Aide les clients avec les prestations (vidange, révision, diagnostic, réparation), les tarifs indiqués et la prise de rendez-vous. Demande le modèle du véhicule et le problème constaté.',
+                'sample_faq' => [
+                    ['question' => 'Faites-vous les vidanges ?', 'answer' => 'Oui, nous faisons les vidanges pour voitures et motos. Le prix dépend du véhicule et de l\'huile choisie.'],
+                    ['question' => 'Quels sont vos horaires ?', 'answer' => 'Nous sommes ouverts du lundi au samedi de 8h à 18h.'],
+                    ['question' => 'Peut-on prendre rendez-vous ?', 'answer' => 'Oui, indiquez votre véhicule, la prestation souhaitée et le jour qui vous convient.'],
+                ],
+                'default_modules' => ['appointments'],
+                'sort_order' => 10,
+            ],
+            [
+                'slug' => 'auto_ecole',
+                'name' => 'Auto-école',
+                'icon' => '🚗',
+                'description' => 'Auto-école, permis de conduire',
+                'type' => 'auto_ecole',
+                'default_greeting' => 'Bienvenue chez {nom} ! 🚗 Comment puis-je vous aider pour votre permis ?',
+                'default_ai_instructions' => 'Tu es l\'assistant de {nom}, une auto-école. Aide les clients avec les formules de permis, les tarifs indiqués, les pièces à fournir et la prise de rendez-vous pour une inscription ou une leçon de conduite.',
+                'sample_faq' => [
+                    ['question' => 'Quels permis préparez-vous ?', 'answer' => 'Nous préparons le permis B (voiture) et le permis A (moto).'],
+                    ['question' => 'Quels documents faut-il pour s\'inscrire ?', 'answer' => 'Une pièce d\'identité, deux photos d\'identité et un certificat médical.'],
+                    ['question' => 'Peut-on réserver une leçon ?', 'answer' => 'Oui, indiquez le jour et le moment qui vous conviennent.'],
+                ],
+                'default_modules' => ['appointments'],
+                'sort_order' => 11,
+            ],
+            [
                 'slug' => 'autre',
                 'name' => 'Autre activité',
                 'icon' => '➕',
@@ -167,7 +199,7 @@ class BusinessTemplateSeeder extends Seeder
                 'default_ai_instructions' => 'Tu es l\'assistant de {nom}. Réponds aux questions des clients de manière professionnelle et chaleureuse.',
                 'sample_faq' => [],
                 'default_modules' => [],
-                'sort_order' => 10,
+                'sort_order' => 12,
             ],
         ];
 

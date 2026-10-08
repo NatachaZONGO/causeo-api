@@ -67,6 +67,44 @@ class ModulesTest extends TestCase
         $this->assertSame([], Business::find($ids['pharmacy'])->modules); // type sans template
     }
 
+    public function test_appointments_migration_adds_the_module_without_removing_others(): void
+    {
+        (require base_path(self::MODULES_MIGRATION))->up();
+        $this->insertTemplate('restaurant', 'restaurant', ['orders']);
+        $this->insertTemplate('photographe', 'photographe', []);
+        $this->insertTemplate('boutique', 'boutique', ['orders']);
+        $this->insertTemplate('formation', 'formation', []);
+
+        $owner = $this->makeUser();
+        $businesses = [
+            'restaurant' => ['restaurant', ['orders']],
+            'restaurant_off' => ['restaurant', []],
+            'photographe' => ['photographe', []],
+            'clinic' => ['clinic', []],
+            'boutique' => ['boutique', ['orders']],
+            'formation' => ['formation', []],
+        ];
+        $ids = [];
+        foreach ($businesses as $key => [$type, $modules]) {
+            $ids[$key] = Business::create(['user_id' => $owner->id, 'name' => $key, 'type' => $type, 'modules' => $modules])->id;
+        }
+
+        (require base_path('database/migrations/2026_10_07_100000_create_notifications_table.php'))->up();
+        (require base_path('database/migrations/2026_10_08_110000_add_appointments_module.php'))->up();
+
+        $this->assertSame(['orders', 'appointments'], BusinessTemplate::where('slug', 'restaurant')->value('default_modules'));
+        $this->assertSame(['appointments'], BusinessTemplate::where('slug', 'photographe')->value('default_modules'));
+        $this->assertSame(['orders'], BusinessTemplate::where('slug', 'boutique')->value('default_modules'));
+        $this->assertSame([], BusinessTemplate::where('slug', 'formation')->value('default_modules'));
+
+        $this->assertSame(['orders', 'appointments'], Business::find($ids['restaurant'])->modules);
+        $this->assertSame(['appointments'], Business::find($ids['restaurant_off'])->modules);
+        $this->assertSame(['appointments'], Business::find($ids['photographe'])->modules);
+        $this->assertSame(['appointments'], Business::find($ids['clinic'])->modules);
+        $this->assertSame(['orders'], Business::find($ids['boutique'])->modules);
+        $this->assertSame([], Business::find($ids['formation'])->modules);
+    }
+
     public function test_onboarding_applies_the_template_modules(): void
     {
         (require base_path(self::MODULES_MIGRATION))->up();

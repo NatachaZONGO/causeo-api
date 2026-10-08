@@ -18,5 +18,7 @@ enum BusinessType: string
     case Nettoyage = 'nettoyage';
     case Communication = 'communication';
     case Formation = 'formation';
+    case Garage = 'garage';
+    case AutoEcole = 'auto_ecole';
     case Other = 'other';
 }

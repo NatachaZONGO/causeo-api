@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Models\Appointment;
 use App\Models\Escalation;
 use App\Models\Notification;
 use App\Models\Order;
@@ -59,6 +60,42 @@ class NotificationService
             // Une notification manquée ne doit pas bloquer l'escalade elle-même.
             Log::error('NotificationService::notifyEscalation a échoué', [
                 'escalation_id' => $escalation->id,
+                'message' => $e->getMessage(),
+            ]);
+        }
+    }
+
+    /**
+     * Notifier le gérant d'une nouvelle demande de rendez-vous.
+     */
+    public function notifyAppointment(Appointment $appointment): void
+    {
+        try {
+            $customer = $appointment->customer_name ?: $appointment->customer_phone;
+
+            $details = array_filter([
+                $appointment->location,
+                $appointment->participants ? "{$appointment->participants} participant".($appointment->participants > 1 ? 's' : '') : null,
+                $appointment->price !== null ? number_format($appointment->price, 0, ',', ' ').' FCFA' : null,
+            ]);
+
+            $body = "{$appointment->service} — ".$appointment->requested_date->format('d/m/Y')." à {$appointment->requested_time}"
+                .($details !== [] ? ', '.implode(', ', $details) : '');
+
+            Notification::create([
+                'business_id' => $appointment->business_id,
+                'type' => 'appointment',
+                'title' => "Demande de rendez-vous de {$customer}",
+                'body' => $body,
+                'data' => [
+                    'conversation_id' => $appointment->conversation_id,
+                    'appointment_id' => $appointment->id,
+                ],
+            ]);
+        } catch (Throwable $e) {
+            // Une notification manquée ne doit pas annuler la demande.
+            Log::error('NotificationService::notifyAppointment a échoué', [
+                'appointment_id' => $appointment->id,
                 'message' => $e->getMessage(),
             ]);
         }

@@ -7,20 +7,22 @@ use App\Models\Notification;
 use App\Models\Order;
 use App\Models\User;
 use App\Services\AI\AIResponseService;
-use App\Services\Embedding\EmbeddingService;
 use App\Services\OrderService;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Http\Client\Request;
-use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Str;
 use Laravel\Sanctum\Sanctum;
+use Tests\Support\CreatesConversationSchema;
+use Tests\Support\FixedContextAIResponseService;
 use Tests\TestCase;
 
 class OrderTest extends TestCase
 {
+    use CreatesConversationSchema;
+
     private const CONTEXT = 'Pagne wax : 7 500 FCFA, coloris bleu ou rouge. Livraison à Ouagadougou : 1 000 FCFA. '
         .'Paiement par Orange Money ou à la livraison.';
 
@@ -36,46 +38,7 @@ class OrderTest extends TestCase
 
         config(['services.anthropic.api_key' => 'test-key', 'services.anthropic.model' => 'claude-test']);
 
-        // Les migrations complètes dépendent de pgvector : on crée ici un schéma
-        // minimal sur SQLite, puis les vraies migrations notifications et orders.
-        Schema::create('users', function (Blueprint $table) {
-            $table->id();
-            $table->string('name')->nullable();
-            $table->string('email')->nullable();
-            $table->string('password')->nullable();
-            $table->timestamps();
-        });
-        Schema::create('businesses', function (Blueprint $table) {
-            $table->uuid('id')->primary();
-            $table->unsignedBigInteger('user_id');
-            $table->string('name')->nullable();
-            $table->timestamps();
-        });
-        Schema::create('conversations', function (Blueprint $table) {
-            $table->uuid('id')->primary();
-            $table->uuid('business_id');
-            $table->string('customer_phone');
-            $table->string('customer_name')->nullable();
-            $table->timestamps();
-        });
-        Schema::create('messages', function (Blueprint $table) {
-            $table->uuid('id')->primary();
-            $table->uuid('conversation_id');
-            $table->string('direction');
-            $table->string('sender_type')->nullable();
-            $table->text('content');
-            $table->json('metadata')->nullable();
-            $table->timestamps();
-        });
-        (require base_path('database/migrations/2026_10_07_100000_create_notifications_table.php'))->up();
-        (require base_path('database/migrations/2026_10_07_110000_create_orders_table.php'))->up();
-        (require base_path('database/migrations/2026_10_07_120000_add_fulfillment_options.php'))->up();
-        Schema::create('business_templates', function (Blueprint $table) {
-            $table->uuid('id')->primary();
-            $table->string('slug');
-            $table->string('type');
-        });
-        (require base_path('database/migrations/2026_10_08_100000_add_modules_to_businesses.php'))->up();
+        $this->createConversationSchema();
 
         $this->owner = User::forceCreate(['name' => 'Gérant', 'email' => 'owner@example.test', 'password' => 'x']);
 
@@ -529,7 +492,7 @@ class OrderTest extends TestCase
         $this->assertSame('create_order', $retry['tools'][0]['name']);
         $this->assertStringContainsString('871087', $retry['messages'][3]['content'][0]['text']);
         $this->assertStringContainsString('[Message système, pas du client', $retry['messages'][4]['content']);
-        $this->assertStringContainsString('référence sans commande correspondante : 871087', $retry['messages'][4]['content']);
+        $this->assertStringContainsString('référence sans commande ni demande correspondante : 871087', $retry['messages'][4]['content']);
     }
 
     public function test_blocked_confirmation_retry_can_record_the_order(): void
@@ -591,7 +554,7 @@ class OrderTest extends TestCase
 
         $this->assertSame('Votre commande DAFACF est bien enregistrée, référence DAFACF.', $allowed['answer']);
         $this->assertSame('Pouvez-vous me rappeler votre nom ?', $blocked['answer']);
-        $this->assertStringContainsString('référence sans commande correspondante : FACADE', Http::recorded()[2][0]->data()['messages'][2]['content']);
+        $this->assertStringContainsString('référence sans commande ni demande correspondante : FACADE', Http::recorded()[2][0]->data()['messages'][2]['content']);
     }
 
     public function test_reference_of_another_conversation_order_is_blocked(): void
@@ -719,23 +682,7 @@ class OrderTest extends TestCase
      */
     private function service(): AIResponseService
     {
-        return new class(app(EmbeddingService::class), app(OrderService::class), self::CONTEXT) extends AIResponseService
-        {
-            public function __construct(EmbeddingService $embeddingService, OrderService $orderService, private string $fixedContext)
-            {
-                parent::__construct($embeddingService, $orderService);
-            }
-
-            public function findRelevantContext(Business $business, string $question, int $limit = 5): Collection
-            {
-                return collect([(object) ['id' => 'chunk-1', 'content' => $this->fixedContext, 'similarity' => 0.9]]);
-            }
-
-            public function findRelevantMedia(Business $business, string $question, int $limit = 3): Collection
-            {
-                return collect();
-            }
-        };
+        return new FixedContextAIResponseService(self::CONTEXT);
     }
 
     private function seedRecapConversation(): void

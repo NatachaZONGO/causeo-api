@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\API\V1\Admin\AdminDashboardController;
+use App\Http\Controllers\API\V1\AppointmentController;
 use App\Http\Controllers\API\V1\AuthController;
 use App\Http\Controllers\API\V1\ConversationController;
 use App\Http\Controllers\API\V1\NotificationController;
@@ -60,6 +61,10 @@ Route::prefix('v1')->middleware('auth:sanctum')->group(function () {
     Route::get('businesses/{business}/orders', [OrderController::class, 'index']);
     Route::get('orders/{order}', [OrderController::class, 'show']);
     Route::patch('orders/{order}/status', [OrderController::class, 'updateStatus']);
+
+    Route::get('businesses/{business}/appointments', [AppointmentController::class, 'index']);
+    Route::get('appointments/{appointment}', [AppointmentController::class, 'show']);
+    Route::patch('appointments/{appointment}/status', [AppointmentController::class, 'updateStatus']);
 
     Route::post('businesses/{business}/whatsapp/connect', [WhatsAppSetupController::class, 'exchangeToken']);
     Route::post('businesses/{business}/whatsapp/request', [WhatsAppSetupController::class, 'requestActivation']);

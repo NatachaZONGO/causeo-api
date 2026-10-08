@@ -15,7 +15,7 @@ class Business extends Model
     use HasFactory, HasUuids;
 
     /** Modules activables par entreprise. */
-    public const MODULES = ['orders'];
+    public const MODULES = ['orders', 'appointments'];
 
     /**
      * Valeurs par défaut avant enregistrement : aucun module tant qu'on ne l'a pas choisi.
@@ -177,6 +177,14 @@ class Business extends Model
     public function orders(): HasMany
     {
         return $this->hasMany(Order::class);
+    }
+
+    /**
+     * @return HasMany<Appointment>
+     */
+    public function appointments(): HasMany
+    {
+        return $this->hasMany(Appointment::class);
     }
 
     /**
