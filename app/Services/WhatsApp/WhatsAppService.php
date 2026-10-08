@@ -13,6 +13,11 @@ class WhatsAppService
 
     private string $phoneNumberId;
 
+    /**
+     * Sans numéro, l'instance sert seulement à analyser les webhooks : tout envoi
+     * lève WhatsAppNotConnectedException. Le token reste par défaut celui de
+     * l'utilisateur système de la plateforme (services.whatsapp.token).
+     */
     public function __construct(?string $token = null, ?string $phoneNumberId = null)
     {
         $this->client = new Client([
@@ -24,19 +29,37 @@ class WhatsAppService
             'verify' => config('services.curl_ca_bundle', true),
         ]);
 
-        $this->phoneNumberId = $phoneNumberId ?? (string) config('services.whatsapp.phone_number_id');
+        // Jamais de repli sur le numéro global du .env : un business n'envoie que depuis son propre numéro.
+        $this->phoneNumberId = (string) $phoneNumberId;
     }
 
     /**
-     * Construire une instance pour un business : utilise son token/numéro
-     * propres si connecté via Embedded Signup, sinon retombe sur le .env.
+     * Construire une instance pour un business, avec son propre numéro.
+     *
+     * @throws WhatsAppNotConnectedException si le business n'a pas de whatsapp_phone_number_id
      */
     public static function forBusiness(Business $business): self
     {
+        if (empty($business->whatsapp_phone_number_id)) {
+            throw new WhatsAppNotConnectedException();
+        }
+
         return new self(
             $business->whatsapp_token ?: null,
-            $business->whatsapp_phone_number_id ?: null,
+            $business->whatsapp_phone_number_id,
         );
+    }
+
+    /**
+     * @throws WhatsAppNotConnectedException
+     */
+    private function phoneNumberId(): string
+    {
+        if ($this->phoneNumberId === '') {
+            throw new WhatsAppNotConnectedException();
+        }
+
+        return $this->phoneNumberId;
     }
 
     /**
@@ -46,8 +69,10 @@ class WhatsAppService
      */
     public function sendMessage(string $to, string $text): array
     {
+        $phoneNumberId = $this->phoneNumberId();
+
         try {
-            $response = $this->client->post("{$this->phoneNumberId}/messages", [
+            $response = $this->client->post("{$phoneNumberId}/messages", [
                 'json' => [
                     'messaging_product' => 'whatsapp',
                     'to' => $to,
@@ -137,8 +162,10 @@ class WhatsAppService
      */
     private function postMessage(string $to, array $payload, array $logContext): array
     {
+        $phoneNumberId = $this->phoneNumberId();
+
         try {
-            $response = $this->client->post("{$this->phoneNumberId}/messages", [
+            $response = $this->client->post("{$phoneNumberId}/messages", [
                 'json' => array_merge([
                     'messaging_product' => 'whatsapp',
                     'recipient_type' => 'individual',
@@ -187,8 +214,10 @@ class WhatsAppService
      */
     public function markAsRead(string $messageId): void
     {
+        $phoneNumberId = $this->phoneNumberId();
+
         try {
-            $this->client->post("{$this->phoneNumberId}/messages", [
+            $this->client->post("{$phoneNumberId}/messages", [
                 'json' => [
                     'messaging_product' => 'whatsapp',
                     'status' => 'read',

@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\Business;
 use App\Models\Conversation;
 use App\Services\AI\LearningService;
+use App\Services\WhatsApp\WhatsAppNotConnectedException;
 use App\Services\WhatsApp\WhatsAppService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -82,6 +83,14 @@ class ConversationController extends Controller
             ? $conversation->escalations()->findOrFail($data['escalation_id'])
             : null;
 
+        // Envoyer depuis le numéro de l'entreprise, jamais depuis le numéro global :
+        // sans numéro connecté, on refuse avant d'enregistrer quoi que ce soit.
+        try {
+            $whatsApp = WhatsAppService::forBusiness($conversation->business);
+        } catch (WhatsAppNotConnectedException $e) {
+            return response()->json(['message' => $e->getMessage()], 422);
+        }
+
         $message = $conversation->messages()->create([
             'direction' => 'outbound',
             'sender_type' => 'human',
@@ -89,9 +98,7 @@ class ConversationController extends Controller
             'status' => 'answered_by_human',
         ]);
 
-        // Envoyer depuis le numéro de l'entreprise, pas depuis la config globale.
-        $sent = WhatsAppService::forBusiness($conversation->business)
-            ->sendMessage($conversation->customer_phone, $data['response']);
+        $sent = $whatsApp->sendMessage($conversation->customer_phone, $data['response']);
 
         $wamid = $sent['messages'][0]['id'] ?? null;
 

@@ -34,6 +34,11 @@ RUN php artisan route:cache || true
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
+# Plusieurs processus PHP : le traitement IA d'un message (lancé après la réponse
+# au webhook) n'immobilise plus qu'un processus. Laravel n'en tient compte qu'avec
+# --no-reload. Modifiable sur Render via la variable d'environnement.
+ENV PHP_CLI_SERVER_WORKERS=4
+
 EXPOSE 8080
 ENTRYPOINT ["docker-entrypoint.sh"]
-CMD ["sh", "-c", "php artisan serve --host=0.0.0.0 --port=${PORT:-8080}"]
+CMD ["sh", "-c", "php artisan serve --host=0.0.0.0 --port=${PORT:-8080} --no-reload"]

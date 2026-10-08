@@ -52,9 +52,9 @@ class WebhookController extends Controller
     /**
      * Réception des messages entrants WhatsApp.
      *
-     * Répond 200 immédiatement puis traite le message après la réponse, pour
-     * éviter que Meta ne réémette le webhook (timeout ~5 s) et ne provoque des
-     * réponses en double.
+     * Répond 200 immédiatement (avec Content-Length, voir acknowledge()) puis
+     * traite le message après la réponse, pour éviter que Meta ne réémette le
+     * webhook (timeout ~5 s) et ne provoque des réponses en double.
      */
     public function handle(Request $request): Response
     {
@@ -65,7 +65,7 @@ class WebhookController extends Controller
         if ($field === 'account_update') {
             $this->handleAccountUpdates($request, $payload);
 
-            return response('', 200);
+            return $this->acknowledge();
         }
 
         if ($field !== 'messages') {
@@ -73,13 +73,13 @@ class WebhookController extends Controller
 
             $this->handleNonMessageEvent(is_string($field) ? $field : null, is_array($value) ? $value : []);
 
-            return response('', 200);
+            return $this->acknowledge();
         }
 
         $incoming = $this->whatsApp->parseIncomingMessage($payload);
 
         if ($incoming === null || $incoming['message_id'] === '') {
-            return response('', 200);
+            return $this->acknowledge();
         }
 
         // Déduplication : si ce message entrant a déjà été enregistré, on l'ignore.
@@ -92,7 +92,7 @@ class WebhookController extends Controller
                 'whatsapp_message_id' => $incoming['message_id'],
             ]);
 
-            return response('', 200);
+            return $this->acknowledge();
         }
 
         $phoneNumberId = data_get($payload, 'entry.0.changes.0.value.metadata.phone_number_id');
@@ -102,7 +102,17 @@ class WebhookController extends Controller
             $this->process($incoming, $phoneNumberId);
         })->afterResponse();
 
-        return response('', 200);
+        return $this->acknowledge();
+    }
+
+    /**
+     * Accusé de réception pour Meta. Le Content-Length est indispensable : sous
+     * php artisan serve, sans longueur annoncée, Meta attendrait la fermeture de
+     * la connexion, donc la fin du traitement lancé avec afterResponse().
+     */
+    private function acknowledge(): Response
+    {
+        return response('', 200)->header('Content-Length', '0');
     }
 
     /**

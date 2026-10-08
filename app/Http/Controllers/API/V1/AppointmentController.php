@@ -5,6 +5,7 @@ namespace App\Http\Controllers\API\V1;
 use App\Http\Controllers\Controller;
 use App\Models\Appointment;
 use App\Models\Business;
+use App\Services\WhatsApp\WhatsAppNotConnectedException;
 use App\Services\WhatsApp\WhatsAppServiceFactory;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Relations\HasMany;
@@ -133,9 +134,15 @@ class AppointmentController extends Controller
             return 'outside_24h_window';
         }
 
+        try {
+            $whatsApp = $this->whatsApp->forBusiness($appointment->business);
+        } catch (WhatsAppNotConnectedException) {
+            return 'whatsapp_not_connected';
+        }
+
         $text = $this->customerMessage($appointment);
 
-        $sent = $this->whatsApp->forBusiness($appointment->business)->sendMessage($conversation->customer_phone, $text);
+        $sent = $whatsApp->sendMessage($conversation->customer_phone, $text);
         $wamid = $sent['messages'][0]['id'] ?? null;
 
         $conversation->messages()->create([
@@ -172,6 +179,7 @@ class AppointmentController extends Controller
             null => 'Le statut du rendez-vous a été mis à jour et le client a été prévenu sur WhatsApp.',
             'outside_24h_window' => 'Le statut du rendez-vous a été mis à jour. Le client n\'a pas écrit depuis plus de 24 h : aucun message WhatsApp n\'a été envoyé, prévenez-le autrement.',
             'no_conversation' => 'Le statut du rendez-vous a été mis à jour. Aucune conversation WhatsApp n\'est liée : le client n\'a pas été prévenu.',
+            'whatsapp_not_connected' => 'Le statut du rendez-vous a été mis à jour. WhatsApp n\'est pas connecté pour cette entreprise : le client n\'a pas été prévenu.',
             default => 'Le statut du rendez-vous a été mis à jour, mais l\'envoi du message WhatsApp a échoué : prévenez le client autrement.',
         };
     }
