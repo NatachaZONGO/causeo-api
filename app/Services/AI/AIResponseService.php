@@ -22,6 +22,9 @@ class AIResponseService
 
     private const SIMILARITY_THRESHOLD = 0.5;
 
+    /** Nombre maximal de messages de la session envoyés à Claude, en plus du message courant. */
+    private const HISTORY_MAX_MESSAGES = 20;
+
     /** Nombre maximal d'allers-retours tool_use / tool_result par réponse. */
     private const MAX_TOOL_ROUNDS = 3;
 
@@ -52,7 +55,12 @@ class AIResponseService
     {
         $conversation = $conversationId !== null ? Conversation::find($conversationId) : null;
 
-        $simple = $this->handleSimpleMessage($business, $question, $this->hasRecentBotReply($conversationId));
+        // Seuls les messages de la session en cours comptent : après une longue pause,
+        // un ancien sujet ou un récapitulatif resté sans réponse est abandonné.
+        $session = $this->sessionRows($conversationId);
+        $botRepliedInSession = $session->contains(fn (object $row) => $row->direction === 'outbound');
+
+        $simple = $this->handleSimpleMessage($business, $question, $botRepliedInSession);
         if ($simple !== null) {
             return $simple;
         }
@@ -66,9 +74,14 @@ class AIResponseService
 
             $media = $this->findRelevantMedia($business, $question);
 
-            $messages = $this->buildConversationHistory($conversationId, $question);
+            $messages = $this->buildConversationHistory($session, $conversation, $question);
 
             $systemPrompt = $this->buildSystemPrompt($business);
+
+            $pendingSummary = $this->pendingRequestsSummary($conversation);
+            if ($pendingSummary !== null) {
+                $systemPrompt .= "\n\n".$pendingSummary;
+            }
 
             if ($messages !== []) {
                 $systemPrompt .= "\n\n# Contexte de la conversation\n"
@@ -770,19 +783,88 @@ PROMPT;
     }
 
     /**
-     * Indiquer si le bot a déjà répondu dans cette conversation au cours des dernières 24 h.
+     * Messages de la session en cours, du plus ancien au plus récent, message
+     * courant compris : on remonte jusqu'à la première pause de plus de
+     * services.anthropic.session_gap_hours entre deux messages, avec au plus
+     * HISTORY_MAX_MESSAGES messages avant le message courant.
+     *
+     * @return Collection<int, object>
      */
-    private function hasRecentBotReply(?string $conversationId): bool
+    private function sessionRows(?string $conversationId): Collection
     {
         if ($conversationId === null) {
-            return false;
+            return collect();
         }
 
-        return DB::table('messages')
+        $rows = DB::table('messages')
             ->where('conversation_id', $conversationId)
-            ->where('direction', 'outbound')
-            ->where('created_at', '>=', now()->subDay())
-            ->exists();
+            ->orderByDesc('created_at')
+            ->limit(self::HISTORY_MAX_MESSAGES + 1)
+            ->get(['direction', 'content', 'metadata', 'created_at']);
+
+        $gapSeconds = (float) config('services.anthropic.session_gap_hours', 6) * 3600;
+
+        $session = [];
+        $newer = null;
+
+        foreach ($rows as $row) {
+            $at = CarbonImmutable::parse($row->created_at);
+
+            if ($newer !== null && $newer->getTimestamp() - $at->getTimestamp() > $gapSeconds) {
+                break;
+            }
+
+            $session[] = $row;
+            $newer = $at;
+        }
+
+        return collect(array_reverse($session));
+    }
+
+    /**
+     * Résumé factuel des commandes et demandes de rendez-vous encore en attente
+     * de cette conversation, pour que le bot puisse répondre si le client en
+     * parle alors que l'échange où elles ont été faites n'est plus dans l'historique.
+     */
+    private function pendingRequestsSummary(?Conversation $conversation): ?string
+    {
+        if ($conversation === null) {
+            return null;
+        }
+
+        $lines = [];
+
+        $orders = Order::query()->where('conversation_id', $conversation->id)->where('status', 'new')->orderBy('created_at')->get();
+        foreach ($orders as $order) {
+            $items = implode(', ', array_map(
+                fn (array $item) => "{$item['quantity']} × {$item['name']}".(! empty($item['options']) ? " ({$item['options']})" : ''),
+                $order->items ?? [],
+            ));
+            $mode = match ($order->fulfillment_type) {
+                'pickup' => 'retrait en boutique',
+                'shipping' => 'expédition'.($order->delivery_city ? " vers {$order->delivery_city}" : ''),
+                default => 'livraison'.($order->delivery_city ? " à {$order->delivery_city}" : ''),
+            };
+
+            $lines[] = "- Commande {$order->reference()} du {$order->created_at->format('d/m/Y')} : {$items}, total "
+                .number_format($order->total_amount, 0, ',', ' ')." FCFA, {$mode}. Statut : enregistrée, pas encore traitée par l'entreprise.";
+        }
+
+        $appointments = Appointment::query()->where('conversation_id', $conversation->id)->where('status', 'requested')->orderBy('created_at')->get();
+        foreach ($appointments as $appointment) {
+            $lines[] = "- Demande de rendez-vous {$appointment->reference()} : {$appointment->service}, "
+                .$appointment->requested_date->locale('fr')->isoFormat('dddd D MMMM')." à {$appointment->requested_time}. "
+                ."Statut : en attente de confirmation par l'entreprise.";
+        }
+
+        if ($lines === []) {
+            return null;
+        }
+
+        return "# Demandes en cours de ce client\n"
+            ."Ces demandes ont été enregistrées et ne sont pas encore traitées. N'en parle pas de toi-même : "
+            ."utilise ces informations seulement si le client les évoque, sans rien promettre de plus que leur statut.\n"
+            .implode("\n", $lines);
     }
 
     /**
@@ -895,30 +977,16 @@ PROMPT;
     }
 
     /**
-     * Construire l'historique de conversation au format messages Claude.
+     * Construire l'historique de conversation au format messages Claude à partir
+     * des messages de la session en cours (voir sessionRows), en excluant le
+     * message courant qui vient d'être enregistré.
      *
-     * Prend au plus les 10 derniers messages des dernières 24 h, ordonnés du
-     * plus ancien au plus récent, en excluant le message courant qui vient
-     * d'être enregistré.
-     *
+     * @param  Collection<int, object>  $session
      * @return array<int, array{role: string, content: string}>
      */
-    private function buildConversationHistory(?string $conversationId, string $currentQuestion): array
+    private function buildConversationHistory(Collection $session, ?Conversation $conversation, string $currentQuestion): array
     {
-        if ($conversationId === null) {
-            return [];
-        }
-
-        $rows = DB::table('messages')
-            ->where('conversation_id', $conversationId)
-            ->where('created_at', '>=', now()->subDay())
-            ->orderByDesc('created_at')
-            ->limit(10)
-            ->get(['direction', 'content', 'metadata', 'created_at'])
-            ->reverse()
-            ->values();
-
-        $knownReferences = $this->conversationReferences(Conversation::find($conversationId));
+        $rows = $session->values();
 
         // Le message entrant courant est déjà en base : on le retire s'il est en dernier.
         if ($rows->isNotEmpty()) {
@@ -927,6 +995,12 @@ PROMPT;
                 $rows = $rows->slice(0, -1)->values();
             }
         }
+
+        if ($rows->isEmpty()) {
+            return [];
+        }
+
+        $knownReferences = $this->conversationReferences($conversation);
 
         $messages = [];
         foreach ($rows as $row) {
@@ -1342,7 +1416,8 @@ Tu discutes avec un client sur WhatsApp. Tu réponds au nom de {$business->name}
 - Si le contexte invite le client à « contacter la boutique », à « nous écrire », à « appeler » ou à s'adresser à un conseiller pour obtenir une information, cela signifie que cette information n'est pas disponible : tu es déjà le canal de contact du client. Ne recopie JAMAIS cette consigne au client. Réponds par le message d'attente (« Je vérifie ça et je reviens vers vous très vite 😊 ») et ajoute le marqueur JE_NE_SAIS_PAS, comme pour toute escalade.
 
 # Suite de conversation
-- Si la conversation est déjà en cours (il y a un historique de messages), ne resalue PAS le client. Pas de « Bonjour », pas de « Bienvenue », pas de formule d'accueil. Va directement à la réponse. Les salutations ne se font qu'au tout premier message de la conversation.
+- Si la conversation est déjà en cours (il y a un historique de messages), ne resalue PAS le client. Pas de « Bonjour », pas de « Bienvenue », pas de formule d'accueil. Va directement à la réponse. Les salutations ne se font qu'au premier message d'un échange.
+- Quand le client ouvre un nouvel échange par une salutation (il n'y a pas d'historique de messages), réponds à sa salutation et demande-lui comment tu peux l'aider, sans revenir sur un sujet, une commande, un rendez-vous ou un récapitulatif précédent, sauf s'il en parle lui-même. Un récapitulatif resté sans réponse lors d'un échange précédent est abandonné : ne le reprends jamais de toi-même.
 - Le nom de l'entreprise est déjà connu du client. Ne le répète pas inutilement dans chaque message. Utilise-le une fois maximum par réponse, et de manière naturelle — pas « chez Chez Fatou » mais simplement « Chez Fatou », ou rien si le contexte est clair.
 
 # Style des réponses (WhatsApp)

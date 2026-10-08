@@ -47,6 +47,9 @@ return [
     'anthropic' => [
         'api_key' => env('ANTHROPIC_API_KEY'),
         'model' => env('ANTHROPIC_MODEL', 'claude-sonnet-4-20250514'),
+        // Une pause plus longue que cette durée entre deux messages ouvre une nouvelle session :
+        // l'historique envoyé à Claude s'arrête là.
+        'session_gap_hours' => (float) env('AI_SESSION_GAP_HOURS', 6),
     ],
 
     'gemini' => [
