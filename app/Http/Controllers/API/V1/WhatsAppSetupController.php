@@ -5,28 +5,19 @@ namespace App\Http\Controllers\API\V1;
 use App\Http\Controllers\Controller;
 use App\Models\Business;
 use App\Services\WhatsApp\WhatsAppAccountService;
-use GuzzleHttp\Client;
-use GuzzleHttp\Exception\GuzzleException;
+use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
-use RuntimeException;
 
 class WhatsAppSetupController extends Controller
 {
-    private Client $client;
-
-    public function __construct()
-    {
-        $this->client = new Client([
-            'base_uri' => 'https://graph.facebook.com/v21.0/',
-            'verify' => config('services.curl_ca_bundle', true),
-        ]);
-    }
-
     /**
-     * Connecter WhatsApp à partir du WABA ID et du phone_number_id
-     * renvoyés par le message event d'Embedded Signup.
+     * Connecter WhatsApp à partir du WABA ID, du phone_number_id et, si fourni,
+     * du code renvoyés par Embedded Signup. Le code est échangé contre un token
+     * business propre au client ; à défaut, on garde le token système.
+     * Le numéro n'est jamais enregistré (/register) : en Coexistence, il l'est déjà.
      */
     public function exchangeToken(Request $request, Business $business): JsonResponse
     {
@@ -35,39 +26,46 @@ class WhatsAppSetupController extends Controller
         $data = $request->validate([
             'waba_id' => ['required', 'string'],
             'phone_number_id' => ['required', 'string'],
+            'code' => ['nullable', 'string'],
         ]);
 
-        $systemToken = config('services.whatsapp.token');
+        $token = ! empty($data['code']) ? $this->exchangeCode($business, $data['code']) : null;
 
-        if (empty($systemToken)) {
+        if ($token === null) {
+            if (empty($data['code'])) {
+                Log::warning('WhatsAppSetupController: connexion sans code Embedded Signup, repli sur le token système.', [
+                    'business_id' => $business->id,
+                ]);
+            }
+
+            $token = (string) config('services.whatsapp.token');
+        }
+
+        if ($token === '') {
             return response()->json(['message' => 'Configuration serveur manquante.'], 500);
         }
 
         try {
-            $client = new Client([
-                'base_uri' => 'https://graph.facebook.com/v21.0/',
-                'headers' => ['Authorization' => 'Bearer '.$systemToken],
-                'verify' => config('services.curl_ca_bundle', true),
-            ]);
+            // Vérifier que le phone_number_id est valide en récupérant ses infos.
+            $phoneInfo = $this->graph($token)
+                ->get($this->graphUrl($data['phone_number_id']), ['fields' => 'id,verified_name,display_phone_number,quality_rating'])
+                ->throw()
+                ->json();
 
-            // Vérifier que le phone_number_id est valide en récupérant ses infos
-            $phoneResponse = $client->get("{$data['phone_number_id']}", [
-                'query' => ['fields' => 'id,verified_name,display_phone_number,quality_rating'],
-            ]);
-            $phoneInfo = json_decode((string) $phoneResponse->getBody(), true);
-
-            // S'abonner aux webhooks pour ce WABA
-            try {
-                $client->post("{$data['waba_id']}/subscribed_apps");
-            } catch (\Throwable $e) {
-                Log::warning('Webhook subscription failed', ['error' => $e->getMessage()]);
+            // S'abonner aux webhooks pour ce WABA.
+            $subscription = $this->graph($token)->post($this->graphUrl("{$data['waba_id']}/subscribed_apps"));
+            if (! $subscription->successful()) {
+                Log::warning('WhatsAppSetupController: abonnement aux webhooks du WABA refusé.', [
+                    'business_id' => $business->id,
+                    'status' => $subscription->status(),
+                    'error' => $subscription->json('error.message'),
+                ]);
             }
 
-            // Mettre à jour le business
             $business->update([
                 'whatsapp_phone_number_id' => $data['phone_number_id'],
                 'whatsapp_waba_id' => $data['waba_id'],
-                'whatsapp_token' => $systemToken,
+                'whatsapp_token' => $token,
                 'whatsapp_display_name' => $phoneInfo['verified_name'] ?? $phoneInfo['display_phone_number'] ?? null,
                 'whatsapp_verified' => true,
                 'whatsapp_connected_at' => now(),
@@ -91,6 +89,56 @@ class WhatsAppSetupController extends Controller
                 'message' => 'Erreur: '.$e->getMessage(),
             ], 422);
         }
+    }
+
+    /**
+     * Échanger le code Embedded Signup contre un token business
+     * (GET /oauth/access_token avec client_id, client_secret et code).
+     * Renvoie null en cas d'échec ; le code, le secret et le token ne sont jamais journalisés.
+     */
+    private function exchangeCode(Business $business, string $code): ?string
+    {
+        try {
+            $response = Http::withOptions(['verify' => config('services.curl_ca_bundle', true)])
+                ->timeout(15)
+                ->get($this->graphUrl('oauth/access_token'), [
+                    'client_id' => config('services.facebook.app_id'),
+                    'client_secret' => config('services.facebook.app_secret'),
+                    'code' => $code,
+                ]);
+
+            $token = $response->json('access_token');
+
+            if ($response->successful() && is_string($token) && $token !== '') {
+                return $token;
+            }
+
+            Log::warning('WhatsAppSetupController: échange du code Embedded Signup refusé, repli sur le token système.', [
+                'business_id' => $business->id,
+                'status' => $response->status(),
+                'error_type' => $response->json('error.type'),
+                'error_code' => $response->json('error.code'),
+            ]);
+        } catch (\Throwable $e) {
+            Log::warning('WhatsAppSetupController: échange du code Embedded Signup impossible, repli sur le token système.', [
+                'business_id' => $business->id,
+                'exception' => $e::class,
+            ]);
+        }
+
+        return null;
+    }
+
+    private function graph(string $token): PendingRequest
+    {
+        return Http::withToken($token)
+            ->withOptions(['verify' => config('services.curl_ca_bundle', true)])
+            ->timeout(15);
+    }
+
+    private function graphUrl(string $path): string
+    {
+        return rtrim((string) config('services.whatsapp.api_url', 'https://graph.facebook.com/v21.0/'), '/').'/'.$path;
     }
 
     /**

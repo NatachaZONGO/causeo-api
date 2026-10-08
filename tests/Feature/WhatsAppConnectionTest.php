@@ -6,6 +6,7 @@ use App\Models\Business;
 use App\Models\Notification;
 use App\Models\User;
 use Illuminate\Http\Client\Request;
+use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
@@ -47,7 +48,7 @@ class WhatsAppConnectionTest extends TestCase
             'modules' => '[]',
             'whatsapp_phone_number_id' => 'PNID-1',
             'whatsapp_waba_id' => 'WABA-1',
-            'whatsapp_token' => 'business-token',
+            'whatsapp_token' => Crypt::encryptString('business-token'), // colonne chiffrée (cast encrypted)
             'whatsapp_verified' => true,
             'whatsapp_connected_at' => now(),
             'whatsapp_display_name' => 'Joyce Boutique',
@@ -328,7 +329,7 @@ class WhatsAppConnectionTest extends TestCase
         DB::table('businesses')->where('id', $this->business->id)->update([
             'whatsapp_phone_number_id' => 'PNID-1',
             'whatsapp_waba_id' => 'WABA-1',
-            'whatsapp_token' => 'business-token',
+            'whatsapp_token' => Crypt::encryptString('business-token'), // colonne chiffrée (cast encrypted)
             'whatsapp_verified' => true,
             'whatsapp_connected_at' => now(),
             'whatsapp_display_name' => 'Joyce Boutique',

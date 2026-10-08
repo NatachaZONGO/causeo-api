@@ -81,6 +81,8 @@ class Business extends Model
             'is_active' => 'boolean',
             'whatsapp_verified' => 'boolean',
             'whatsapp_connected_at' => 'datetime',
+            // Chiffré en base avec APP_KEY : ne jamais lire la colonne en SQL brut.
+            'whatsapp_token' => 'encrypted',
             'delivery_enabled' => 'boolean',
             'pickup_enabled' => 'boolean',
             'shipping_enabled' => 'boolean',

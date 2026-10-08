@@ -66,6 +66,7 @@ trait CreatesConversationSchema
             '2026_10_08_100000_add_modules_to_businesses.php',
             '2026_10_08_110000_add_appointments_module.php',
             '2026_10_08_120000_add_whatsapp_notification_type.php',
+            '2026_10_08_130000_encrypt_whatsapp_tokens.php',
         ] as $migration) {
             (require base_path("database/migrations/{$migration}"))->up();
         }
