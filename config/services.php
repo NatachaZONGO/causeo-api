@@ -83,4 +83,11 @@ return [
         'app_secret' => env('FACEBOOK_APP_SECRET'),
     ],
 
+    // Paiement manuel des abonnements (en XOF) : un moyen sans numéro n'est pas proposé.
+    'payments' => [
+        'account_name' => env('PAYMENT_ACCOUNT_NAME', 'Causeo'),
+        'orange_money_number' => env('PAYMENT_ORANGE_MONEY_NUMBER'),
+        'moov_money_number' => env('PAYMENT_MOOV_MONEY_NUMBER'),
+    ],
+
 ];

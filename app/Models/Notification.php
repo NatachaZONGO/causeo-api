@@ -11,6 +11,19 @@ class Notification extends Model
 {
     use HasFactory, HasUuids;
 
+    /** Destinataire : le gérant du business. */
+    public const OWNER = 'owner';
+
+    /** Destinataire : les admins Causeo (par exemple un paiement à valider). */
+    public const ADMIN = 'admin';
+
+    /**
+     * @var array<string, mixed>
+     */
+    protected $attributes = [
+        'audience' => self::OWNER,
+    ];
+
     /**
      * The attributes that are mass assignable.
      *
@@ -18,6 +31,7 @@ class Notification extends Model
      */
     protected $fillable = [
         'business_id',
+        'audience',
         'type',
         'title',
         'body',

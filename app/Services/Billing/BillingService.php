@@ -142,6 +142,52 @@ class BillingService
     }
 
     /**
+     * Appliquer un paiement validé (à appeler dans une transaction). Même formule
+     * encore active ou en grâce : la période est prolongée depuis son échéance.
+     * Sinon (essai, Gratuit, autre formule, échue) : une période commence maintenant.
+     *
+     * @return array{subscription: Subscription, period_start: \Carbon\CarbonInterface, period_end: \Carbon\CarbonInterface}
+     */
+    public function applyPayment(Business $business, Plan $plan, int $months): array
+    {
+        $state = $this->state($business);
+        $subscription = Subscription::query()->where('business_id', $business->id)->lockForUpdate()->first();
+        $days = $plan->period_days * $months;
+
+        $extends = $subscription !== null
+            && $subscription->plan_id === $plan->id
+            && $subscription->current_period_end !== null
+            && in_array($state->status, ['active', 'grace'], true);
+
+        if ($extends) {
+            $periodStart = $subscription->current_period_end->copy();
+            $subscription->update([
+                'status' => 'active',
+                'current_period_end' => $periodStart->copy()->addDays($days),
+                'ended_at' => null,
+            ]);
+        } else {
+            $periodStart = now();
+            $subscription = Subscription::query()->updateOrCreate(['business_id' => $business->id], [
+                'plan_id' => $plan->id,
+                'status' => 'active',
+                'trial_ends_at' => null,
+                'current_period_start' => $periodStart,
+                'current_period_end' => $periodStart->copy()->addDays($days),
+                'ended_at' => null,
+            ]);
+        }
+
+        $this->syncPlanColumn($business->fresh());
+
+        return [
+            'subscription' => $subscription->fresh(),
+            'period_start' => $periodStart,
+            'period_end' => $subscription->fresh()->current_period_end,
+        ];
+    }
+
+    /**
      * Recopier la formule effective dans businesses.plan (affichage et filtres admin).
      */
     public function syncPlanColumn(Business $business): BillingState

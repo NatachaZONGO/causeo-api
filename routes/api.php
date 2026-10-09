@@ -1,6 +1,8 @@
 <?php
 
 use App\Http\Controllers\API\V1\Admin\AdminDashboardController;
+use App\Http\Controllers\API\V1\Admin\AdminNotificationController;
+use App\Http\Controllers\API\V1\Admin\AdminPaymentController;
 use App\Http\Controllers\API\V1\AppointmentController;
 use App\Http\Controllers\API\V1\AuthController;
 use App\Http\Controllers\API\V1\BillingController;
@@ -8,6 +10,7 @@ use App\Http\Controllers\API\V1\ConversationController;
 use App\Http\Controllers\API\V1\NotificationController;
 use App\Http\Controllers\API\V1\OnboardingController;
 use App\Http\Controllers\API\V1\OrderController;
+use App\Http\Controllers\API\V1\PaymentController;
 use App\Http\Controllers\API\V1\PlanController;
 use App\Http\Controllers\API\V1\WhatsAppSetupController;
 use App\Models\BusinessTemplate;
@@ -59,6 +62,8 @@ Route::prefix('v1')->middleware('auth:sanctum')->group(function () {
     Route::post('conversations/{conversation}/reply', [ConversationController::class, 'manualReply']);
 
     Route::get('businesses/{business}/billing', [BillingController::class, 'show']);
+    Route::get('businesses/{business}/payments', [PaymentController::class, 'index']);
+    Route::post('businesses/{business}/payments', [PaymentController::class, 'store']);
 
     Route::get('businesses/{business}/notifications', [NotificationController::class, 'index']);
     Route::post('businesses/{business}/notifications/read-all', [NotificationController::class, 'readAll']);
@@ -96,4 +101,13 @@ Route::prefix('v1/admin')->middleware(['auth:sanctum', 'admin'])->group(function
     Route::delete('users/{user}', [AdminDashboardController::class, 'deleteUser']);
     Route::get('conversations', [AdminDashboardController::class, 'conversations']);
     Route::get('escalations', [AdminDashboardController::class, 'escalations']);
+
+    Route::get('payments', [AdminPaymentController::class, 'index']);
+    Route::get('payments/{payment}/proof', [AdminPaymentController::class, 'proof']);
+    Route::post('payments/{payment}/approve', [AdminPaymentController::class, 'approve']);
+    Route::post('payments/{payment}/reject', [AdminPaymentController::class, 'reject']);
+
+    Route::get('notifications', [AdminNotificationController::class, 'index']);
+    Route::post('notifications/read-all', [AdminNotificationController::class, 'readAll']);
+    Route::post('notifications/{notification}/read', [AdminNotificationController::class, 'read']);
 });

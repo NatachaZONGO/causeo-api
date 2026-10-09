@@ -95,13 +95,28 @@ class CurrencyTest extends TestCase
         $owner = User::forceCreate(['name' => 'Gérant', 'email' => 'owner@example.test', 'password' => 'x']);
         Sanctum::actingAs($owner);
 
+        config([
+            'services.payments.account_name' => 'Causeo',
+            'services.payments.orange_money_number' => '70000000',
+            'services.payments.moov_money_number' => null,
+        ]);
+
         $ouaga = $this->makeBusiness($owner, 'BF');
         $this->getJson("/api/v1/businesses/{$ouaga->id}/billing")
             ->assertOk()
             ->assertJsonPath('billing.currency', 'XOF')
             ->assertJsonPath('billing.plan.slug', 'pro')
             ->assertJsonPath('billing.plan.price', ['currency' => 'XOF', 'amount' => 19900, 'period_days' => 30, 'daily_amount' => 663.33])
-            ->assertJsonPath('billing.payment', ['available' => true, 'currency' => 'XOF', 'methods' => ['orange_money', 'moov_money'], 'message' => null]);
+            // Seuls les moyens dont le numéro est configuré sont proposés.
+            ->assertJsonPath('billing.payment', ['available' => true, 'currency' => 'XOF', 'methods' => [
+                ['method' => 'orange_money', 'label' => 'Orange Money', 'number' => '70000000', 'account_name' => 'Causeo'],
+            ], 'message' => null]);
+
+        // Aucun numéro configuré : pas de paiement possible, même en XOF.
+        config(['services.payments.orange_money_number' => null]);
+        $this->getJson("/api/v1/businesses/{$ouaga->id}/billing")
+            ->assertJsonPath('billing.payment', ['available' => false, 'currency' => 'XOF', 'methods' => [], 'message' => 'Bientôt disponible']);
+        config(['services.payments.orange_money_number' => '70000000']);
 
         $paris = $this->makeBusiness($owner, 'FR');
         $this->getJson("/api/v1/businesses/{$paris->id}/billing")

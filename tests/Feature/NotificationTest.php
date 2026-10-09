@@ -60,6 +60,7 @@ class NotificationTest extends TestCase
             $table->timestamps();
         });
         (require base_path('database/migrations/2026_10_07_100000_create_notifications_table.php'))->up();
+        (require base_path('database/migrations/2026_10_09_140000_create_payments_and_admin_notifications.php'))->up();
 
         $this->owner = User::forceCreate(['name' => 'Gérant', 'email' => 'owner@example.test', 'password' => 'x']);
         $this->businessId = (string) Str::uuid();

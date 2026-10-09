@@ -34,6 +34,8 @@ class NotificationController extends Controller
         $notification->loadMissing('business');
 
         $this->checkOwnership($notification->business);
+        // Une notification destinée aux admins n'est pas visible du gérant.
+        abort_unless($notification->audience === Notification::OWNER, 404);
 
         if ($notification->read_at === null) {
             $notification->update(['read_at' => now()]);

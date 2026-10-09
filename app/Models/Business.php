@@ -180,11 +180,13 @@ class Business extends Model
     }
 
     /**
+     * Notifications destinées au gérant (celles destinées aux admins Causeo sont exclues).
+     *
      * @return HasMany<Notification>
      */
     public function notifications(): HasMany
     {
-        return $this->hasMany(Notification::class);
+        return $this->hasMany(Notification::class)->where('audience', Notification::OWNER);
     }
 
     /**
