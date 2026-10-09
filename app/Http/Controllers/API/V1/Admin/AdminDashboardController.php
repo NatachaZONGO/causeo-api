@@ -8,10 +8,14 @@ use App\Models\Conversation;
 use App\Models\DocumentChunk;
 use App\Models\Escalation;
 use App\Models\Message;
+use App\Models\Plan;
+use App\Models\Subscription;
 use App\Models\User;
+use App\Services\Billing\BillingService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\Rule;
 
 class AdminDashboardController extends Controller
 {
@@ -22,8 +26,12 @@ class AdminDashboardController extends Controller
     {
         $now = now();
 
-        $revenueEstimate = Business::where('plan', 'pro')->count() * 15000
-            + Business::where('plan', 'enterprise')->count() * 45000;
+        // Revenu mensuel estimé : formules payantes en cours (période active ou grâce).
+        $revenueEstimate = Subscription::query()->with(['plan', 'business'])->whereIn('status', ['active', 'grace'])->get()
+            ->filter(fn (Subscription $subscription) => $subscription->business !== null
+                && $subscription->plan->isPaid()
+                && ! $subscription->business->billingState()->isFree())
+            ->sum(fn (Subscription $subscription) => $subscription->plan->price_fcfa);
 
         return response()->json([
             'total_users' => User::count(),
@@ -89,16 +97,25 @@ class AdminDashboardController extends Controller
     /**
      * Mettre à jour une entreprise (plan, statut, IA).
      */
-    public function updateBusiness(Request $request, Business $business): JsonResponse
+    public function updateBusiness(Request $request, Business $business, BillingService $billing): JsonResponse
     {
         $data = $request->validate([
-            'plan' => ['sometimes', 'string'],
+            'plan' => ['sometimes', 'string', Rule::exists('plans', 'slug')->where('is_active', true)],
             'is_active' => ['sometimes', 'boolean'],
             'ai_instructions' => ['sometimes', 'nullable', 'string'],
             'custom_greeting' => ['sometimes', 'nullable', 'string'],
+        ], [
+            'plan.exists' => 'Formule inconnue.',
         ]);
 
+        // La formule passe par l'abonnement (businesses.plan n'en est que le reflet).
+        if (array_key_exists('plan', $data)) {
+            $billing->assignPlan($business, Plan::bySlug($data['plan']));
+            unset($data['plan']);
+        }
+
         $business->update($data);
+        $business->refresh();
 
         return response()->json([
             'message' => 'L\'entreprise a été mise à jour avec succès.',

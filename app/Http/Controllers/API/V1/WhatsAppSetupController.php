@@ -4,6 +4,7 @@ namespace App\Http\Controllers\API\V1;
 
 use App\Http\Controllers\Controller;
 use App\Models\Business;
+use App\Services\Billing\BillingService;
 use App\Services\WhatsApp\WhatsAppAccountService;
 use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Http\JsonResponse;
@@ -19,7 +20,7 @@ class WhatsAppSetupController extends Controller
      * business propre au client ; à défaut, on garde le token système.
      * Le numéro n'est jamais enregistré (/register) : en Coexistence, il l'est déjà.
      */
-    public function exchangeToken(Request $request, Business $business): JsonResponse
+    public function exchangeToken(Request $request, Business $business, BillingService $billing): JsonResponse
     {
         $this->checkOwnership($business);
 
@@ -70,6 +71,9 @@ class WhatsAppSetupController extends Controller
                 'whatsapp_verified' => true,
                 'whatsapp_connected_at' => now(),
             ]);
+
+            // Un numéro qui a déjà servi à un essai ne donne pas droit à un second.
+            $billing->onWhatsAppConnected($business, $phoneInfo['display_phone_number'] ?? null);
 
             return response()->json([
                 'message' => 'WhatsApp connecté avec succès !',

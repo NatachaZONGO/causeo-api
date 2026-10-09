@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Models\Business;
 use App\Models\BusinessTemplate;
 use App\Models\User;
+use Database\Seeders\PlanSeeder;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
@@ -26,9 +27,14 @@ class ModulesTest extends TestCase
             '2026_09_04_042020_create_businesses_table.php',
             '2026_09_11_224217_create_business_templates_table.php',
             '2026_09_12_015531_rename_whatsapp_number_and_add_whatsapp_fields_to_businesses_table.php',
+            '2026_09_06_003335_create_subscriptions_table.php',
+            '2026_10_09_100000_create_plans_table.php',
         ] as $migration) {
             (require base_path("database/migrations/{$migration}"))->up();
         }
+
+        (new PlanSeeder())->run();
+        (require base_path('database/migrations/2026_10_09_110000_rework_subscriptions_and_trials.php'))->up();
 
         // Tables comptées par GET /businesses/{business}.
         foreach (['documents', 'conversations', 'escalations'] as $table) {

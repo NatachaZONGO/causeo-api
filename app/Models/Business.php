@@ -4,11 +4,14 @@ namespace App\Models;
 
 use App\Enums\BusinessType;
 use App\Enums\SubscriptionPlan;
+use App\Services\Billing\BillingService;
+use App\Services\Billing\BillingState;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 
 class Business extends Model
 {
@@ -198,31 +201,20 @@ class Business extends Model
     }
 
     /**
-     * @return HasMany<Subscription>
+     * Abonnement du business (essai, formule payante ou Interne), absent en Gratuit.
+     *
+     * @return HasOne<Subscription>
      */
-    public function subscriptions(): HasMany
+    public function subscription(): HasOne
     {
-        return $this->hasMany(Subscription::class);
+        return $this->hasOne(Subscription::class);
     }
 
     /**
-     * Determine whether the business has reached its monthly message limit
-     * for its current plan.
+     * Formule et statut effectifs, calculés à partir des dates.
      */
-    public function hasReachedMessageLimit(): bool
+    public function billingState(): BillingState
     {
-        $limit = match ($this->plan) {
-            SubscriptionPlan::Free => 50,
-            SubscriptionPlan::Starter => 500,
-            SubscriptionPlan::Pro => 2000,
-            SubscriptionPlan::Enterprise => null,
-            default => 50,
-        };
-
-        if ($limit === null) {
-            return false;
-        }
-
-        return (int) $this->monthly_message_count >= $limit;
+        return app(BillingService::class)->state($this);
     }
 }

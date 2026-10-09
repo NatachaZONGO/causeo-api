@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\Business;
 use App\Models\BusinessTemplate;
 use App\Models\DocumentChunk;
+use App\Services\Billing\BillingService;
 use App\Services\Embedding\EmbeddingService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -21,7 +22,7 @@ class OnboardingController extends Controller
     /**
      * Créer l'entreprise de l'utilisateur à partir d'un template d'onboarding.
      */
-    public function store(Request $request): JsonResponse
+    public function store(Request $request, BillingService $billing): JsonResponse
     {
         $data = $request->validate([
             'template_id' => ['required', 'exists:business_templates,id'],
@@ -54,10 +55,12 @@ class OnboardingController extends Controller
             'custom_greeting' => str_replace('{nom}', $data['business_name'], $template->default_greeting),
             'ai_instructions' => str_replace('{nom}', $data['business_name'], $template->default_ai_instructions),
             'country' => $user->country,
-            'plan' => 'free',
             'is_active' => true,
             'modules' => $template->default_modules ?? [],
         ]);
+
+        // 30 jours de Pro offerts, sauf si l'utilisateur a déjà eu un essai.
+        $billing->startTrial($business, $user);
 
         if (! empty($template->sample_faq)) {
             $this->seedFaqDocument($business, $template->sample_faq);
@@ -65,7 +68,7 @@ class OnboardingController extends Controller
 
         return response()->json([
             'message' => 'Votre entreprise a été créée avec succès.',
-            'business' => $business,
+            'business' => $business->fresh(),
             'user' => $user->load('businesses'),
         ], 201);
     }

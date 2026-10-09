@@ -5,6 +5,7 @@ namespace App\Http\Controllers\API\V1;
 use App\Enums\BusinessType;
 use App\Http\Controllers\Controller;
 use App\Models\Business;
+use App\Services\Billing\BillingService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
@@ -27,7 +28,7 @@ class BusinessController extends Controller
     /**
      * Créer une entreprise pour l'utilisateur connecté.
      */
-    public function store(Request $request): JsonResponse
+    public function store(Request $request, BillingService $billing): JsonResponse
     {
         $data = $request->validate($this->rules(), $this->messages());
 
@@ -38,9 +39,12 @@ class BusinessController extends Controller
 
         $business = auth()->user()->businesses()->create($data);
 
+        // 30 jours de Pro offerts, sauf si l'utilisateur a déjà eu un essai.
+        $billing->startTrial($business, auth()->user());
+
         return response()->json([
             'message' => 'L\'entreprise a été créée avec succès.',
-            'business' => $business,
+            'business' => $business->fresh(),
         ], 201);
     }
 

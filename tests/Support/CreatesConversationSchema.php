@@ -2,6 +2,7 @@
 
 namespace Tests\Support;
 
+use Database\Seeders\PlanSeeder;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\Schema;
 
@@ -33,6 +34,7 @@ trait CreatesConversationSchema
             $table->timestamp('whatsapp_connected_at')->nullable();
             $table->string('whatsapp_display_name')->nullable();
             $table->integer('monthly_message_count')->default(0);
+            $table->string('plan')->default('free');
             $table->timestamps();
         });
         Schema::create('conversations', function (Blueprint $table) {
@@ -67,8 +69,14 @@ trait CreatesConversationSchema
             '2026_10_08_110000_add_appointments_module.php',
             '2026_10_08_120000_add_whatsapp_notification_type.php',
             '2026_10_08_130000_encrypt_whatsapp_tokens.php',
+            '2026_09_06_003335_create_subscriptions_table.php',
+            '2026_10_09_100000_create_plans_table.php',
         ] as $migration) {
             (require base_path("database/migrations/{$migration}"))->up();
         }
+
+        // Comme au déploiement : formules, puis refonte des abonnements.
+        (new PlanSeeder())->run();
+        (require base_path('database/migrations/2026_10_09_110000_rework_subscriptions_and_trials.php'))->up();
     }
 }
