@@ -7,6 +7,7 @@ use App\Http\Controllers\API\V1\ConversationController;
 use App\Http\Controllers\API\V1\NotificationController;
 use App\Http\Controllers\API\V1\OnboardingController;
 use App\Http\Controllers\API\V1\OrderController;
+use App\Http\Controllers\API\V1\PlanController;
 use App\Http\Controllers\API\V1\WhatsAppSetupController;
 use App\Models\BusinessTemplate;
 use Illuminate\Support\Facades\Route;
@@ -22,6 +23,8 @@ Route::prefix('webhook')->group(function () {
 Route::get('v1/templates', fn () => response()->json(
     BusinessTemplate::where('is_active', true)->orderBy('sort_order')->get()
 ));
+
+Route::get('v1/plans', [PlanController::class, 'index']);
 
 Route::post('v1/onboarding', [OnboardingController::class, 'store'])->middleware('auth:sanctum');
 

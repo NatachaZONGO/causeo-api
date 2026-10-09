@@ -6,6 +6,7 @@ php artisan config:cache
 php artisan route:cache
 php artisan migrate --force
 php artisan db:seed --class=BusinessTemplateSeeder --force
+php artisan db:seed --class=PlanSeeder --force
 
 # Worker de file en arrière-plan, relancé s'il s'arrête
 (
