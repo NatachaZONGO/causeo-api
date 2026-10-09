@@ -92,6 +92,7 @@ trait CreatesConversationSchema
         (require base_path('database/migrations/2026_10_09_110000_rework_subscriptions_and_trials.php'))->up();
         (require base_path('database/migrations/2026_10_09_130000_add_billing_notification_type.php'))->up();
         (require base_path('database/migrations/2026_10_09_140000_create_payments_and_admin_notifications.php'))->up();
+        (require base_path('database/migrations/2026_10_09_150000_create_subscription_reminders_table.php'))->up();
     }
 
     /**

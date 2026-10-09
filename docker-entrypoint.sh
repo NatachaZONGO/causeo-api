@@ -16,4 +16,12 @@ php artisan db:seed --class=PlanSeeder --force
   done
 ) &
 
+# Planificateur (billing:sync, rapport hebdomadaire), relancé s'il s'arrête
+(
+  while true; do
+    php artisan schedule:work || true
+    sleep 2
+  done
+) &
+
 exec "$@"

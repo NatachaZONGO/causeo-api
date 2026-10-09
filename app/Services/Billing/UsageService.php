@@ -8,6 +8,7 @@ use App\Models\Notification;
 use App\Models\Plan;
 use App\Models\Subscription;
 use Carbon\CarbonImmutable;
+use Carbon\CarbonInterface;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Throwable;
@@ -247,7 +248,7 @@ class UsageService
      * réponses toutes faites aux salutations et remerciements (metadata.canned),
      * qui ne coûtent aucun appel à Claude, ne comptent pas.
      */
-    private function repliesSince(Business $business, CarbonImmutable $since): int
+    public function repliesSince(Business $business, CarbonInterface $since, ?CarbonInterface $until = null): int
     {
         return DB::table('messages')
             ->join('conversations', 'conversations.id', '=', 'messages.conversation_id')
@@ -256,6 +257,7 @@ class UsageService
             ->where('messages.sender_type', 'ai')
             ->whereNull('messages.metadata->canned')
             ->where('messages.created_at', '>=', $since)
+            ->when($until !== null, fn ($query) => $query->where('messages.created_at', '<', $until))
             ->count();
     }
 }

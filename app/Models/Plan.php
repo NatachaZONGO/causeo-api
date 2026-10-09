@@ -22,6 +22,9 @@ class Plan extends Model
 
     public const INTERNAL = 'internal';
 
+    /** Temps qu'un gérant passerait à rédiger une réponse lui-même (temps économisé affiché). */
+    public const MINUTES_PER_REPLY = 2;
+
     /**
      * The attributes that are mass assignable.
      *

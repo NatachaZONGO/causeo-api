@@ -11,7 +11,7 @@ use Illuminate\Database\Seeder;
 class PlanSeeder extends Seeder
 {
     /** Temps qu'un gérant passerait à rédiger une réponse lui-même. */
-    public const MINUTES_PER_REPLY = 2;
+    public const MINUTES_PER_REPLY = Plan::MINUTES_PER_REPLY;
 
     /**
      * Prix des formules payantes par devise (le XOF doit rester égal à price_fcfa).
