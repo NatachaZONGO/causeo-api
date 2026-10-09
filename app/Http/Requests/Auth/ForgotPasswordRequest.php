@@ -22,7 +22,8 @@ class ForgotPasswordRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'email' => ['required', 'email', 'exists:users,email'],
+            // Pas de règle exists : la réponse ne doit pas révéler si le compte existe.
+            'email' => ['required', 'email', 'max:255'],
         ];
     }
 
@@ -36,7 +37,7 @@ class ForgotPasswordRequest extends FormRequest
         return [
             'email.required' => 'L\'adresse e-mail est obligatoire.',
             'email.email' => 'L\'adresse e-mail n\'est pas valide.',
-            'email.exists' => 'Aucun compte n\'est associé à cette adresse e-mail.',
+            'email.max' => 'L\'adresse e-mail ne doit pas dépasser 255 caractères.',
         ];
     }
 }
