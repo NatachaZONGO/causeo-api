@@ -29,6 +29,7 @@ class ModulesTest extends TestCase
             '2026_09_12_015531_rename_whatsapp_number_and_add_whatsapp_fields_to_businesses_table.php',
             '2026_09_06_003335_create_subscriptions_table.php',
             '2026_10_09_100000_create_plans_table.php',
+            '2026_10_09_120000_create_plan_prices_table.php',
         ] as $migration) {
             (require base_path("database/migrations/{$migration}"))->up();
         }

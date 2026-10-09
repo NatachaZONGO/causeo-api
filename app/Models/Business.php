@@ -6,6 +6,7 @@ use App\Enums\BusinessType;
 use App\Enums\SubscriptionPlan;
 use App\Services\Billing\BillingService;
 use App\Services\Billing\BillingState;
+use App\Services\Billing\Currency;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
@@ -208,6 +209,14 @@ class Business extends Model
     public function subscription(): HasOne
     {
         return $this->hasOne(Subscription::class);
+    }
+
+    /**
+     * Devise d'affichage des prix, selon le pays (XOF, EUR ou USD).
+     */
+    public function currency(): string
+    {
+        return Currency::forCountry($this->country);
     }
 
     /**

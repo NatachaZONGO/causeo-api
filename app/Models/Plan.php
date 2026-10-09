@@ -6,6 +6,7 @@ use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class Plan extends Model
 {
@@ -91,6 +92,38 @@ class Plan extends Model
     public function isPaid(): bool
     {
         return $this->price_fcfa > 0;
+    }
+
+    /**
+     * @return HasMany<PlanPrice>
+     */
+    public function prices(): HasMany
+    {
+        return $this->hasMany(PlanPrice::class);
+    }
+
+    /**
+     * Prix dans une devise : montant, période et prix journalier. Une formule sans
+     * prix dans cette devise (Gratuit, Interne) vaut 0 sans échéance.
+     *
+     * @return array{currency: string, amount: int, period_days: ?int, daily_amount: ?float}
+     */
+    public function priceIn(string $currency): array
+    {
+        $price = $this->relationLoaded('prices')
+            ? $this->prices->firstWhere('currency', $currency)
+            : $this->prices()->where('currency', $currency)->first();
+
+        if ($price === null) {
+            return ['currency' => $currency, 'amount' => 0, 'period_days' => null, 'daily_amount' => null];
+        }
+
+        return [
+            'currency' => $currency,
+            'amount' => $price->amount,
+            'period_days' => $price->period_days,
+            'daily_amount' => round($price->amount / $price->period_days, 2),
+        ];
     }
 
     /**

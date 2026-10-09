@@ -13,6 +13,7 @@ class PlanTest extends TestCase
         parent::setUp();
 
         (require base_path('database/migrations/2026_10_09_100000_create_plans_table.php'))->up();
+        (require base_path('database/migrations/2026_10_09_120000_create_plan_prices_table.php'))->up();
     }
 
     public function test_seeder_creates_the_five_plans_with_the_decided_limits(): void
@@ -98,6 +99,7 @@ class PlanTest extends TestCase
             'slug' => 'free',
             'name' => 'Gratuit',
             'description' => 'Pour découvrir Causeo et répondre aux premières questions de vos clients.',
+            'price' => ['currency' => 'XOF', 'amount' => 0, 'period_days' => null, 'daily_amount' => null],
             'price_fcfa' => 0,
             'period_days' => null,
             'daily_price_fcfa' => null,

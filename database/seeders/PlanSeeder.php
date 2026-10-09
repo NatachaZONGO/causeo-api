@@ -4,12 +4,25 @@ namespace Database\Seeders;
 
 use App\Models\Business;
 use App\Models\Plan;
+use App\Models\PlanPrice;
+use App\Services\Billing\Currency;
 use Illuminate\Database\Seeder;
 
 class PlanSeeder extends Seeder
 {
     /** Temps qu'un gérant passerait à rédiger une réponse lui-même. */
     public const MINUTES_PER_REPLY = 2;
+
+    /**
+     * Prix des formules payantes par devise (le XOF doit rester égal à price_fcfa).
+     *
+     * @var array<string, array<string, int>>
+     */
+    public const PRICES = [
+        Plan::STARTER => [Currency::XOF => 9900, Currency::EUR => 15, Currency::USD => 15],
+        Plan::PRO => [Currency::XOF => 19900, Currency::EUR => 29, Currency::USD => 29],
+        Plan::BUSINESS => [Currency::XOF => 44900, Currency::EUR => 69, Currency::USD => 69],
+    ];
 
     /**
      * Formules Causeo. Relancé à chaque déploiement (docker-entrypoint.sh) :
@@ -133,6 +146,17 @@ class PlanSeeder extends Seeder
 
         foreach ($plans as $plan) {
             Plan::updateOrCreate(['slug' => $plan['slug']], $plan + ['is_active' => true]);
+        }
+
+        foreach (self::PRICES as $slug => $amounts) {
+            $plan = Plan::bySlug($slug);
+
+            foreach ($amounts as $currency => $amount) {
+                PlanPrice::updateOrCreate(
+                    ['plan_id' => $plan->id, 'currency' => $currency],
+                    ['amount' => $amount, 'period_days' => $plan->period_days],
+                );
+            }
         }
     }
 
