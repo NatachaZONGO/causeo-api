@@ -44,6 +44,7 @@ class OrderTest extends TestCase
 
         $businessId = (string) Str::uuid();
         DB::table('businesses')->insert(['id' => $businessId, 'user_id' => $this->owner->id, 'name' => 'Joyce Boutique', 'modules' => '["orders"]']);
+        $this->assignPlan($businessId);
         $this->business = Business::findOrFail($businessId);
 
         $this->conversationId = (string) Str::uuid();

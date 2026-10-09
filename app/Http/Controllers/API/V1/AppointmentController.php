@@ -89,7 +89,7 @@ class AppointmentController extends Controller
         $appointment->loadMissing('business', 'conversation');
 
         $this->checkOwnership($appointment->business);
-        $this->checkAppointmentsModule($appointment->business);
+        $this->checkAppointmentsModule($appointment->business, write: true);
 
         $data = $request->validate([
             'status' => ['required', Rule::in(Appointment::STATUSES)],
@@ -204,10 +204,16 @@ class AppointmentController extends Controller
 
     /**
      * Refuser l'accès aux rendez-vous si le module n'est pas activé pour l'entreprise.
+     * Pour une modification ($write), la formule doit aussi comprendre le module :
+     * en Gratuit, les demandes existantes restent consultables, en lecture seule.
      */
-    private function checkAppointmentsModule(Business $business): void
+    private function checkAppointmentsModule(Business $business, bool $write = false): void
     {
-        abort_unless($business->hasModule('appointments'), 403, "Le module Rendez-vous n'est pas activé pour cette entreprise.");
+        abort_unless($business->moduleEnabled('appointments'), 403, "Le module Rendez-vous n'est pas activé pour cette entreprise.");
+
+        if ($write) {
+            abort_unless($business->hasModule('appointments'), 403, "Votre formule {$business->billingState()->plan->name} ne permet pas de gérer les rendez-vous : passez en Pro pour les traiter.");
+        }
     }
 
     /**

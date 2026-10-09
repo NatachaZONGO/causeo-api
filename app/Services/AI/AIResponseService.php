@@ -1235,6 +1235,8 @@ PROMPT;
             'should_escalate' => false,
             'context_used' => [],
             'media_ids' => [],
+            // Réponse toute faite, sans appel à Claude : non comptée dans les limites.
+            'canned' => true,
         ];
     }
 

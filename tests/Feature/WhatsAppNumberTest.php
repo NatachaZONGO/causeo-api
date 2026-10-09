@@ -46,6 +46,7 @@ class WhatsAppNumberTest extends TestCase
             'name' => 'Belle Coiffure',
             'modules' => '["appointments"]',
         ]);
+        $this->assignPlan($businessId);
         $this->business = Business::findOrFail($businessId);
 
         $this->conversationId = (string) Str::uuid();

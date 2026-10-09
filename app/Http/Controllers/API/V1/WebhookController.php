@@ -10,6 +10,7 @@ use App\Models\Escalation;
 use App\Models\Message;
 use App\Services\AI\AIResponseService;
 use App\Services\AI\LearningService;
+use App\Services\Billing\UsageService;
 use App\Services\WhatsApp\WhatsAppAccountService;
 use App\Services\WhatsApp\WhatsAppService;
 use Illuminate\Database\QueryException;
@@ -33,6 +34,7 @@ class WebhookController extends Controller
         private readonly AIResponseService $ai,
         private readonly LearningService $learningService,
         private readonly WhatsAppAccountService $accounts,
+        private readonly UsageService $usage,
     ) {
     }
 
@@ -343,8 +345,6 @@ class WebhookController extends Controller
 
             $whatsApp = WhatsAppService::forBusiness($business);
 
-            $whatsApp->markAsRead($incoming['message_id']);
-
             $conversation = Conversation::firstOrCreate(
                 [
                     'business_id' => $business->id,
@@ -378,6 +378,16 @@ class WebhookController extends Controller
 
                 return;
             }
+
+            // Limite de réponses atteinte : le message reste enregistré (et non lu dans
+            // l'app WhatsApp Business du gérant), mais l'IA n'est pas appelée.
+            if (! $this->usage->allowsReply($business)) {
+                $this->usage->recordMissedReply($business, $inboundMessage);
+
+                return;
+            }
+
+            $whatsApp->markAsRead($incoming['message_id']);
 
             $result = $this->ai->answer($business, $incoming['text'], $conversation->id);
 
@@ -421,7 +431,7 @@ class WebhookController extends Controller
                     'whatsapp_message_id' => data_get($sent, 'messages.0.id'),
                     'metadata' => [
                         'context_used' => $result['context_used'],
-                    ] + ($result['tool_trace'] ?? []),
+                    ] + ($result['tool_trace'] ?? []) + (! empty($result['canned']) ? ['canned' => true] : []),
                 ]);
 
                 $inboundMessage->update(['status' => 'answered_by_ai']);
@@ -432,6 +442,11 @@ class WebhookController extends Controller
             }
 
             $business->increment('monthly_message_count');
+
+            // Alertes à 80 % et 100 % de la limite mensuelle (une réponse toute faite ne compte pas).
+            if (empty($result['canned'])) {
+                $this->usage->afterReply($business);
+            }
         } catch (Throwable $e) {
             Log::error('WebhookController::process a échoué', [
                 'whatsapp_message_id' => $incoming['message_id'] ?? null,
@@ -518,9 +533,9 @@ class WebhookController extends Controller
         // Trouver ou créer la conversation
         $conversation = Conversation::firstOrCreate(
             ['business_id' => $business->id, 'customer_phone' => $data['from']],
-            ['customer_name' => $data['customer_name'], 'is_active' => true, 'last_message_at' => now()]
+            ['customer_name' => $data['customer_name'] ?? null, 'is_active' => true, 'last_message_at' => now()]
         );
-        $conversation->update(['last_message_at' => now(), 'customer_name' => $data['customer_name']]);
+        $conversation->update(['last_message_at' => now(), 'customer_name' => $data['customer_name'] ?? $conversation->customer_name]);
 
         // Sauvegarder le message entrant
         $message = Message::create([
@@ -530,6 +545,19 @@ class WebhookController extends Controller
             'whatsapp_message_id' => $data['message_id'],
             'sender_type' => 'customer',
         ]);
+
+        // Limite de réponses atteinte : message gardé, pas de réponse automatique.
+        if (! $this->usage->allowsReply($business)) {
+            $this->usage->recordMissedReply($business, $message);
+
+            return response()->json([
+                'answer' => null,
+                'media_urls' => [],
+                'media_ids' => [],
+                'should_escalate' => false,
+                'limit_reached' => true,
+            ]);
+        }
 
         // Traitement IA
         $result = app(AIResponseService::class)->answer($business, $data['text'], $conversation->id);
@@ -541,7 +569,7 @@ class WebhookController extends Controller
                 'direction' => 'outbound',
                 'content' => $result['answer'],
                 'sender_type' => 'ai',
-                'metadata' => ['confidence' => $result['confidence']] + ($result['tool_trace'] ?? []),
+                'metadata' => ['confidence' => $result['confidence']] + ($result['tool_trace'] ?? []) + (! empty($result['canned']) ? ['canned' => true] : []),
             ]);
         }
 
@@ -557,6 +585,10 @@ class WebhookController extends Controller
         }
 
         $business->increment('monthly_message_count');
+
+        if ($result['answer'] && empty($result['canned'])) {
+            $this->usage->afterReply($business);
+        }
 
         // Retourner la réponse + les URLs des médias
         $mediaUrls = [];

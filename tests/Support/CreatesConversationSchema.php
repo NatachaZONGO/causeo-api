@@ -2,8 +2,12 @@
 
 namespace Tests\Support;
 
+use App\Models\Business;
+use App\Models\Plan;
+use App\Services\Billing\BillingService;
 use Database\Seeders\PlanSeeder;
 use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
 /**
@@ -36,6 +40,7 @@ trait CreatesConversationSchema
             $table->integer('monthly_message_count')->default(0);
             $table->string('plan')->default('free');
             $table->string('country')->default('BF');
+            $table->boolean('is_active')->default(true);
             $table->timestamps();
         });
         Schema::create('conversations', function (Blueprint $table) {
@@ -43,6 +48,8 @@ trait CreatesConversationSchema
             $table->uuid('business_id');
             $table->string('customer_phone');
             $table->string('customer_name')->nullable();
+            $table->boolean('is_active')->default(true);
+            $table->timestamp('last_message_at')->nullable();
             $table->timestamps();
         });
         Schema::create('messages', function (Blueprint $table) {
@@ -56,6 +63,8 @@ trait CreatesConversationSchema
             $table->json('metadata')->nullable();
             $table->timestamps();
         });
+        // Même index unique qu'en production (un message entrant WhatsApp n'est enregistré qu'une fois).
+        DB::statement("CREATE UNIQUE INDEX messages_inbound_wamid_unique ON messages (whatsapp_message_id) WHERE whatsapp_message_id IS NOT NULL AND direction = 'inbound'");
         Schema::create('business_templates', function (Blueprint $table) {
             $table->uuid('id')->primary();
             $table->string('slug');
@@ -80,5 +89,15 @@ trait CreatesConversationSchema
         // Comme au déploiement : formules, puis refonte des abonnements.
         (new PlanSeeder())->run();
         (require base_path('database/migrations/2026_10_09_110000_rework_subscriptions_and_trials.php'))->up();
+        (require base_path('database/migrations/2026_10_09_130000_add_billing_notification_type.php'))->up();
+    }
+
+    /**
+     * Donner une formule à un business de test (Interne par défaut : tous les modules,
+     * sans limite). Sans abonnement, un business est en Gratuit.
+     */
+    protected function assignPlan(string $businessId, string $plan = Plan::INTERNAL): void
+    {
+        app(BillingService::class)->assignPlan(Business::findOrFail($businessId), Plan::bySlug($plan));
     }
 }

@@ -33,6 +33,16 @@ class DocumentController extends Controller
     {
         $this->checkOwnership($business);
 
+        // Limite de documents de la formule (1 en Gratuit) : les documents existants restent utilisés.
+        $plan = $business->billingState()->plan;
+        if ($plan->document_limit !== null && $business->documents()->count() >= $plan->document_limit) {
+            return response()->json([
+                'message' => "Votre formule {$plan->name} permet {$plan->document_limit} document"
+                    .($plan->document_limit > 1 ? 's' : '')
+                    .' : passez en Starter pour en ajouter d\'autres.',
+            ], 403);
+        }
+
         $data = $request->validate([
             'file' => ['required', 'file', 'mimes:pdf,txt,docx,csv', 'max:10240'],
             'title' => ['nullable', 'string', 'max:255'],

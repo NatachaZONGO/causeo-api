@@ -43,6 +43,7 @@ class ConversationSessionTest extends TestCase
             'name' => 'Joyce',
             'modules' => '["orders","appointments"]',
         ]);
+        $this->assignPlan($businessId);
         $this->business = Business::findOrFail($businessId);
 
         $this->conversationId = (string) Str::uuid();

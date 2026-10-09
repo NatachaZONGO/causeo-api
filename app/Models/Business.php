@@ -95,11 +95,21 @@ class Business extends Model
     }
 
     /**
-     * Indiquer si un module (voir MODULES) est actif pour cette entreprise.
+     * Le gérant a-t-il activé ce module (voir MODULES) ? Ses pages restent alors
+     * consultables, même si la formule ne permet plus de l'utiliser.
+     */
+    public function moduleEnabled(string $module): bool
+    {
+        return in_array($module, $this->modules ?? [], true);
+    }
+
+    /**
+     * Le module est-il utilisable : activé par le gérant ET compris dans la formule
+     * effective (le Gratuit n'en comprend aucun) ?
      */
     public function hasModule(string $module): bool
     {
-        return in_array($module, $this->modules ?? [], true);
+        return $this->moduleEnabled($module) && $this->billingState()->plan->allowsModule($module);
     }
 
     /**

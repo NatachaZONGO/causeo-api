@@ -52,6 +52,7 @@ class AppointmentTest extends TestCase
             'type' => 'salon_beaute',
             'modules' => '["appointments"]',
         ]);
+        $this->assignPlan($businessId);
         $this->business = Business::findOrFail($businessId);
 
         $this->conversationId = (string) Str::uuid();

@@ -156,7 +156,7 @@ class ModulesTest extends TestCase
         $this->patchJson("/api/v1/businesses/{$business->id}", ['modules' => ['orders', 'orders']])
             ->assertOk()
             ->assertJsonPath('business.modules', ['orders']);
-        $this->assertTrue($business->fresh()->hasModule('orders'));
+        $this->assertTrue($business->fresh()->moduleEnabled('orders'));
 
         $this->patchJson("/api/v1/businesses/{$business->id}", ['modules' => ['orders', 'stock']])
             ->assertUnprocessable()
@@ -173,7 +173,7 @@ class ModulesTest extends TestCase
         $this->patchJson("/api/v1/businesses/{$business->id}", ['modules' => []])
             ->assertOk()
             ->assertJsonPath('business.modules', []);
-        $this->assertFalse($business->fresh()->hasModule('orders'));
+        $this->assertFalse($business->fresh()->moduleEnabled('orders'));
     }
 
     public function test_other_users_cannot_change_modules(): void

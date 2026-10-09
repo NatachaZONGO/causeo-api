@@ -59,6 +59,16 @@ class BillingTest extends TestCase
                 $blueprint->string('status')->nullable();
             });
         }
+        // Réponses du bot comptées pour l'usage (GET /businesses/{business}/billing).
+        Schema::create('messages', function (Blueprint $table) {
+            $table->uuid('id')->primary();
+            $table->uuid('conversation_id');
+            $table->string('direction');
+            $table->string('sender_type')->nullable();
+            $table->string('status')->nullable();
+            $table->json('metadata')->nullable();
+            $table->timestamps();
+        });
 
         $this->templateId = (string) Str::uuid();
         DB::table('business_templates')->insert([

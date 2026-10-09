@@ -65,7 +65,7 @@ class OrderController extends Controller
         $order->loadMissing('business');
 
         $this->checkOwnership($order->business);
-        $this->checkOrdersModule($order->business);
+        $this->checkOrdersModule($order->business, write: true);
 
         $data = $request->validate([
             'status' => ['required', Rule::in(Order::STATUSES)],
@@ -109,10 +109,16 @@ class OrderController extends Controller
 
     /**
      * Refuser l'accès aux commandes si le module n'est pas activé pour l'entreprise.
+     * Pour une modification ($write), la formule doit aussi comprendre le module :
+     * en Gratuit, les commandes existantes restent consultables, en lecture seule.
      */
-    private function checkOrdersModule(Business $business): void
+    private function checkOrdersModule(Business $business, bool $write = false): void
     {
-        abort_unless($business->hasModule('orders'), 403, "Le module Commandes n'est pas activé pour cette entreprise.");
+        abort_unless($business->moduleEnabled('orders'), 403, "Le module Commandes n'est pas activé pour cette entreprise.");
+
+        if ($write) {
+            abort_unless($business->hasModule('orders'), 403, "Votre formule {$business->billingState()->plan->name} ne permet pas de gérer les commandes : passez en Pro pour les traiter.");
+        }
     }
 
     /**

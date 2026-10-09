@@ -48,6 +48,17 @@ class LearningService
      */
     public function learnFromEscalation(Escalation $escalation): void
     {
+        // En Gratuit, les réponses du gérant ne sont pas apprises (celles déjà apprises restent utilisées).
+        $business = $escalation->business;
+        if ($business !== null && ! $business->billingState()->plan->learning) {
+            Log::info('LearningService: apprentissage non compris dans la formule, réponse non apprise.', [
+                'business_id' => $business->id,
+                'escalation_id' => $escalation->id,
+            ]);
+
+            return;
+        }
+
         try {
             $learned = LearnedResponse::create([
                 'business_id' => $escalation->business_id,
