@@ -51,6 +51,7 @@ class Business extends Model
         'city',
         'country',
         'logo_url',
+        'website',
         'opening_hours',
         'custom_greeting',
         'ai_instructions',
