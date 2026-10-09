@@ -50,6 +50,25 @@ return [
         // Une pause plus longue que cette durée entre deux messages ouvre une nouvelle session :
         // l'historique envoyé à Claude s'arrête là.
         'session_gap_hours' => (float) env('AI_SESSION_GAP_HOURS', 6),
+        // Statistiques de coût de l'admin : prix publics en dollars par million de tokens
+        // (platform.claude.com/docs/en/about-claude/pricing, relevés le 09/10/2026), par
+        // modèle. Une réponse enregistrée avec un modèle absent de cette table est
+        // affichée « prix inconnu ». cache_write : écriture en cache 5 minutes, et
+        // cache_read : lecture du cache, en multiples du prix d'entrée.
+        'pricing' => [
+            'usd_to_xof' => (float) env('AI_COST_USD_TO_XOF', 600),
+            'models' => [
+                'claude-haiku-4-5' => ['input' => 1.0, 'output' => 5.0, 'cache_write' => 1.25, 'cache_read' => 0.1],
+                // Prix des requêtes de moins de 100 000 tokens (au-delà, ×5 : jamais le cas ici).
+                'claude-haiku-5-5' => ['input' => 0.1, 'output' => 0.5, 'cache_write' => 1.25, 'cache_read' => 0.1],
+                // Retiré de l'API Claude, gardé pour l'historique.
+                'claude-sonnet-4' => ['input' => 3.0, 'output' => 15.0, 'cache_write' => 1.25, 'cache_read' => 0.1],
+                'claude-sonnet-4-5' => ['input' => 3.0, 'output' => 15.0, 'cache_write' => 1.25, 'cache_read' => 0.1],
+                'claude-sonnet-4-6' => ['input' => 3.0, 'output' => 15.0, 'cache_write' => 1.25, 'cache_read' => 0.1],
+                'claude-sonnet-5' => ['input' => 2.0, 'output' => 10.0, 'cache_write' => 1.25, 'cache_read' => 0.1],
+                'claude-sonnet-5-5' => ['input' => 2.0, 'output' => 10.0, 'cache_write' => 1.25, 'cache_read' => 0.05],
+            ],
+        ],
     ],
 
     'gemini' => [

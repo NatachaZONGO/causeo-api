@@ -1,5 +1,6 @@
 <?php
 
+use App\Http\Controllers\API\V1\Admin\AdminAiCostController;
 use App\Http\Controllers\API\V1\Admin\AdminDashboardController;
 use App\Http\Controllers\API\V1\Admin\AdminNotificationController;
 use App\Http\Controllers\API\V1\Admin\AdminPaymentController;
@@ -101,6 +102,8 @@ Route::prefix('v1/admin')->middleware(['auth:sanctum', 'admin'])->group(function
     Route::delete('users/{user}', [AdminDashboardController::class, 'deleteUser']);
     Route::get('conversations', [AdminDashboardController::class, 'conversations']);
     Route::get('escalations', [AdminDashboardController::class, 'escalations']);
+
+    Route::get('ai-costs', [AdminAiCostController::class, 'index']);
 
     Route::get('payments', [AdminPaymentController::class, 'index']);
     Route::get('payments/{payment}/proof', [AdminPaymentController::class, 'proof']);

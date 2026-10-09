@@ -28,6 +28,15 @@ class AIResponseService
     /** Nombre maximal d'allers-retours tool_use / tool_result par réponse. */
     private const MAX_TOOL_ROUNDS = 3;
 
+    /** Tokens consommés pendant une réponse, additionnés sur tous les appels à Claude. */
+    private const EMPTY_USAGE = [
+        'calls' => 0,
+        'input_tokens' => 0,
+        'output_tokens' => 0,
+        'cache_creation_input_tokens' => 0,
+        'cache_read_input_tokens' => 0,
+    ];
+
     /** Message d'attente envoyé quand une réponse est bloquée puis escaladée. */
     private const WAITING_MESSAGE = 'Je vérifie ça et je reviens vers vous très vite 😊';
 
@@ -66,7 +75,7 @@ class AIResponseService
         }
 
         $context = collect();
-        $trace = ['orders' => [], 'appointments' => [], 'tool_errors' => [], 'blocked_claim' => false];
+        $trace = ['orders' => [], 'appointments' => [], 'tool_errors' => [], 'blocked_claim' => false, 'usage' => self::EMPTY_USAGE];
 
         try {
             $context = $this->findRelevantContext($business, $question);
@@ -260,12 +269,13 @@ class AIResponseService
      * Appeler Claude puis exécuter les appels d'outils jusqu'à la réponse finale.
      *
      * @param  array<string, mixed>  $request  complété avec les échanges tool_use / tool_result
-     * @param  array{orders: array<int, array{id: string, reference: string}>, appointments: array<int, array{id: string, reference: string}>, tool_errors: array<int, string>, blocked_claim: bool}  $trace
+     * @param  array{orders: array<int, array{id: string, reference: string}>, appointments: array<int, array{id: string, reference: string}>, tool_errors: array<int, string>, blocked_claim: bool, usage: array<string, int>}  $trace
      * @return array<string, mixed>
      */
     private function converse(array &$request, Business $business, ?Conversation $conversation, array &$trace): array
     {
         $payload = $this->callClaude($request);
+        $this->addUsage($trace, $payload);
 
         for ($round = 0; ($payload['stop_reason'] ?? null) === 'tool_use' && $round < self::MAX_TOOL_ROUNDS; $round++) {
             $request['messages'][] = ['role' => 'assistant', 'content' => $payload['content']];
@@ -275,9 +285,25 @@ class AIResponseService
             ];
 
             $payload = $this->callClaude($request);
+            $this->addUsage($trace, $payload);
         }
 
         return $payload;
+    }
+
+    /**
+     * Additionner les tokens d'un appel à Claude (outils et nouvel essai compris).
+     *
+     * @param  array<string, mixed>  $trace
+     * @param  array<string, mixed>  $payload
+     */
+    private function addUsage(array &$trace, array $payload): void
+    {
+        $trace['usage']['calls']++;
+
+        foreach (['input_tokens', 'output_tokens', 'cache_creation_input_tokens', 'cache_read_input_tokens'] as $key) {
+            $trace['usage'][$key] += (int) data_get($payload, "usage.{$key}", 0);
+        }
     }
 
     /**
@@ -286,7 +312,7 @@ class AIResponseService
      * n'a pas confirmé. Renvoie la raison du blocage, ou null si la réponse peut
      * être envoyée.
      *
-     * @param  array{orders: array<int, array{id: string, reference: string}>, appointments: array<int, array{id: string, reference: string}>, tool_errors: array<int, string>, blocked_claim: bool}  $trace
+     * @param  array{orders: array<int, array{id: string, reference: string}>, appointments: array<int, array{id: string, reference: string}>, tool_errors: array<int, string>, blocked_claim: bool, usage: array<string, int>}  $trace
      */
     private function unverifiedOrderClaim(string $text, array $trace, ?Conversation $conversation): ?string
     {
@@ -510,7 +536,7 @@ class AIResponseService
     /**
      * Trace des appels d'outils à enregistrer dans le metadata du message sortant.
      *
-     * @param  array{orders: array<int, array{id: string, reference: string}>, appointments: array<int, array{id: string, reference: string}>, tool_errors: array<int, string>, blocked_claim: bool}  $trace
+     * @param  array{orders: array<int, array{id: string, reference: string}>, appointments: array<int, array{id: string, reference: string}>, tool_errors: array<int, string>, blocked_claim: bool, usage: array<string, int>}  $trace
      * @return array<string, mixed>
      */
     private function traceForMetadata(array $trace): array
@@ -520,6 +546,8 @@ class AIResponseService
             'appointments' => $trace['appointments'],
             'tool_errors' => $trace['tool_errors'],
             'blocked_claim' => $trace['blocked_claim'],
+            // Tokens consommés pour produire ce message (coût calculé par AiCostService).
+            'ai_usage' => $trace['usage']['calls'] > 0 ? ['model' => $this->model, ...$trace['usage']] : null,
         ]);
     }
 
@@ -564,7 +592,7 @@ class AIResponseService
      * tous dans un même message utilisateur.
      *
      * @param  array<int, array<string, mixed>>  $content
-     * @param  array{orders: array<int, array{id: string, reference: string}>, appointments: array<int, array{id: string, reference: string}>, tool_errors: array<int, string>, blocked_claim: bool}  $trace
+     * @param  array{orders: array<int, array{id: string, reference: string}>, appointments: array<int, array{id: string, reference: string}>, tool_errors: array<int, string>, blocked_claim: bool, usage: array<string, int>}  $trace
      * @return array<int, array<string, mixed>>
      */
     private function runTools(array $content, Business $business, ?Conversation $conversation, array &$trace): array
