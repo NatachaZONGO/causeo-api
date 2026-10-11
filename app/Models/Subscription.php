@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
@@ -65,6 +66,32 @@ class Subscription extends Model
     /**
      * @return BelongsTo<Plan, $this>
      */
+    /**
+     * Abonnements qui donnent encore accès à leur formule à l'instant présent : essai
+     * non échu, période en cours ou en grâce, ou formule sans échéance (Interne).
+     * Mêmes règles que BillingService::state(), traduites en SQL pour filtrer.
+     *
+     * @param  Builder<Subscription>  $query
+     * @return Builder<Subscription>
+     */
+    public function scopeCurrent(Builder $query): Builder
+    {
+        $now = now();
+
+        return $query->where(function (Builder $query) use ($now) {
+            $query
+                ->where(fn (Builder $trial) => $trial
+                    ->where('status', 'trialing')
+                    ->whereNotNull('trial_ends_at')
+                    ->where('trial_ends_at', '>', $now))
+                ->orWhere(fn (Builder $period) => $period
+                    ->whereNotIn('status', ['trialing', 'expired', 'cancelled'])
+                    ->where(fn (Builder $end) => $end
+                        ->whereNull('current_period_end')
+                        ->orWhere('current_period_end', '>', $now->copy()->subDays(self::GRACE_DAYS))));
+        });
+    }
+
     public function plan(): BelongsTo
     {
         return $this->belongsTo(Plan::class);

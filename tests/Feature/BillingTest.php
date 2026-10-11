@@ -288,6 +288,61 @@ class BillingTest extends TestCase
             ->assertJsonPath('business.billing.ends_at', null);
     }
 
+    public function test_admin_plan_filter_uses_the_effective_plan(): void
+    {
+        $owner = $this->makeUser();
+        $trial = $this->onboard($owner);
+        $starter = $this->onboard($this->makeUser());
+        $internal = $this->onboard($this->makeUser());
+        $free = $this->onboard($this->makeUser());
+        $billing = app(BillingService::class);
+        $billing->assignPlan($starter, Plan::bySlug('starter'));
+        $billing->assignPlan($internal, Plan::bySlug('internal'));
+        $billing->assignPlan($free, Plan::bySlug('free'));
+        // Deuxième business du même gérant : pas de second essai, donc Gratuit.
+        Sanctum::actingAs($owner);
+        $this->postJson('/api/v1/businesses', ['name' => 'Sans essai', 'type' => 'boutique'])->assertCreated();
+
+        Sanctum::actingAs(User::forceCreate(['name' => 'Admin', 'email' => 'admin@example.test', 'password' => 'x', 'country' => 'BF', 'is_admin' => true]));
+
+        $expectations = [
+            // Aujourd'hui : essai Pro, Starter actif, Interne, deux Gratuit.
+            '2026-10-09 10:00:00' => ['pro' => [$trial], 'starter' => [$starter], 'internal' => [$internal]],
+            // Essai fini (la colonne dit encore « pro ») ; Starter échu le 8/11 mais en grâce jusqu'au 11/11.
+            '2026-11-10 10:00:00' => ['pro' => [], 'starter' => [$starter], 'internal' => [$internal]],
+            // Grâce dépassée : Starter passe en Gratuit.
+            '2026-11-11 10:00:00' => ['pro' => [], 'starter' => [], 'internal' => [$internal]],
+        ];
+
+        foreach ($expectations as $date => $paid) {
+            $this->travelTo($date);
+            foreach (['free', 'starter', 'pro', 'business', 'internal'] as $slug) {
+                $expected = Business::all()
+                    ->filter(fn (Business $business) => $business->billingState()->plan->slug === $slug)
+                    ->pluck('id')->sort()->values()->all();
+                $filtered = collect($this->getJson("/api/v1/admin/businesses?plan={$slug}")->assertOk()->json('data'))
+                    ->pluck('id')->sort()->values()->all();
+
+                $this->assertSame($expected, $filtered, "Filtre « {$slug} » le {$date}");
+                if (isset($paid[$slug])) {
+                    $this->assertSame(collect($paid[$slug])->pluck('id')->sort()->values()->all(), $filtered, "Formule {$slug} le {$date}");
+                }
+            }
+        }
+    }
+
+    public function test_admin_status_filter_reads_is_active(): void
+    {
+        $active = $this->onboard($this->makeUser());
+        $inactive = $this->onboard($this->makeUser());
+        $inactive->forceFill(['is_active' => false])->save();
+        Sanctum::actingAs(User::forceCreate(['name' => 'Admin', 'email' => 'admin@example.test', 'password' => 'x', 'country' => 'BF', 'is_admin' => true]));
+
+        $this->getJson('/api/v1/admin/businesses?is_active=0')->assertJsonCount(1, 'data')->assertJsonPath('data.0.id', $inactive->id);
+        $this->getJson('/api/v1/admin/businesses?is_active=1')->assertJsonCount(1, 'data')->assertJsonPath('data.0.id', $active->id);
+        $this->getJson('/api/v1/admin/businesses')->assertJsonCount(2, 'data')->assertJsonPath('data.0.user.name', 'Gérant');
+    }
+
     public function test_billing_endpoint_is_private(): void
     {
         $business = $this->onboard($this->makeUser());

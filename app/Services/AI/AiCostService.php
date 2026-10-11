@@ -2,6 +2,7 @@
 
 namespace App\Services\AI;
 
+use App\Models\Business;
 use Carbon\CarbonImmutable;
 use Illuminate\Database\Query\Builder;
 use Illuminate\Support\Facades\DB;
@@ -80,16 +81,29 @@ class AiCostService
     {
         $groups = $this->replies($month->startOfMonth(), $month->addMonth()->startOfMonth())
             ->join('businesses', 'businesses.id', '=', 'conversations.business_id')
-            ->groupBy('businesses.id', 'businesses.name', 'businesses.plan', DB::raw($this->model()))
-            ->selectRaw('businesses.id as business_id, businesses.name, businesses.plan, '.$this->model().' as model, '.$this->sums())
+            ->groupBy('businesses.id', 'businesses.name', DB::raw($this->model()))
+            ->selectRaw('businesses.id as business_id, businesses.name, '.$this->model().' as model, '.$this->sums())
             ->get();
+
+        // Formule effective (calculée à partir des dates), pas la colonne businesses.plan resynchronisée toutes les heures.
+        $states = Business::query()
+            ->with('subscription.plan')
+            ->whereIn('id', $groups->pluck('business_id')->unique())
+            ->get()
+            ->mapWithKeys(fn (Business $business) => [$business->id => $business->billingState()]);
 
         $businesses = $groups
             ->groupBy('business_id')
-            ->map(function ($rows) {
+            ->map(function ($rows) use ($states) {
                 $first = $rows->first();
+                $plan = $states->get($first->business_id)?->plan;
 
-                return ['business_id' => $first->business_id, 'name' => $first->name, 'plan' => $first->plan] + $this->figures($rows->all());
+                return [
+                    'business_id' => $first->business_id,
+                    'name' => $first->name,
+                    'plan' => $plan?->slug,
+                    'plan_name' => $plan?->name,
+                ] + $this->figures($rows->all());
             })
             // Les plus coûteux d'abord ; ceux dont le coût est inconnu à la fin.
             ->sortByDesc(fn (array $business) => $business['cost_usd'] ?? -1)

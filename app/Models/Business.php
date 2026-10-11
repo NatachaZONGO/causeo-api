@@ -7,6 +7,7 @@ use App\Enums\SubscriptionPlan;
 use App\Services\Billing\BillingService;
 use App\Services\Billing\BillingState;
 use App\Services\Billing\Currency;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
@@ -230,6 +231,25 @@ class Business extends Model
     public function currency(): string
     {
         return Currency::forCountry($this->country);
+    }
+
+    /**
+     * Businesses dont la formule EFFECTIVE (calculée à partir des dates) est $slug, et non
+     * la colonne businesses.plan, qui n'est resynchronisée que toutes les heures.
+     *
+     * @param  Builder<Business>  $query
+     * @return Builder<Business>
+     */
+    public function scopeWhereEffectivePlan(Builder $query, string $slug): Builder
+    {
+        $onPlan = fn (string $operator) => fn (Builder $subscription) => $subscription
+            ->current()
+            ->whereHas('plan', fn (Builder $plan) => $plan->where('slug', $operator, $slug));
+
+        // Gratuit : aucun abonnement en cours sur une autre formule (essai échu, grâce dépassée, pas d'abonnement…).
+        return $slug === Plan::FREE
+            ? $query->whereDoesntHave('subscription', $onPlan('!='))
+            : $query->whereHas('subscription', $onPlan('='));
     }
 
     /**

@@ -126,7 +126,10 @@ class AiCostTest extends TestCase
             ->assertJsonPath('businesses.0.name', 'Salon Fatou')
             ->assertJsonPath('businesses.0.replies', 1)
             ->assertJsonPath('businesses.1.name', 'Joyce Boutique')
-            ->assertJsonPath('businesses.1.replies', 2);
+            ->assertJsonPath('businesses.1.replies', 2)
+            // Formule effective, avec son nom lisible.
+            ->assertJsonPath('businesses.1.plan', 'internal')
+            ->assertJsonPath('businesses.1.plan_name', 'Interne');
 
         $this->assertEqualsWithDelta(0.02895, $response->json('totals.cost_usd'), 0.0001);
         $this->assertEquals(17, $response->json('totals.cost_xof'));

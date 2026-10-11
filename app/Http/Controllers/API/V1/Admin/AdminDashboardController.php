@@ -67,8 +67,9 @@ class AdminDashboardController extends Controller
             ])
             ->addSelect(['monthly_message_count']);
 
+        // Formule effective (essai échu = Gratuit même avant le passage horaire de billing:sync).
         if ($request->filled('plan')) {
-            $query->where('plan', $request->input('plan'));
+            $query->whereEffectivePlan((string) $request->input('plan'));
         }
 
         if ($request->has('is_active')) {
