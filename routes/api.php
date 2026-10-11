@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\API\V1\Admin\AdminAiCostController;
 use App\Http\Controllers\API\V1\Admin\AdminDashboardController;
+use App\Http\Controllers\API\V1\Admin\AdminMailTestController;
 use App\Http\Controllers\API\V1\Admin\AdminNotificationController;
 use App\Http\Controllers\API\V1\Admin\AdminPaymentController;
 use App\Http\Controllers\API\V1\AppointmentController;
@@ -104,6 +105,9 @@ Route::prefix('v1/admin')->middleware(['auth:sanctum', 'admin'])->group(function
     Route::get('escalations', [AdminDashboardController::class, 'escalations']);
 
     Route::get('ai-costs', [AdminAiCostController::class, 'index']);
+
+    // TEMPORAIRE : diagnostic de l'envoi des e-mails.
+    Route::post('mail-test', [AdminMailTestController::class, 'send']);
 
     Route::get('payments', [AdminPaymentController::class, 'index']);
     Route::get('payments/{payment}/proof', [AdminPaymentController::class, 'proof']);
