@@ -4,6 +4,7 @@ use App\Http\Controllers\API\V1\Admin\AdminAiCostController;
 use App\Http\Controllers\API\V1\Admin\AdminDashboardController;
 use App\Http\Controllers\API\V1\Admin\AdminNotificationController;
 use App\Http\Controllers\API\V1\Admin\AdminPaymentController;
+use App\Http\Controllers\API\V1\Admin\AdminPlanController;
 use App\Http\Controllers\API\V1\AppointmentController;
 use App\Http\Controllers\API\V1\AuthController;
 use App\Http\Controllers\API\V1\BillingController;
@@ -94,6 +95,7 @@ Route::prefix('v1')->middleware('auth:sanctum')->group(function () {
 
 Route::prefix('v1/admin')->middleware(['auth:sanctum', 'admin'])->group(function () {
     Route::get('stats', [AdminDashboardController::class, 'stats']);
+    Route::get('plans', [AdminPlanController::class, 'index']);
     Route::get('businesses', [AdminDashboardController::class, 'businesses']);
     Route::put('businesses/{business}', [AdminDashboardController::class, 'updateBusiness']);
     Route::put('businesses/{business}/whatsapp', [AdminDashboardController::class, 'configureBusinessWhatsapp']);

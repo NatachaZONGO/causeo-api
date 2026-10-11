@@ -60,7 +60,7 @@ class AdminDashboardController extends Controller
     public function businesses(Request $request): JsonResponse
     {
         $query = Business::query()
-            ->with('user:id,name,email')
+            ->with(['user:id,name,email', 'subscription.plan'])
             ->withCount([
                 'conversations',
                 'documents',
@@ -88,7 +88,7 @@ class AdminDashboardController extends Controller
         $businesses->getCollection()->transform(function (Business $business) {
             $business->monthly_message_count = (int) $business->monthly_message_count;
 
-            return $business;
+            return $business->toArray() + ['billing' => $this->billingSummary($business)];
         });
 
         return response()->json($businesses);
@@ -119,8 +119,27 @@ class AdminDashboardController extends Controller
 
         return response()->json([
             'message' => 'L\'entreprise a été mise à jour avec succès.',
-            'business' => $business,
+            'business' => $business->toArray() + ['billing' => $this->billingSummary($business)],
         ]);
+    }
+
+    /**
+     * Formule et statut effectifs (calculés à partir des dates) : businesses.plan n'est
+     * resynchronisé que toutes les heures et peut retarder sur la fin d'un essai.
+     *
+     * @return array{status: string, plan: array{slug: string, name: string}, ends_at: ?string, grace_ends_at: ?string, days_left: ?int}
+     */
+    private function billingSummary(Business $business): array
+    {
+        $state = $business->billingState();
+
+        return [
+            'status' => $state->status,
+            'plan' => ['slug' => $state->plan->slug, 'name' => $state->plan->name],
+            'ends_at' => $state->endsAt?->toIso8601String(),
+            'grace_ends_at' => $state->graceEndsAt?->toIso8601String(),
+            'days_left' => $state->daysLeft(),
+        ];
     }
 
     /**

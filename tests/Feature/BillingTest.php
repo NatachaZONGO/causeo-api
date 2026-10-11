@@ -241,6 +241,53 @@ class BillingTest extends TestCase
         $this->putJson("/api/v1/admin/businesses/{$business->id}", ['plan' => 'internal'])->assertForbidden();
     }
 
+    public function test_admin_lists_every_active_plan_including_internal(): void
+    {
+        $owner = $this->makeUser();
+        Sanctum::actingAs(User::forceCreate(['name' => 'Admin', 'email' => 'admin@example.test', 'password' => 'x', 'country' => 'BF', 'is_admin' => true]));
+
+        $plans = $this->getJson('/api/v1/admin/plans')->assertOk()->json('plans');
+
+        $this->assertSame(['free', 'starter', 'pro', 'business', 'internal'], array_column($plans, 'slug'));
+        $this->assertSame(['Gratuit', 'Starter', 'Pro', 'Business', 'Interne'], array_column($plans, 'name'));
+        $this->assertFalse($plans[4]['is_public']);
+
+        // Une formule désactivée ne peut plus être attribuée : elle disparaît de la liste.
+        Plan::where('slug', 'business')->update(['is_active' => false]);
+        $this->assertNotContains('business', array_column($this->getJson('/api/v1/admin/plans')->json('plans'), 'slug'));
+
+        Sanctum::actingAs($owner);
+        $this->getJson('/api/v1/admin/plans')->assertForbidden();
+    }
+
+    public function test_admin_business_list_shows_the_effective_plan_and_status(): void
+    {
+        $business = $this->onboard($this->makeUser());
+        Sanctum::actingAs(User::forceCreate(['name' => 'Admin', 'email' => 'admin@example.test', 'password' => 'x', 'country' => 'BF', 'is_admin' => true]));
+
+        $this->getJson('/api/v1/admin/businesses')
+            ->assertOk()
+            ->assertJsonPath('data.0.billing.status', 'trialing')
+            ->assertJsonPath('data.0.billing.plan.slug', 'pro')
+            ->assertJsonPath('data.0.billing.plan.name', 'Pro')
+            ->assertJsonPath('data.0.billing.days_left', 30);
+
+        // Essai terminé, avant le passage horaire de billing:sync : la colonne dit encore « pro ».
+        $this->travel(31)->days();
+        $this->assertSame('pro', $business->fresh()->getRawOriginal('plan'));
+        $this->getJson('/api/v1/admin/businesses')
+            ->assertJsonPath('data.0.plan', 'pro')
+            ->assertJsonPath('data.0.billing.status', 'free')
+            ->assertJsonPath('data.0.billing.plan.slug', 'free');
+
+        $this->putJson("/api/v1/admin/businesses/{$business->id}", ['plan' => 'internal'])
+            ->assertOk()
+            ->assertJsonPath('business.billing.status', 'active')
+            ->assertJsonPath('business.billing.plan.slug', 'internal')
+            ->assertJsonPath('business.billing.plan.name', 'Interne')
+            ->assertJsonPath('business.billing.ends_at', null);
+    }
+
     public function test_billing_endpoint_is_private(): void
     {
         $business = $this->onboard($this->makeUser());
