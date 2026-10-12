@@ -14,6 +14,7 @@ use App\Http\Controllers\API\V1\OnboardingController;
 use App\Http\Controllers\API\V1\OrderController;
 use App\Http\Controllers\API\V1\PaymentController;
 use App\Http\Controllers\API\V1\PlanController;
+use App\Http\Controllers\API\V1\WhatsAppAlertController;
 use App\Http\Controllers\API\V1\WhatsAppSetupController;
 use App\Models\BusinessTemplate;
 use Illuminate\Support\Facades\Route;
@@ -72,6 +73,11 @@ Route::prefix('v1')->middleware('auth:sanctum')->group(function () {
     Route::get('businesses/{business}/notifications', [NotificationController::class, 'index']);
     Route::post('businesses/{business}/notifications/read-all', [NotificationController::class, 'readAll']);
     Route::post('notifications/{notification}/read', [NotificationController::class, 'read']);
+
+    // Alertes WhatsApp du gérant connecté (depuis le numéro Causeo).
+    Route::get('me/whatsapp-alerts', [WhatsAppAlertController::class, 'show']);
+    Route::put('me/whatsapp-alerts', [WhatsAppAlertController::class, 'update']);
+    Route::post('me/whatsapp-alerts/test', [WhatsAppAlertController::class, 'test'])->middleware('throttle:5,1');
 
     Route::get('businesses/{business}/orders', [OrderController::class, 'index']);
     Route::get('orders/{order}', [OrderController::class, 'show']);

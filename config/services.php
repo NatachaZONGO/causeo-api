@@ -86,6 +86,16 @@ return [
         'api_url' => env('WHATSAPP_API_URL', 'https://graph.facebook.com/v21.0/'),
     ],
 
+    // Alertes WhatsApp aux gérants, envoyées depuis le numéro Causeo avec le token
+    // de l'utilisateur système (services.whatsapp.token) et des modèles approuvés.
+    'causeo_notify' => [
+        'phone_number_id' => env('CAUSEO_NOTIFY_PHONE_NUMBER_ID'),
+        'waba_id' => env('CAUSEO_NOTIFY_WABA_ID'),
+        'language' => env('CAUSEO_NOTIFY_LANGUAGE', 'fr'),
+        // Au plus une alerte d'escalade par business pendant ce délai (les suivantes restent dans la cloche).
+        'escalation_cooldown_minutes' => (int) env('CAUSEO_NOTIFY_ESCALATION_COOLDOWN_MINUTES', 15),
+    ],
+
     // Mode Express (bridge Baileys), désactivé par défaut : ses webhooks répondent 404
     // sauf si WHATSAPP_EXPRESS_ENABLED=true et WHATSAPP_BRIDGE_TOKEN est un vrai secret.
     'whatsapp_bridge' => [

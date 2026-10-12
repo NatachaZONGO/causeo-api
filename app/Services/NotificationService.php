@@ -6,11 +6,17 @@ use App\Models\Appointment;
 use App\Models\Escalation;
 use App\Models\Notification;
 use App\Models\Order;
+use App\Services\WhatsApp\OwnerAlertService;
 use Illuminate\Support\Facades\Log;
 use Throwable;
 
 class NotificationService
 {
+    public function __construct(
+        private readonly OwnerAlertService $whatsAppAlerts,
+    ) {
+    }
+
     /**
      * Notifier le gérant d'une nouvelle escalade. Une notification d'escalade
      * non lue pour la même conversation est mise à jour au lieu d'être dupliquée.
@@ -48,14 +54,12 @@ class NotificationService
                 $existing->fill($attributes);
                 $existing->updated_at = now();
                 $existing->save();
-
-                return;
+            } else {
+                Notification::create($attributes + [
+                    'business_id' => $businessId,
+                    'type' => 'escalation',
+                ]);
             }
-
-            Notification::create($attributes + [
-                'business_id' => $businessId,
-                'type' => 'escalation',
-            ]);
         } catch (Throwable $e) {
             // Une notification manquée ne doit pas bloquer l'escalade elle-même.
             Log::error('NotificationService::notifyEscalation a échoué', [
@@ -63,6 +67,9 @@ class NotificationService
                 'message' => $e->getMessage(),
             ]);
         }
+
+        // En plus de la cloche, sans jamais la remplacer (au plus une alerte par période).
+        $this->whatsAppAlerts->escalation($escalation);
     }
 
     /**
@@ -99,6 +106,8 @@ class NotificationService
                 'message' => $e->getMessage(),
             ]);
         }
+
+        $this->whatsAppAlerts->appointment($appointment);
     }
 
     /**
@@ -141,5 +150,7 @@ class NotificationService
                 'message' => $e->getMessage(),
             ]);
         }
+
+        $this->whatsAppAlerts->order($order);
     }
 }

@@ -31,6 +31,9 @@ class User extends Authenticatable
         'country',
         'google_id',
         'is_admin',
+        'notification_phone',
+        'whatsapp_alerts_enabled',
+        'whatsapp_alerts_consented_at',
     ];
 
     /**
@@ -54,6 +57,8 @@ class User extends Authenticatable
             'email_verified_at' => 'datetime',
             'password' => 'hashed',
             'is_admin' => 'boolean',
+            'whatsapp_alerts_enabled' => 'boolean',
+            'whatsapp_alerts_consented_at' => 'datetime',
         ];
     }
 
