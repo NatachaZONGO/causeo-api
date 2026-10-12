@@ -53,13 +53,16 @@ de l'API, dans les fichiers d'environnement. Aucun lien vers `causeo-dashboard.v
 
 | Fichier | Clé | Valeur aujourd'hui | Demain |
 |---|---|---|---|
-| `src/environments/environment.prod.ts` | `apiUrl` | `https://causeo-api.onrender.com/api/v1` | `https://api.<domaine>/api/v1` |
+| `src/environments/environment.vps.ts` (build du VPS) | `apiUrl` | `https://api.__DOMAINE__/api/v1` (marqueur) | `https://api.<domaine>/api/v1` |
+| `src/environments/environment.prod.ts` (build Vercel) | `apiUrl` | `https://causeo-api.onrender.com/api/v1` | inchangé : Vercel est redirigé à la bascule |
 | `src/environments/environment.ts` (dev) | `apiUrl` | `http://localhost:8000/api/v1` | inchangé |
 | les deux | `facebookAppId`, `facebookConfigId` | App Meta et configuration de l'Embedded Signup | inchangés |
 | les deux | `supportWhatsapp` | vide (pas de bouton « connexion assistée ») | numéro du support, si besoin |
 
-- Ces valeurs sont **compilées** dans le dashboard : `ng build` remplace `environment.ts`
-  par `environment.prod.ts` (`fileReplacements` dans `angular.json`). Ce ne sont pas des
+- Deux builds : `ng build` (Vercel) prend `environment.prod.ts`, `npm run build:vps` (VPS,
+  lancé par `deploy/deploy.sh`) prend `environment.vps.ts` (`fileReplacements` dans
+  `angular.json`). `build:vps` refuse de construire tant que `__DOMAINE__` n'est pas remplacé.
+- Ces valeurs sont **compilées** dans le dashboard. Ce ne sont pas des
   variables d'environnement Vercel : il faut modifier le fichier, committer et redéployer.
 - La connexion Google part de l'API : le dashboard redirige vers
   `<apiUrl sans /api/v1>/auth/google/redirect`, donc vers `https://api.<domaine>/auth/google/redirect`
@@ -75,7 +78,8 @@ de l'API, dans les fichiers d'environnement. Aucun lien vers `causeo-dashboard.v
   | `/dashboard/billing` | rappels d'échéance et de fin d'essai |
   | `/dashboard` | rapport hebdomadaire |
   | `/dashboard/feedback` | e-mail au gérant : réponse à son retour, retour résolu |
-  | `/admin/feedback` | e-mail aux admins : nouveau retour d'un gérant |
+  | `/dashboard/admin/feedback?feedback=…` | e-mail aux admins : nouveau retour d'un gérant (`/admin/feedback` y redirige) |
+  | `/conditions-utilisation`, `/confidentialite`, `/suppression-des-donnees` | pages légales du dashboard (liées en bas de la page d'accueil) |
 
   Le dashboard est une application à page unique : l'hébergement doit servir `index.html`
   pour ces chemins (réglage par défaut de Vercel pour Angular ; sur le VPS, une règle
@@ -111,7 +115,11 @@ qu'à la fin.
 | Paramètres > Général > URL du site | `https://<domaine>` |
 
 La politique de confidentialité et la page de suppression des données viennent du dépôt
-`causeo-privacy` (aujourd'hui sur `natachazongo.github.io`). Sur le VPS, nginx les sert
+`causeo-privacy` (aujourd'hui sur `natachazongo.github.io`). Le dashboard a aussi ses
+pages (`/confidentialite`, `/suppression-des-donnees`, `/conditions-utilisation`), mais
+leur texte est affiché par JavaScript : un robot qui ne l'exécute pas, comme celui de
+Meta, ne voit qu'une page vide. Garder les URL `/privacy/` (HTML statique) chez Meta, et
+aligner leur contenu sur celui du dashboard. Sur le VPS, nginx les sert
 sous `https://<domaine>/privacy/` (`deploy/nginx/dashboard.conf`). Mettre à jour les deux
 URL ci-dessus une fois qu'elles répondent : Meta les vérifie.
 

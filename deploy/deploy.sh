@@ -68,17 +68,24 @@ deploy_dashboard() {
     log "Dashboard : code"
     pull "$DASHBOARD_SRC"
 
-    local env_file="$DASHBOARD_SRC/src/environments/environment.prod.ts"
+    # Build « vps » (environment.vps.ts) : environment.prod.ts reste celui de Vercel jusqu'à
+    # la bascule. npm run build:vps échoue tant que __DOMAINE__ n'y est pas remplacé.
+    local env_file="$DASHBOARD_SRC/src/environments/environment.vps.ts"
+    local build_cmd=(npm run build:vps)
+    if [[ ! -f "$env_file" ]]; then
+        env_file="$DASHBOARD_SRC/src/environments/environment.prod.ts"
+        build_cmd=(npx ng build --configuration production)
+    fi
     if ! grep -q "https://api.${DOMAIN}/api/v1" "$env_file"; then
         warn "apiUrl de $env_file ne pointe pas vers https://api.${DOMAIN}/api/v1 :"
         grep -n "apiUrl" "$env_file" || true
-        warn "Le dashboard servi ici appellera cette adresse. Voir MIGRATION.md, étape 7."
+        warn "Le dashboard servi ici appellera cette adresse. Voir MIGRATION.md, étape 9."
     fi
 
-    log "Dashboard : build"
+    log "Dashboard : build (${build_cmd[*]})"
     cd "$DASHBOARD_SRC"
     npm ci --no-audit --no-fund
-    npx ng build --configuration production
+    "${build_cmd[@]}"
 
     local build="$DASHBOARD_SRC/dist/causeo-dashboard/browser"
     [[ -f "$build/index.html" ]] || { echo "Build introuvable : $build/index.html" >&2; exit 1; }

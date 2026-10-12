@@ -205,15 +205,16 @@ Ajouter les nouvelles adresses **sans retirer les anciennes**. Le détail est da
 
 ## 9. Dashboard
 
-1. Dans le dépôt `causeo-dashboard`, modifier `src/environments/environment.prod.ts` :
+1. Dans le dépôt `causeo-dashboard`, remplacer `__DOMAINE__` dans
+   `src/environments/environment.vps.ts` :
    ```ts
    apiUrl: 'https://api.DOMAINE/api/v1',
    ```
-   Committer et pousser sur `main`.
+   Committer et pousser sur `main`. `deploy.sh` construit le dashboard avec
+   `npm run build:vps`, qui refuse de construire tant que `__DOMAINE__` est présent.
 
-   ⚠️ Vercel se reconstruit aussi depuis `main` : l'ancien dashboard appellera **lui
-   aussi** la nouvelle API. C'est voulu, car `CORS_ALLOWED_ORIGINS` du VPS accepte
-   l'origine Vercel. Ne le faire qu'une fois l'étape 7 réussie.
+   `environment.prod.ts` (build de Vercel) ne change pas : l'ancien dashboard continue
+   d'appeler Render jusqu'à sa redirection (étape 10.6). Les deux API partagent la base.
 2. Sur le VPS :
    ```bash
    sudo -u deploy -H bash /var/www/causeo-api/deploy/deploy.sh dashboard
