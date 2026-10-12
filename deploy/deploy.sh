@@ -1,20 +1,42 @@
 #!/usr/bin/env bash
-# Déployer la dernière version de main sur le VPS, en tant qu'utilisateur deploy :
+# Déployer main sur le VPS, en tant qu'utilisateur deploy :
 #
 #   sudo -u deploy -H bash /var/www/causeo-api/deploy/deploy.sh            # API + dashboard
 #   sudo -u deploy -H bash /var/www/causeo-api/deploy/deploy.sh api        # API seule
 #   sudo -u deploy -H bash /var/www/causeo-api/deploy/deploy.sh dashboard  # dashboard seul
+#   … deploy.sh api <commit>   # l'API à ce commit précis (s'il est sur main)
+#
+# GitHub Actions passe par une clé SSH dont la seule commande permise est ce script
+# (commande forcée) : la cible et le commit arrivent alors dans SSH_ORIGINAL_COMMAND.
 #
 # API : mêmes étapes que docker-entrypoint.sh sur Render (migrations, seeders, caches),
 # puis rechargement de php-fpm et redémarrage du worker.
 
 set -euo pipefail
 
+usage() { echo "Usage : deploy.sh [all|api|dashboard] [commit]" >&2; exit 2; }
+
+if [[ $# -eq 0 && -n "${SSH_ORIGINAL_COMMAND:-}" ]]; then
+    # Découpé en mots puis validé ci-dessous : jamais exécuté tel quel.
+    read -r -a ssh_args <<< "$SSH_ORIGINAL_COMMAND"
+    set -- "${ssh_args[@]}"
+fi
+
+[[ $# -le 2 ]] || usage
 TARGET="${1:-all}"
-[[ "$TARGET" =~ ^(all|api|dashboard)$ ]] || { echo "Usage : deploy.sh [all|api|dashboard]" >&2; exit 2; }
+REF="${2:-}"
+[[ "$TARGET" =~ ^(all|api|dashboard)$ ]] || usage
+[[ -z "$REF" || "$REF" =~ ^[0-9a-f]{40}$ ]] || usage
 [[ "$(id -un)" == "deploy" ]] || { echo "À lancer en tant que deploy : sudo -u deploy -H bash $0 $TARGET" >&2; exit 1; }
 
 cd / # le dossier courant de l'appelant (/root) peut être illisible pour deploy
+
+# Un seul déploiement à la fois sur ce serveur (GitHub Actions et manuel compris).
+exec 9>"$HOME/.causeo-deploy.lock"
+if ! flock -n 9; then
+    echo "Un déploiement est déjà en cours ; attente de sa fin (30 min max)…"
+    flock -w 1800 9 || { echo "Toujours en cours après 30 minutes : abandon." >&2; exit 1; }
+fi
 
 # shellcheck source=/dev/null
 source /etc/causeo-deploy.env # DOMAIN, API_DIR, DASHBOARD_SRC, DASHBOARD_DIR, PRIVACY_DIR, PHP_VERSION
@@ -23,17 +45,31 @@ PHP="/usr/bin/php${PHP_VERSION}"
 log()  { printf '\n\033[1;34m==> %s\033[0m\n' "$*"; }
 warn() { printf '\033[1;33m[attention] %s\033[0m\n' "$*"; }
 
+# Mettre un dépôt à jour sur main, ou jusqu'au commit demandé (en avance rapide seulement).
 pull() {
-    git -C "$1" fetch --quiet origin main
-    git -C "$1" checkout --quiet main
-    git -C "$1" pull --ff-only --quiet origin main
-    echo "    $(basename "$1") : $(git -C "$1" log -1 --format='%h %s')"
+    local dir="$1" ref="${2:-}"
+    git -C "$dir" fetch --quiet origin main
+    git -C "$dir" checkout --quiet main
+
+    if [[ -z "$ref" ]]; then
+        git -C "$dir" merge --ff-only --quiet origin/main
+    elif ! git -C "$dir" merge-base --is-ancestor "$ref" origin/main; then
+        echo "Le commit $ref n'est pas sur main : rien n'est déployé." >&2
+        exit 1
+    elif git -C "$dir" merge-base --is-ancestor "$ref" HEAD; then
+        # Un déploiement plus récent est déjà passé : on ne revient pas en arrière.
+        warn "$ref est déjà inclus dans la version en place ($(git -C "$dir" rev-parse --short HEAD))."
+    else
+        git -C "$dir" merge --ff-only --quiet "$ref"
+    fi
+
+    echo "    $(basename "$dir") : $(git -C "$dir" log -1 --format='%h %s')"
 }
 
 deploy_api() {
     log "API : code"
     [[ -f "$API_DIR/.env" ]] || { echo "Il manque $API_DIR/.env (modèle : deploy/.env.production.example)." >&2; exit 1; }
-    pull "$API_DIR"
+    pull "$API_DIR" "$REF"
     cd "$API_DIR"
 
     log "API : dépendances"

@@ -1,0 +1,120 @@
+# Tests à chaque push sur main, puis déploiement sur le VPS s'ils passent.
+#
+# Secrets (Settings > Secrets and variables > Actions > Secrets) :
+#   VPS_HOST      adresse IP du VPS
+#   VPS_USER      deploy
+#   VPS_SSH_KEY   clé privée SSH réservée à GitHub Actions (sa clé publique, sur le VPS,
+#                 ne peut lancer que deploy.sh)
+#   VPS_HOST_KEY  clé publique SSH du serveur (/etc/ssh/ssh_host_ed25519_key.pub), pour
+#                 vérifier qu'on parle bien au VPS
+# Variable (onglet Variables) :
+#   DEPLOY_ENABLED=true   active le déploiement ; sans elle, seuls les tests tournent.
+# Procédure complète : deploy/MIGRATION.md, étape 6 bis.
+
+name: Tests et déploiement
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Quoi déployer
+        type: choice
+        options: [api, dashboard, all]
+        default: api
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: Tests (PHP 8.2, SQLite)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          extensions: mbstring, xml, curl, zip, bcmath, intl, pdo_sqlite, sqlite3, pcntl
+          coverage: none
+
+      - name: Cache Composer
+        uses: actions/cache@v4
+        with:
+          path: ~/.composer/cache/files
+          key: composer-${{ hashFiles('composer.lock') }}
+          restore-keys: composer-
+
+      - name: Dépendances
+        run: composer install --prefer-dist --no-interaction --no-progress
+
+      - name: Environnement de test
+        run: |
+          cp .env.example .env
+          php artisan key:generate --quiet
+
+      # phpunit.xml : SQLite en mémoire, mailer array, file sync.
+      - name: Tests
+        run: php artisan test
+
+  deploy:
+    name: Déploiement sur le VPS
+    needs: tests
+    if: github.ref == 'refs/heads/main' && vars.DEPLOY_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Un seul déploiement à la fois ; un déploiement en cours n'est jamais interrompu.
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+
+    steps:
+      - name: Vérifier les secrets
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST_KEY: ${{ secrets.VPS_HOST_KEY }}
+        run: |
+          missing=""
+          for name in VPS_HOST VPS_USER VPS_SSH_KEY VPS_HOST_KEY; do
+            [ -n "${!name}" ] || missing="$missing $name"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::Secrets manquants :$missing (voir deploy/MIGRATION.md, étape 6 bis)"
+            exit 1
+          fi
+
+      - name: Clé SSH
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST_KEY: ${{ secrets.VPS_HOST_KEY }}
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          # Clé du serveur fixée à l'avance : pas de confiance aveugle à la première connexion.
+          printf '%s %s\n' "$VPS_HOST" "$VPS_HOST_KEY" > ~/.ssh/known_hosts
+
+      - name: Déployer
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          TARGET: ${{ github.event_name == 'workflow_dispatch' && inputs.target || 'api' }}
+        # Sur le VPS, cette clé lance seulement deploy.sh (commande forcée) ; il reçoit
+        # « <cible> <commit> » et déploie exactement le commit testé ci-dessus.
+        run: |
+          ssh -i ~/.ssh/deploy_key \
+              -o StrictHostKeyChecking=yes \
+              -o UserKnownHostsFile=~/.ssh/known_hosts \
+              -o ServerAliveInterval=30 \
+              "$VPS_USER@$VPS_HOST" "$TARGET $GITHUB_SHA"
+
+      - name: Nettoyage
+        if: always()
+        run: rm -f ~/.ssh/deploy_key

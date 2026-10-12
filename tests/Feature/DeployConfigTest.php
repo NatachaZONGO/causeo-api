@@ -91,6 +91,30 @@ class DeployConfigTest extends TestCase
         $this->assertStringContainsString('${RUN_SCHEDULER:-true}', $this->file('docker-entrypoint.sh'));
     }
 
+    public function test_github_deploys_the_tested_commit_one_at_a_time(): void
+    {
+        $workflow = $this->file('.github/workflows/deploy.yml');
+
+        // Le déploiement attend les tests, ne tourne jamais en double et vise le commit testé.
+        $this->assertMatchesRegularExpression('/^  deploy:\n(?:    .*\n)*?    needs: tests$/m', $workflow);
+        $this->assertMatchesRegularExpression('/concurrency:\s+group: deploy-production\s+cancel-in-progress: false/', $workflow);
+        $this->assertStringContainsString('"$TARGET $GITHUB_SHA"', $workflow);
+        $this->assertStringContainsString('StrictHostKeyChecking=yes', $workflow);
+
+        // Même PHP que l'image de Render.
+        preg_match("/php-version: '([\\d.]+)'/", $workflow, $ci);
+        preg_match('/^FROM php:([\d.]+)-/m', $this->file('Dockerfile'), $render);
+        $this->assertSame($render[1], $ci[1]);
+
+        // Aucun secret en clair : seulement des références aux secrets GitHub.
+        $this->assertDoesNotMatchRegularExpression('/BEGIN [A-Z ]*PRIVATE KEY|ssh-ed25519 AAAA/', $workflow);
+
+        // La clé de GitHub Actions ne peut lancer que deploy.sh, qui valide ses arguments.
+        $this->assertStringContainsString('restrict,command="%s/deploy/deploy.sh"', $this->file('deploy/setup.sh'));
+        $this->assertStringContainsString('SSH_ORIGINAL_COMMAND', $this->file('deploy/deploy.sh'));
+        $this->assertStringContainsString('flock', $this->file('deploy/deploy.sh'));
+    }
+
     public function test_forwarded_headers_are_trusted_only_from_a_local_proxy(): void
     {
         Route::get('/_test/request-info', fn (Request $request) => [

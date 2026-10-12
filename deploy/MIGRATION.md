@@ -106,9 +106,10 @@ Il :
 
 Le **planificateur n'est pas activé** : il le sera à la bascule (étape 10).
 
-**Dépôt du dashboard (privé).** Au premier passage, `setup.sh` affiche une clé publique
-`ssh-ed25519 …`. L'ajouter dans GitHub > `causeo-dashboard` > Settings > **Deploy keys**,
-en lecture seule, puis relancer `setup.sh`.
+**Dépôt du dashboard (privé).** Au premier passage, `setup.sh` ne peut pas le cloner :
+il affiche la clé publique de déploiement (`ssh-ed25519 … (causeo-dashboard, lecture
+seule)`). L'ajouter comme **deploy key** en lecture seule (étape 6 bis, B), puis relancer
+`setup.sh`.
 
 ## 4. Certificats HTTPS
 
@@ -162,6 +163,132 @@ sudo -u deploy php artisan tinker --execute="echo App\Models\Business::whereNotN
 
 `APP_KEY OK` : les tokens se déchiffrent. Une erreur `The MAC is invalid` signifie que la
 clé n'est pas celle de Render : la corriger avant d'aller plus loin.
+
+## 6 bis. Déploiement automatique depuis GitHub
+
+Le workflow `.github/workflows/deploy.yml` du dépôt `causeo-api` fonctionne ainsi, à
+chaque push sur `main` :
+
+1. il lance la suite de tests (PHP 8.2, SQLite en mémoire) ;
+2. **seulement si elle passe**, il se connecte au VPS en SSH en tant que `deploy` et lance
+   `deploy.sh api` sur **le commit testé** ;
+3. un seul déploiement tourne à la fois : côté GitHub par le groupe de concurrence, et
+   côté serveur par un verrou dans `deploy.sh`, qui couvre aussi les déploiements
+   manuels.
+
+Aucune information sensible n'est dans le dépôt. Il y a deux sortes de clés, à ne pas
+confondre :
+
+| Clé | Sert à | Clé privée | Clé publique |
+|---|---|---|---|
+| **Clé de GitHub Actions** | GitHub → VPS (lancer `deploy.sh`) | secret GitHub `VPS_SSH_KEY` | `~deploy/.ssh/authorized_keys` sur le VPS, avec une commande forcée |
+| **Deploy key** | VPS → GitHub (cloner le dépôt privé du dashboard) | `~deploy/.ssh/causeo-dashboard_deploy` sur le VPS | GitHub > `causeo-dashboard` > Deploy keys, en lecture seule |
+
+### A. Créer la clé SSH de GitHub Actions (sur votre poste)
+
+Dans PowerShell :
+
+```powershell
+ssh-keygen -t ed25519 -C "github-actions@causeo" -N '""' -f $HOME\.ssh\causeo_github_actions
+```
+
+Cette commande crée deux fichiers :
+
+- `causeo_github_actions`, la clé **privée**, qui ira **seulement** dans le secret
+  GitHub ;
+- `causeo_github_actions.pub`, la clé publique, qui ira sur le VPS.
+
+Elle n'a pas de phrase de passe, car GitHub Actions doit pouvoir l'utiliser seul. Sa
+sécurité vient de la commande forcée (point B ci-dessous).
+
+### B. Installer les clés sur le VPS
+
+1. **Clé de GitHub Actions.** Afficher la clé publique :
+   ```powershell
+   Get-Content $HOME\.ssh\causeo_github_actions.pub
+   ```
+   Puis, en root sur le VPS, relancer `setup.sh` en la passant dans `CI_PUBLIC_KEY` :
+   ```bash
+   DOMAIN=DOMAINE CERTBOT_EMAIL=votre@email \
+   CI_PUBLIC_KEY="ssh-ed25519 AAAA… github-actions@causeo" \
+   bash /var/www/causeo-api/deploy/setup.sh
+   ```
+   `setup.sh` l'ajoute à `/home/deploy/.ssh/authorized_keys` avec
+   `restrict,command="/var/www/causeo-api/deploy/deploy.sh"`. Avec cette clé, on ne
+   peut **que** lancer `deploy.sh`, qui n'accepte que `api|dashboard|all` et un numéro
+   de commit : pas de terminal, pas d'autre commande, pas de redirection de port.
+   À la fin, `setup.sh` affiche les valeurs de `VPS_HOST` et `VPS_HOST_KEY`.
+2. **Deploy key du dashboard.** Sur le VPS :
+   ```bash
+   cat /home/deploy/.ssh/causeo-dashboard_deploy.pub
+   ```
+   Puis, dans GitHub :
+   1. ouvrir `causeo-dashboard` > **Settings** > **Deploy keys** > **Add deploy key** ;
+   2. Title : `VPS Hostinger (lecture seule)` ; Key : coller la ligne `ssh-ed25519 …` ;
+   3. laisser **Allow write access décoché**, puis cliquer sur **Add key**.
+
+   Vérifier depuis le VPS :
+   ```bash
+   sudo -u deploy ssh -T git@github-causeo-dashboard
+   # Hi NatachaZONGO/causeo-dashboard! You've successfully authenticated, but GitHub does not provide shell access.
+   ```
+   Relancer ensuite `setup.sh`, qui clone le dashboard.
+
+   Si le dépôt `causeo-api` devient privé un jour, il suffit de relancer `setup.sh` avec
+   `API_REPO=git@github-causeo-api:NatachaZONGO/causeo-api.git`. Une deploy key est créée
+   pour lui (`causeo-api_deploy.pub`), à ajouter de la même façon dans `causeo-api`.
+   GitHub refuse la même clé sur deux dépôts : il en faut bien une par dépôt.
+3. **Vérifier la commande forcée** depuis votre poste. Toute autre commande doit être
+   refusée :
+   ```powershell
+   ssh -i $HOME\.ssh\causeo_github_actions deploy@IP whoami
+   # Usage : deploy.sh [all|api|dashboard] [commit]
+   ```
+
+### C. Créer les secrets GitHub
+
+GitHub > `causeo-api` > **Settings** > **Secrets and variables** > **Actions** > onglet
+**Secrets** > **New repository secret**, une fois par ligne :
+
+| Nom | Valeur |
+|---|---|
+| `VPS_HOST` | l'IP du VPS (affichée par `setup.sh`). Préférer l'IP au nom `api.DOMAINE`, qui pourrait un jour passer derrière un proxy. |
+| `VPS_USER` | `deploy` |
+| `VPS_SSH_KEY` | **tout** le contenu de la clé privée, lignes `-----BEGIN…` et `-----END…` comprises. Pour la copier : `Get-Content $HOME\.ssh\causeo_github_actions -Raw \| Set-Clipboard` |
+| `VPS_HOST_KEY` | la clé publique du serveur affichée par `setup.sh` (`ssh-ed25519 AAAA…`), c'est-à-dire `/etc/ssh/ssh_host_ed25519_key.pub` sans le commentaire. Le workflow vérifie qu'il parle bien au VPS, au lieu de faire confiance à la première connexion. |
+
+Une fois le secret enregistré, **supprimer la clé privée du poste**, car seul GitHub en a
+besoin. En cas de perte, on en crée une nouvelle (point A) et on remplace le secret et
+`CI_PUBLIC_KEY`.
+
+```powershell
+Remove-Item $HOME\.ssh\causeo_github_actions
+```
+
+### D. Activer le déploiement
+
+Tant que la variable suivante n'existe pas, le workflow ne lance que les tests. C'est
+voulu : on ne déploie pas automatiquement avant que le VPS soit prêt (`.env` en place,
+étape 6 réussie).
+
+GitHub > `causeo-api` > **Settings** > **Secrets and variables** > **Actions** > onglet
+**Variables** > **New repository variable** : `DEPLOY_ENABLED` = `true`.
+
+Pour couper le déploiement automatique, passer la variable à `false`.
+
+### E. Vérifier
+
+- GitHub > `causeo-api` > **Actions** > **Tests et déploiement** > **Run workflow** (cible
+  `api`). Le job « Déploiement sur le VPS » affiche la sortie de `deploy.sh`.
+- Un push sur `main` dont les tests échouent : le job de déploiement est **sauté**.
+- Pendant la transition, Render se redéploie toujours de son côté depuis `main`. Les deux
+  versions restent identiques.
+
+**Dashboard.** Un push sur `causeo-dashboard` ne déclenche pas ce workflow. On peut :
+
+- lancer **Run workflow** avec la cible `dashboard` ;
+- ou ajouter dans `causeo-dashboard` un workflow qui utilise les mêmes secrets et
+  envoie `dashboard` à la place de `api` (dernière étape de `deploy.yml`).
 
 ## 7. Tests de l'API (sans impact sur la production)
 
@@ -308,7 +435,8 @@ Puis, depuis `/var/www/causeo-api`, relancer `composer install --no-dev` et
 
 | Action | Commande |
 |---|---|
-| Déployer | `sudo -u deploy -H bash /var/www/causeo-api/deploy/deploy.sh [api\|dashboard]` |
+| Déployer | automatique à chaque push sur `main` (étape 6 bis), ou `sudo -u deploy -H bash /var/www/causeo-api/deploy/deploy.sh [api\|dashboard]` |
+| Couper le déploiement automatique | variable GitHub `DEPLOY_ENABLED=false` |
 | État du worker | `sudo supervisorctl status` |
 | Planificateur | `sudo causeo-scheduler on\|off\|status` |
 | Logs Laravel | `tail -f /var/www/causeo-api/storage/logs/laravel-$(date +%F).log` |

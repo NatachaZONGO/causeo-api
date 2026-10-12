@@ -10,7 +10,11 @@
 #                   l'API sur api.DOMAIN
 #   CERTBOT_EMAIL   adresse pour Let's Encrypt. Sans elle, pas de demande de certificat
 #                   (les enregistrements DNS doivent déjà pointer vers ce serveur)
-#   API_REPO, DASHBOARD_REPO, PRIVACY_REPO   dépôts git (valeurs par défaut ci-dessous)
+#   API_REPO, DASHBOARD_REPO, PRIVACY_REPO   dépôts git (valeurs par défaut ci-dessous).
+#                   Un dépôt privé passe par un alias « github-<nom> » : setup.sh crée
+#                   alors sa clé de déploiement (lecture seule) et l'affiche.
+#   CI_PUBLIC_KEY   clé publique SSH de GitHub Actions (« ssh-ed25519 AAAA… »). Installée
+#                   pour deploy avec une commande forcée : elle ne peut que lancer deploy.sh.
 #
 # Ne fait PAS : copier le .env, déployer le code (deploy.sh), activer le planificateur
 # (scheduler.sh). Voir deploy/MIGRATION.md.
@@ -20,8 +24,13 @@ set -euo pipefail
 DOMAIN="${DOMAIN:-}"
 CERTBOT_EMAIL="${CERTBOT_EMAIL:-}"
 API_REPO="${API_REPO:-https://github.com/NatachaZONGO/causeo-api.git}"
-DASHBOARD_REPO="${DASHBOARD_REPO:-git@github.com:NatachaZONGO/causeo-dashboard.git}" # privé : clé de déploiement
+DASHBOARD_REPO="${DASHBOARD_REPO:-git@github-causeo-dashboard:NatachaZONGO/causeo-dashboard.git}" # privé : clé de déploiement
 PRIVACY_REPO="${PRIVACY_REPO:-https://github.com/NatachaZONGO/causeo-privacy.git}"
+CI_PUBLIC_KEY="${CI_PUBLIC_KEY:-}"
+
+# Clé SSH publiée par GitHub (docs.github.com, « GitHub's SSH key fingerprints ») :
+# pas de confiance aveugle à la première connexion.
+GITHUB_HOST_KEY="github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"
 
 PHP_VERSION=8.2
 NODE_MAJOR=22 # Angular 21 demande Node 20.19+ ou 22.12+
@@ -123,12 +132,43 @@ if [[ -s /root/.ssh/authorized_keys && ! -s "/home/${DEPLOY_USER}/.ssh/authorize
     install -m 600 -o "$DEPLOY_USER" -g "$DEPLOY_USER" /root/.ssh/authorized_keys "/home/${DEPLOY_USER}/.ssh/authorized_keys"
 fi
 
-# Clé de lecture du dépôt privé du dashboard (à ajouter dans GitHub > Deploy keys).
-if [[ ! -f "/home/${DEPLOY_USER}/.ssh/id_ed25519" ]]; then
-    as_deploy ssh-keygen -q -t ed25519 -N "" -C "deploy@${DOMAIN}" -f "/home/${DEPLOY_USER}/.ssh/id_ed25519"
-fi
-if ! as_deploy ssh-keygen -F github.com >/dev/null 2>&1; then
-    ssh-keyscan -t ed25519 github.com 2>/dev/null | as_deploy tee -a "/home/${DEPLOY_USER}/.ssh/known_hosts" >/dev/null
+touch "/home/${DEPLOY_USER}/.ssh/known_hosts" "/home/${DEPLOY_USER}/.ssh/config"
+chown "$DEPLOY_USER:$DEPLOY_USER" "/home/${DEPLOY_USER}/.ssh/known_hosts" "/home/${DEPLOY_USER}/.ssh/config"
+chmod 600 "/home/${DEPLOY_USER}/.ssh/config"
+grep -qxF "$GITHUB_HOST_KEY" "/home/${DEPLOY_USER}/.ssh/known_hosts" \
+    || echo "$GITHUB_HOST_KEY" >> "/home/${DEPLOY_USER}/.ssh/known_hosts"
+
+# Une clé de déploiement par dépôt privé (GitHub refuse la même clé sur deux dépôts),
+# choisie par l'alias d'hôte de l'URL : git@github-causeo-dashboard:… → github.com
+# avec ~/.ssh/causeo-dashboard_deploy.
+deploy_key_for() {
+    local repo="$1" name
+    [[ "$repo" =~ ^git@github-([A-Za-z0-9._-]+): ]] || return 0
+    name="${BASH_REMATCH[1]}"
+    local key="/home/${DEPLOY_USER}/.ssh/${name}_deploy"
+    if [[ ! -f "$key" ]]; then
+        as_deploy ssh-keygen -q -t ed25519 -N "" -C "deploy@${DOMAIN} (${name}, lecture seule)" -f "$key"
+    fi
+    if ! grep -qx "Host github-${name}" "/home/${DEPLOY_USER}/.ssh/config"; then
+        printf 'Host github-%s\n    HostName github.com\n    User git\n    IdentityFile %s\n    IdentitiesOnly yes\n\n' "$name" "$key" \
+            >> "/home/${DEPLOY_USER}/.ssh/config"
+    fi
+}
+deploy_key_for "$API_REPO"
+deploy_key_for "$DASHBOARD_REPO"
+deploy_key_for "$PRIVACY_REPO"
+
+# Clé de GitHub Actions : commande forcée (deploy.sh, qui valide ses arguments), sans
+# terminal ni redirection de port. Remplacée à chaque passage si elle change.
+if [[ -n "$CI_PUBLIC_KEY" ]]; then
+    [[ "$CI_PUBLIC_KEY" =~ ^ssh-ed25519\ [A-Za-z0-9+/]+=*(\ .*)?$ ]] || die "CI_PUBLIC_KEY doit être une clé publique « ssh-ed25519 AAAA… »."
+    keys="/home/${DEPLOY_USER}/.ssh/authorized_keys"
+    touch "$keys"
+    grep -v "causeo-github-actions$" "$keys" > "${keys}.tmp" || true
+    printf 'restrict,command="%s/deploy/deploy.sh" %s causeo-github-actions\n' "$API_DIR" "$(cut -d' ' -f1,2 <<< "$CI_PUBLIC_KEY")" >> "${keys}.tmp"
+    install -m 600 -o "$DEPLOY_USER" -g "$DEPLOY_USER" "${keys}.tmp" "$keys"
+    rm -f "${keys}.tmp"
+    echo "    clé GitHub Actions installée (commande forcée : deploy.sh)"
 fi
 
 # deploy.sh peut recharger php-fpm, nginx et le worker sans mot de passe, et rien d'autre.
@@ -150,6 +190,11 @@ install -d -m 755 "$ACME_DIR"
 clone() {
     local repo="$1" dir="$2"
     if [[ -d "$dir/.git" ]]; then
+        # Garder l'adresse configurée (par exemple après le passage d'un dépôt en privé).
+        if [[ "$(as_deploy git -C "$dir" remote get-url origin)" != "$repo" ]]; then
+            as_deploy git -C "$dir" remote set-url origin "$repo"
+            echo "    origin de $dir : $repo"
+        fi
         echo "    déjà cloné : $dir"
     elif [[ -n "$(ls -A "$dir" 2>/dev/null)" ]]; then
         warn "$dir n'est pas vide et n'est pas un dépôt git : laissé tel quel."
@@ -164,8 +209,8 @@ clone() {
 clone "$API_REPO" "$API_DIR" || true
 clone "$PRIVACY_REPO" "$PRIVACY_DIR" || true
 if ! clone "$DASHBOARD_REPO" "$DASHBOARD_SRC"; then
-    warn "Le dépôt du dashboard est privé. Ajoutez cette clé dans GitHub > causeo-dashboard > Settings > Deploy keys (lecture seule), puis relancez setup.sh :"
-    cat "/home/${DEPLOY_USER}/.ssh/id_ed25519.pub"
+    warn "Le dépôt du dashboard est privé. Ajoutez cette clé dans GitHub > causeo-dashboard > Settings > Deploy keys (sans « Allow write access »), puis relancez setup.sh :"
+    cat "/home/${DEPLOY_USER}/.ssh/causeo-dashboard_deploy.pub" 2>/dev/null || true
 fi
 
 # Tout appartient à deploy (un dossier cloné à la main en root le serait sinon).
@@ -320,3 +365,11 @@ has_cert "api.${DOMAIN}" && echo "    https://api.${DOMAIN} : HTTPS prêt" || ec
 has_cert "${DOMAIN}" && echo "    https://${DOMAIN} : HTTPS prêt" || echo "    ${DOMAIN} : en attente du certificat"
 [[ -f "$API_DIR/.env" ]] || echo "    À faire : créer $API_DIR/.env (modèle : deploy/.env.production.example), même APP_KEY que Render"
 echo "    Ensuite : sudo -u ${DEPLOY_USER} -H bash ${API_DIR}/deploy/deploy.sh"
+echo
+echo "    Secrets GitHub Actions (MIGRATION.md, étape 6 bis) :"
+echo "      VPS_HOST     = $(hostname -I | awk '{print $1}')"
+echo "      VPS_USER     = ${DEPLOY_USER}"
+echo "      VPS_HOST_KEY = $(cut -d' ' -f1,2 /etc/ssh/ssh_host_ed25519_key.pub)"
+grep -q "causeo-github-actions$" "/home/${DEPLOY_USER}/.ssh/authorized_keys" 2>/dev/null \
+    && echo "      clé de GitHub Actions : installée" \
+    || echo "      clé de GitHub Actions : absente (relancer setup.sh avec CI_PUBLIC_KEY=…)"
