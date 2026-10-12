@@ -45,15 +45,41 @@ La configuration est mise en cache au démarrage (`php artisan config:cache` dan
 `docker-entrypoint.sh`). Après toute modification du `.env`, relancer le conteneur, ou
 à défaut cette commande.
 
-### Dashboard (dépôt séparé, Vercel aujourd'hui)
+### Dashboard (dépôt `causeo-dashboard`, Vercel aujourd'hui)
 
-Ce dépôt ne contient pas le dashboard : vérifier dans le sien. Au minimum :
+Vérifié dans le code du dashboard (Angular) : la seule adresse de nos services est celle
+de l'API, dans les fichiers d'environnement. Aucun lien vers `causeo-dashboard.vercel.app`,
+`causeo-api.onrender.com` ou `natachazongo.github.io` n'est écrit ailleurs.
 
-- l'URL de l'API (`https://api.<domaine>/api/v1`) ;
-- l'App ID Meta et la configuration de l'Embedded Signup (inchangés, mais le domaine du
-  dashboard doit être autorisé chez Meta, voir plus bas) ;
-- tout lien écrit en dur vers `causeo-api.onrender.com`, `causeo-dashboard.vercel.app`
-  ou `natachazongo.github.io`.
+| Fichier | Clé | Valeur aujourd'hui | Demain |
+|---|---|---|---|
+| `src/environments/environment.prod.ts` | `apiUrl` | `https://causeo-api.onrender.com/api/v1` | `https://api.<domaine>/api/v1` |
+| `src/environments/environment.ts` (dev) | `apiUrl` | `http://localhost:8000/api/v1` | inchangé |
+| les deux | `facebookAppId`, `facebookConfigId` | App Meta et configuration de l'Embedded Signup | inchangés |
+| les deux | `supportWhatsapp` | vide (pas de bouton « connexion assistée ») | numéro du support, si besoin |
+
+- Ces valeurs sont **compilées** dans le dashboard : `ng build` remplace `environment.ts`
+  par `environment.prod.ts` (`fileReplacements` dans `angular.json`). Ce ne sont pas des
+  variables d'environnement Vercel : il faut modifier le fichier, committer et redéployer.
+- La connexion Google part de l'API : le dashboard redirige vers
+  `<apiUrl sans /api/v1>/auth/google/redirect`, donc vers `https://api.<domaine>/auth/google/redirect`
+  dès que `apiUrl` change. Rien d'autre à modifier côté dashboard.
+- Pages du dashboard vers lesquelles l'API renvoie (avec `FRONTEND_URL`) : elles doivent
+  exister sur le nouveau domaine, au même chemin.
+
+  | Chemin | Utilisé par |
+  |---|---|
+  | `/auth/callback?token=…&user=…` | retour de la connexion Google |
+  | `/reset-password?token=…&email=…` | e-mail « mot de passe oublié » (lien valable 60 minutes) |
+  | `/auth/login` | e-mail « mot de passe modifié » |
+  | `/dashboard/billing` | rappels d'échéance et de fin d'essai |
+  | `/dashboard` | rapport hebdomadaire |
+
+  Le dashboard est une application à page unique : l'hébergement doit servir `index.html`
+  pour ces chemins (réglage par défaut de Vercel pour Angular ; sur le VPS, une règle
+  `try_files $uri /index.html` dans Nginx).
+- Les adresses de Meta (`connect.facebook.net`, origines `www.facebook.com` et
+  `web.facebook.com` de l'Embedded Signup) et `wa.me` ne dépendent pas de notre domaine.
 
 Les utilisateurs devront se reconnecter une fois : le token de connexion est stocké
 dans le navigateur, par domaine.
