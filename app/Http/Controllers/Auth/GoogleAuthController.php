@@ -36,7 +36,8 @@ class GoogleAuthController extends Controller
 
         $token = $user->createToken('causeo-app')->plainTextToken;
         $userData = urlencode(json_encode($user->load('businesses')));
-        $frontendUrl = env('FRONTEND_URL', 'https://causeo-dashboard.vercel.app');
+        // config() et non env() : la configuration est mise en cache au démarrage.
+        $frontendUrl = rtrim((string) config('app.frontend_url'), '/');
 
         return redirect("{$frontendUrl}/auth/callback?token={$token}&user={$userData}");
     }

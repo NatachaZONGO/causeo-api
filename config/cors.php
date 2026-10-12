@@ -19,7 +19,12 @@ return [
 
     'allowed_methods' => ['*'],
 
-    'allowed_origins' => [env('FRONTEND_URL', 'http://localhost:4200')],
+    // Origines autorisées, séparées par des virgules (par défaut : FRONTEND_URL).
+    // Pendant un changement de domaine, y mettre l'ancienne et la nouvelle adresse.
+    'allowed_origins' => array_values(array_filter(array_map(
+        fn (string $origin) => rtrim(trim($origin), '/'),
+        explode(',', (string) (env('CORS_ALLOWED_ORIGINS') ?: env('FRONTEND_URL', 'http://localhost:4200'))),
+    ))),
 
     'allowed_origins_patterns' => [],
 
