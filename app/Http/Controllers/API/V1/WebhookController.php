@@ -22,6 +22,9 @@ use Throwable;
 
 class WebhookController extends Controller
 {
+    /** Durée maximale (secondes) du traitement d'un message après la réponse au webhook. */
+    public const BACKGROUND_TIME_LIMIT = 300;
+
     /**
      * Événements account_update qui coupent la liaison avec Causeo (DISABLED_UPDATE
      * n'en fait partie que pour l'état DISABLE). Référence :
@@ -101,6 +104,13 @@ class WebhookController extends Controller
 
         // Traitement lourd (IA + envois WhatsApp) exécuté après l'envoi de la réponse 200.
         dispatch(function () use ($incoming, $phoneNumberId): void {
+            // Sous php-fpm, il tourne dans le processus de la requête, une fois la réponse
+            // partie (fastcgi_finish_request) : la limite des requêtes ordinaires ne suffit pas.
+            if (! app()->runningInConsole()) {
+                ignore_user_abort(true);
+                set_time_limit(self::BACKGROUND_TIME_LIMIT);
+            }
+
             $this->process($incoming, $phoneNumberId);
         })->afterResponse();
 
@@ -109,8 +119,9 @@ class WebhookController extends Controller
 
     /**
      * Accusé de réception pour Meta. Le Content-Length est indispensable : sous
-     * php artisan serve, sans longueur annoncée, Meta attendrait la fermeture de
-     * la connexion, donc la fin du traitement lancé avec afterResponse().
+     * php artisan serve (Render), sans longueur annoncée, Meta attendrait la fermeture
+     * de la connexion, donc la fin du traitement lancé avec afterResponse(). Sous
+     * nginx + php-fpm (VPS), fastcgi_finish_request() termine la réponse avant.
      */
     private function acknowledge(): Response
     {

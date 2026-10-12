@@ -7,7 +7,7 @@ Dans ce document :
 | | Aujourd'hui | Demain (exemple) |
 |---|---|---|
 | API | `https://causeo-api.onrender.com` | `https://api.<domaine>` |
-| Dashboard | `https://causeo-dashboard.vercel.app` | `https://app.<domaine>` |
+| Dashboard | `https://causeo-dashboard.vercel.app` | `https://<domaine>` |
 
 > **À ne jamais oublier : garder la même `APP_KEY`.**
 > Les tokens WhatsApp des businesses (`businesses.whatsapp_token`) sont chiffrés avec
@@ -23,8 +23,8 @@ Dans ce document :
 |---|---|---|
 | `APP_KEY` | **inchangée** | Déchiffre les tokens WhatsApp (voir plus haut) |
 | `APP_URL` | `https://api.<domaine>` | Adresse publique de l'API |
-| `FRONTEND_URL` | `https://app.<domaine>` | Liens des e-mails (réinitialisation, rappels, connexion), retour de la connexion Google, CORS par défaut |
-| `CORS_ALLOWED_ORIGINS` | `https://causeo-dashboard.vercel.app,https://app.<domaine>` pendant la transition, puis vide | Origines autorisées à appeler l'API depuis un navigateur |
+| `FRONTEND_URL` | `https://<domaine>` | Liens des e-mails (réinitialisation, rappels, connexion), retour de la connexion Google, CORS par défaut |
+| `CORS_ALLOWED_ORIGINS` | `https://causeo-dashboard.vercel.app,https://<domaine>` pendant la transition, puis vide | Origines autorisées à appeler l'API depuis un navigateur |
 | `GOOGLE_REDIRECT_URI` | `https://api.<domaine>/auth/google/callback` | Doit être identique à l'URL déclarée chez Google |
 | `MAIL_FROM_ADDRESS` | `contact@<domaine>` (par exemple) | Expéditeur des e-mails, sur le domaine vérifié chez Brevo |
 | `MAIL_FROM_NAME` | `Causeo` | Nom affiché de l'expéditeur |
@@ -104,16 +104,16 @@ qu'à la fin.
 |---|---|
 | WhatsApp > Configuration > URL de rappel du webhook | `https://api.<domaine>/api/webhook/whatsapp` (même jeton de vérification : `WHATSAPP_VERIFY_TOKEN`) |
 | Paramètres > Général > Domaines de l'app | `<domaine>` (en plus des domaines actuels pendant la transition) |
-| Facebook Login for Business > Paramètres > URI de redirection OAuth valides | `https://app.<domaine>/` |
-| Facebook Login for Business > Paramètres > Domaines autorisés pour le SDK JavaScript (Embedded Signup) | `https://app.<domaine>` |
-| Paramètres > Général > URL de la politique de confidentialité | nouvelle adresse de la page |
-| Paramètres > Général > URL des instructions de suppression des données | nouvelle adresse de la page |
+| Facebook Login for Business > Paramètres > URI de redirection OAuth valides | `https://<domaine>/` |
+| Facebook Login for Business > Paramètres > Domaines autorisés pour le SDK JavaScript (Embedded Signup) | `https://<domaine>` |
+| Paramètres > Général > URL de la politique de confidentialité | `https://<domaine>/privacy/` |
+| Paramètres > Général > URL des instructions de suppression des données | `https://<domaine>/privacy/data-deletion.html` |
 | Paramètres > Général > URL du site | `https://<domaine>` |
 
-L'API ne sert ni la politique de confidentialité ni la page de suppression des données :
-elles sont hébergées ailleurs (probablement `natachazongo.github.io`). Les déplacer sur
-le nouveau domaine, puis mettre à jour les deux URL ci-dessus. Meta vérifie qu'elles
-répondent.
+La politique de confidentialité et la page de suppression des données viennent du dépôt
+`causeo-privacy` (aujourd'hui sur `natachazongo.github.io`). Sur le VPS, nginx les sert
+sous `https://<domaine>/privacy/` (`deploy/nginx/dashboard.conf`). Mettre à jour les deux
+URL ci-dessus une fois qu'elles répondent : Meta les vérifie.
 
 Il n'y a qu'**une** URL de webhook par app. On la change en dernier, quand la nouvelle
 API répond (voir l'ordre de bascule). Meta l'appelle aussitôt en GET pour la vérifier.
@@ -124,7 +124,7 @@ Dans le client OAuth utilisé par `GOOGLE_CLIENT_ID` :
 
 - **URI de redirection autorisés** : ajouter `https://api.<domaine>/auth/google/callback`
   (garder `https://causeo-api.onrender.com/auth/google/callback` pendant la transition) ;
-- **Origines JavaScript autorisées** : ajouter `https://app.<domaine>` et
+- **Origines JavaScript autorisées** : ajouter `https://<domaine>` et
   `https://api.<domaine>` ;
 - **Écran de consentement OAuth** : domaines autorisés (`<domaine>`), page d'accueil,
   politique de confidentialité et conditions d'utilisation sur le nouveau domaine.
@@ -159,15 +159,18 @@ Après la connexion, l'API renvoie vers `FRONTEND_URL/auth/callback`.
 
 ## 7. Hébergement sur le VPS
 
-- Reverse proxy (Nginx ou Caddy) avec HTTPS (Let's Encrypt) devant l'API, qui écoute
-  sur `PORT` (8080 par défaut).
-- Derrière ce proxy, Laravel voit des requêtes en `http`. Déclarer le proxy comme fiable
-  (`$middleware->trustProxies(at: '127.0.0.1')` dans `bootstrap/app.php`), sinon les
-  liens générés par l'API, comme ceux de la pagination, seront en `http://`.
-- Le conteneur lance aussi le worker de file et le planificateur (`docker-entrypoint.sh`).
-  **Un seul environnement doit faire tourner le planificateur** : sinon les rappels
-  d'échéance et le rapport hebdomadaire partent en double, puisque les deux instances
-  partagent la même base.
+Tout est prêt dans `deploy/` ; la procédure pas à pas est dans `deploy/MIGRATION.md`.
+
+- nginx sert l'API via php-fpm (plus de `php artisan serve`) et le dashboard en fichiers
+  statiques ; HTTPS par Let's Encrypt (`deploy/setup.sh`).
+- nginx transmet directement à php-fpm l'IP du client et HTTPS : aucun en-tête
+  `X-Forwarded-*` à croire. `config/trustedproxy.php` fait confiance à la machine elle-même
+  par défaut ; `TRUSTED_PROXIES` sert si un autre proxy (Cloudflare…) s'ajoute devant.
+- Worker de file : Supervisor. Planificateur : cron, activé seulement à la bascule
+  (`sudo causeo-scheduler on`). **Un seul environnement doit faire tourner le
+  planificateur** : sinon les rappels d'échéance et le rapport hebdomadaire partent en
+  double, puisque les deux instances partagent la même base. Sur Render, le couper avec
+  `RUN_SCHEDULER=false`.
 
 ## 8. Ordre de bascule sans coupure
 
@@ -175,13 +178,13 @@ Principe : la base (Supabase) est partagée. L'ancienne et la nouvelle API peuve
 tourner en même temps. On ajoute partout les nouvelles adresses, on bascule, puis on
 retire les anciennes.
 
-1. **J-2 : DNS.** Baisser le TTL des enregistrements du domaine (300 s). Créer
-   `api.<domaine>` et `app.<domaine>`.
+1. **J-2 : DNS.** Baisser le TTL des enregistrements du domaine (300 s). Faire pointer
+   `<domaine>`, `www.<domaine>` et `api.<domaine>` vers le VPS.
 2. **J-2 : Brevo.** Authentifier le domaine (section 5). Cela n'impacte rien tant que
    `MAIL_FROM_ADDRESS` ne change pas.
 3. **Nouvelle API sur le VPS.** Même `APP_KEY`, même base, `APP_URL` et
    `GOOGLE_REDIRECT_URI` sur le nouveau domaine,
-   `CORS_ALLOWED_ORIGINS=https://causeo-dashboard.vercel.app,https://app.<domaine>`.
+   `CORS_ALLOWED_ORIGINS=https://causeo-dashboard.vercel.app,https://<domaine>`.
    **Planificateur désactivé** sur le VPS pour l'instant. Vérifier
    `https://api.<domaine>/api/v1/plans`.
 4. **Ancienne API (Render).** Ajouter aussi les deux origines dans
@@ -189,18 +192,18 @@ retire les anciennes.
    liste, l'ancien dashboard serait refusé par le CORS.
 5. **Google et Meta.** Ajouter les nouvelles adresses à côté des anciennes (sections 3
    et 4). Ne pas toucher encore au webhook.
-6. **Nouveau dashboard.** Le déployer sur `app.<domaine>`, pointé sur
+6. **Nouveau dashboard.** Le déployer sur `<domaine>`, pointé sur
    `https://api.<domaine>`. Tester la connexion (e-mail et Google), l'Embedded Signup
    et un « mot de passe oublié ».
 7. **Bascule de l'API.**
-   - Sur Render, `FRONTEND_URL=https://app.<domaine>` : les nouveaux e-mails pointent
+   - Sur Render, `FRONTEND_URL=https://<domaine>` : les nouveaux e-mails pointent
      vers le nouveau dashboard.
    - Changer l'URL du webhook WhatsApp chez Meta, puis vérifier qu'un message de test
      reçoit une réponse.
    - Si le mode Express est activé, mettre à jour l'adresse de l'API dans le bridge.
    - Activer le planificateur sur le VPS et le désactiver sur Render.
 8. **Expéditeur.** `MAIL_FROM_ADDRESS=contact@<domaine>` sur le VPS, puis test d'envoi.
-9. **Ancien dashboard.** Le rediriger (Vercel) vers `https://app.<domaine>` en
+9. **Ancien dashboard.** Le rediriger (Vercel) vers `https://<domaine>` en
    **conservant le chemin et les paramètres**. Les liens de réinitialisation déjà
    envoyés, valables 60 minutes, restent ainsi utilisables.
 10. **Après une à deux semaines sans trafic sur les anciennes adresses.**

@@ -1,0 +1,7 @@
+# Planificateur Laravel (billing:sync, rapport hebdomadaire), chaque minute.
+# Installé dans /etc/cron.d/ par « deploy/scheduler.sh on », seulement au moment de la
+# bascule : un seul environnement doit faire tourner le planificateur.
+SHELL=/bin/sh
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+* * * * * deploy cd /var/www/causeo-api && /usr/bin/php8.2 artisan schedule:run >> /dev/null 2>&1
