@@ -74,6 +74,8 @@ de l'API, dans les fichiers d'environnement. Aucun lien vers `causeo-dashboard.v
   | `/auth/login` | e-mail « mot de passe modifié » |
   | `/dashboard/billing` | rappels d'échéance et de fin d'essai |
   | `/dashboard` | rapport hebdomadaire |
+  | `/dashboard/feedback` | e-mail au gérant : réponse à son retour, retour résolu |
+  | `/admin/feedback` | e-mail aux admins : nouveau retour d'un gérant |
 
   Le dashboard est une application à page unique : l'hébergement doit servir `index.html`
   pour ces chemins (réglage par défaut de Vercel pour Angular ; sur le VPS, une règle

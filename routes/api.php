@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\API\V1\Admin\AdminAiCostController;
 use App\Http\Controllers\API\V1\Admin\AdminDashboardController;
+use App\Http\Controllers\API\V1\Admin\AdminFeedbackController;
 use App\Http\Controllers\API\V1\Admin\AdminNotificationController;
 use App\Http\Controllers\API\V1\Admin\AdminPaymentController;
 use App\Http\Controllers\API\V1\Admin\AdminPlanController;
@@ -9,6 +10,7 @@ use App\Http\Controllers\API\V1\AppointmentController;
 use App\Http\Controllers\API\V1\AuthController;
 use App\Http\Controllers\API\V1\BillingController;
 use App\Http\Controllers\API\V1\ConversationController;
+use App\Http\Controllers\API\V1\FeedbackController;
 use App\Http\Controllers\API\V1\NotificationController;
 use App\Http\Controllers\API\V1\OnboardingController;
 use App\Http\Controllers\API\V1\OrderController;
@@ -79,6 +81,10 @@ Route::prefix('v1')->middleware('auth:sanctum')->group(function () {
     Route::put('me/whatsapp-alerts', [WhatsAppAlertController::class, 'update']);
     Route::post('me/whatsapp-alerts/test', [WhatsAppAlertController::class, 'test'])->middleware('throttle:5,1');
 
+    // Retours du gérant (bugs, suggestions, questions).
+    Route::post('feedback', [FeedbackController::class, 'store']);
+    Route::get('me/feedback', [FeedbackController::class, 'index']);
+
     Route::get('businesses/{business}/orders', [OrderController::class, 'index']);
     Route::get('orders/{order}', [OrderController::class, 'show']);
     Route::patch('orders/{order}/status', [OrderController::class, 'updateStatus']);
@@ -123,4 +129,8 @@ Route::prefix('v1/admin')->middleware(['auth:sanctum', 'admin'])->group(function
     Route::get('notifications', [AdminNotificationController::class, 'index']);
     Route::post('notifications/read-all', [AdminNotificationController::class, 'readAll']);
     Route::post('notifications/{notification}/read', [AdminNotificationController::class, 'read']);
+
+    Route::get('feedback', [AdminFeedbackController::class, 'index']);
+    Route::patch('feedback/{feedback}', [AdminFeedbackController::class, 'update']);
+    Route::get('feedback/{feedback}/screenshot', [AdminFeedbackController::class, 'screenshot']);
 });
