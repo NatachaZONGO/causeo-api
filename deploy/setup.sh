@@ -15,6 +15,8 @@
 #                   alors sa clé de déploiement (lecture seule) et l'affiche.
 #   CI_PUBLIC_KEY   clé publique SSH de GitHub Actions (« ssh-ed25519 AAAA… »). Installée
 #                   pour deploy avec une commande forcée : elle ne peut que lancer deploy.sh.
+#   CI_DASHBOARD_PUBLIC_KEY   clé publique SSH du workflow du dépôt causeo-dashboard. Commande
+#                   forcée : dashboard-release.sh (copie d'une version par rsync, bascule).
 #
 # Ne fait PAS : copier le .env, déployer le code (deploy.sh), activer le planificateur
 # (scheduler.sh). Voir deploy/MIGRATION.md.
@@ -27,6 +29,7 @@ API_REPO="${API_REPO:-https://github.com/NatachaZONGO/causeo-api.git}"
 DASHBOARD_REPO="${DASHBOARD_REPO:-git@github-causeo-dashboard:NatachaZONGO/causeo-dashboard.git}" # privé : clé de déploiement
 PRIVACY_REPO="${PRIVACY_REPO:-https://github.com/NatachaZONGO/causeo-privacy.git}"
 CI_PUBLIC_KEY="${CI_PUBLIC_KEY:-}"
+CI_DASHBOARD_PUBLIC_KEY="${CI_DASHBOARD_PUBLIC_KEY:-}"
 
 # Clé SSH publiée par GitHub (docs.github.com, « GitHub's SSH key fingerprints ») :
 # pas de confiance aveugle à la première connexion.
@@ -171,6 +174,20 @@ if [[ -n "$CI_PUBLIC_KEY" ]]; then
     echo "    clé GitHub Actions installée (commande forcée : deploy.sh)"
 fi
 
+# Clé du workflow du dashboard (build sur GitHub) : elle peut seulement copier une version dans
+# releases/ (rsync, via rrsync en écriture seule) et l'activer. Voir dashboard-release.sh.
+if [[ -n "$CI_DASHBOARD_PUBLIC_KEY" ]]; then
+    [[ "$CI_DASHBOARD_PUBLIC_KEY" =~ ^ssh-ed25519\ [A-Za-z0-9+/]+=*(\ .*)?$ ]] || die "CI_DASHBOARD_PUBLIC_KEY doit être une clé publique « ssh-ed25519 AAAA… »."
+    command -v rrsync >/dev/null || die "rrsync introuvable : il est fourni par le paquet rsync (3.2.4 ou plus récent)."
+    keys="/home/${DEPLOY_USER}/.ssh/authorized_keys"
+    touch "$keys"
+    grep -v "causeo-dashboard-actions$" "$keys" > "${keys}.tmp" || true
+    printf 'restrict,command="%s/deploy/dashboard-release.sh" %s causeo-dashboard-actions\n' "$API_DIR" "$(cut -d' ' -f1,2 <<< "$CI_DASHBOARD_PUBLIC_KEY")" >> "${keys}.tmp"
+    install -m 600 -o "$DEPLOY_USER" -g "$DEPLOY_USER" "${keys}.tmp" "$keys"
+    rm -f "${keys}.tmp"
+    echo "    clé GitHub Actions du dashboard installée (commande forcée : dashboard-release.sh)"
+fi
+
 # deploy.sh peut recharger php-fpm, nginx et le worker sans mot de passe, et rien d'autre.
 sudoers=/etc/sudoers.d/causeo-deploy
 cat > /tmp/causeo-deploy.sudoers <<EOF
@@ -186,6 +203,8 @@ log "Dossiers et dépôts"
 install -d -m 755 /var/www
 install -d -m 755 -o "$DEPLOY_USER" -g "$DEPLOY_USER" "$API_DIR" "$DASHBOARD_SRC" "$DASHBOARD_DIR" "$PRIVACY_DIR"
 install -d -m 755 "$ACME_DIR"
+# Versions du dashboard : releases/<id>/ et le lien « current » servi par nginx.
+install -d -m 755 -o "$DEPLOY_USER" -g "$DEPLOY_USER" "$DASHBOARD_DIR/releases"
 
 clone() {
     local repo="$1" dir="$2"

@@ -127,11 +127,12 @@ deploy_dashboard() {
     [[ -f "$build/index.html" ]] || { echo "Build introuvable : $build/index.html" >&2; exit 1; }
 
     log "Dashboard : publication"
-    # Les nouveaux fichiers d'abord, index.html en dernier : un visiteur ne charge jamais
-    # un index.html qui pointe vers des fichiers absents.
-    rsync -a --exclude index.html "$build/" "$DASHBOARD_DIR/"
-    rsync -a "$build/index.html" "$DASHBOARD_DIR/index.html"
-    rsync -a --delete "$build/" "$DASHBOARD_DIR/"
+    # Même mécanisme que GitHub Actions (dépôt causeo-dashboard) : copie dans une nouvelle
+    # version, puis bascule atomique du lien « current » servi par nginx.
+    local release
+    release="$(date -u +%Y%m%d%H%M%S)-$(git -C "$DASHBOARD_SRC" rev-parse --short=12 HEAD)"
+    rsync -a "$build/" "$DASHBOARD_DIR/releases/$release/"
+    CAUSEO_DEPLOY_LOCKED=1 bash "$API_DIR/deploy/dashboard-release.sh" activate "$release"
 
     log "Pages légales"
     if [[ -d "$PRIVACY_DIR/.git" ]]; then

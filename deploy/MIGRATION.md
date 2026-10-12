@@ -346,6 +346,11 @@ Ajouter les nouvelles adresses **sans retirer les anciennes**. Le détail est da
    ```bash
    sudo -u deploy -H bash /var/www/causeo-api/deploy/deploy.sh dashboard
    ```
+   Ou automatiquement : le workflow du dépôt `causeo-dashboard` construit sur GitHub et copie
+   sur le VPS à chaque push (secrets et clé `CI_DASHBOARD_PUBLIC_KEY` : `DEPLOY.md` de ce dépôt).
+   Dans les deux cas, chaque version va dans `/var/www/causeo-dashboard/releases/<id>/`, puis le
+   lien `current` (servi par nginx) bascule d'un coup ; `deploy/dashboard-release.sh rollback`
+   revient à la précédente.
 3. Tester sur `https://DOMAINE` :
    - connexion par e-mail et par Google ;
    - une route profonde rechargée (F5), par exemple `/dashboard/billing` ;
