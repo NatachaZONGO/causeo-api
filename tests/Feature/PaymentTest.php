@@ -287,21 +287,31 @@ class PaymentTest extends TestCase
     public function test_admin_notifications(): void
     {
         $this->declare(['reference' => 'AAAA0001']);
+        $this->travel(5)->minutes();
         $this->declare(['reference' => 'BBBB0002']);
         $ownerNotification = Notification::create([
             'business_id' => $this->business->id, 'type' => 'billing', 'title' => 'Pour le gérant', 'body' => '...',
         ]);
 
         Sanctum::actingAs($this->admin);
-        $this->getJson('/api/v1/admin/notifications')
+        $list = $this->getJson('/api/v1/admin/notifications')
             ->assertOk()
             ->assertJsonPath('total', 2)
             ->assertJsonPath('unread_count', 2)
-            ->assertJsonPath('data.0.business.name', 'Boutique BF');
+            ->assertJsonPath('data.0.business.name', 'Boutique BF')
+            ->assertJsonPath('data.0.read_at', null);
+        $this->assertStringContainsString('BBBB0002', $list->json('data.0.body'));
 
-        $first = Notification::query()->where('audience', Notification::ADMIN)->first();
-        $this->postJson("/api/v1/admin/notifications/{$first->id}/read")->assertOk();
-        $this->getJson('/api/v1/admin/notifications')->assertJsonPath('unread_count', 1);
+        // Lire la plus ancienne ne la fait pas remonter en tête de liste.
+        $this->travel(5)->minutes();
+        $oldest = $list->json('data.1.id');
+        $this->postJson("/api/v1/admin/notifications/{$oldest}/read")
+            ->assertOk()
+            ->assertJsonPath('notification.id', $oldest)
+            ->assertJsonPath('notification.read_at', fn ($readAt) => $readAt !== null);
+        $this->getJson('/api/v1/admin/notifications')
+            ->assertJsonPath('unread_count', 1)
+            ->assertJsonPath('data.1.id', $oldest);
         $this->postJson("/api/v1/admin/notifications/{$ownerNotification->id}/read")->assertNotFound();
 
         $this->postJson('/api/v1/admin/notifications/read-all')->assertOk()->assertJsonPath('updated', 1);

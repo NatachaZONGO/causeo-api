@@ -15,7 +15,8 @@ class AdminNotificationController extends Controller
     {
         $notifications = $this->query()
             ->with('business:id,name')
-            ->orderByDesc('updated_at')
+            // created_at : marquer comme lue modifie updated_at et ferait remonter la notification.
+            ->orderByDesc('created_at')
             ->paginate(20);
 
         return response()->json([
