@@ -86,9 +86,12 @@ return [
         'api_url' => env('WHATSAPP_API_URL', 'https://graph.facebook.com/v21.0/'),
     ],
 
+    // Mode Express (bridge Baileys), désactivé par défaut : ses webhooks répondent 404
+    // sauf si WHATSAPP_EXPRESS_ENABLED=true et WHATSAPP_BRIDGE_TOKEN est un vrai secret.
     'whatsapp_bridge' => [
+        'enabled' => filter_var(env('WHATSAPP_EXPRESS_ENABLED', false), FILTER_VALIDATE_BOOL),
         'url' => env('WHATSAPP_BRIDGE_URL', 'http://localhost:3001'),
-        'token' => env('WHATSAPP_BRIDGE_TOKEN', 'secret_bridge_token_2024'),
+        'token' => env('WHATSAPP_BRIDGE_TOKEN'),
     ],
 
     'google' => [

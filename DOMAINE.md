@@ -29,8 +29,8 @@ Dans ce document :
 | `MAIL_FROM_ADDRESS` | `contact@<domaine>` (par exemple) | Expéditeur des e-mails, sur le domaine vérifié chez Brevo |
 | `MAIL_FROM_NAME` | `Causeo` | Nom affiché de l'expéditeur |
 | `APP_NAME` | `Causeo` | Affiché dans le pied de page des e-mails |
-| `WHATSAPP_BRIDGE_URL` | adresse du bridge s'il déménage aussi | Bridge WhatsApp Express |
-| `WHATSAPP_BRIDGE_TOKEN` | un vrai secret (la valeur par défaut du code est publique) | Authentifie le bridge auprès de l'API |
+| `WHATSAPP_BRIDGE_URL` | adresse du bridge s'il déménage aussi | Bridge WhatsApp Express (désactivé par défaut, voir `WHATSAPP_EXPRESS_ENABLED`) |
+| `WHATSAPP_BRIDGE_TOKEN` | un vrai secret, seulement si le mode Express est activé | Authentifie le bridge auprès de l'API |
 
 Inchangées (ne dépendent pas du domaine) : base de données et stockage Supabase,
 `WHATSAPP_TOKEN`, `WHATSAPP_VERIFY_TOKEN`, `WHATSAPP_APP_SECRET`, `FACEBOOK_APP_ID`,
@@ -151,7 +151,7 @@ Après la connexion, l'API renvoie vers `FRONTEND_URL/auth/callback`.
 | Service | Dépend du domaine ? | À faire |
 |---|---|---|
 | Supabase (base de données, stockage `documents` et `media`) | Non | Si Supabase limite l'accès par adresse IP, autoriser l'IP du VPS. Les URL des médias restent sur `supabase.co`. |
-| Bridge WhatsApp Express (`WHATSAPP_BRIDGE_URL`) | Oui | Le bridge appelle `https://api.<domaine>/api/webhook/whatsapp-express` et `/whatsapp-express/status` : mettre à jour l'adresse de l'API dans **sa** configuration. |
+| Bridge WhatsApp Express (`WHATSAPP_BRIDGE_URL`) | Oui, s'il est activé | Désactivé par défaut (404). S'il est réactivé, le bridge appelle `https://api.<domaine>/api/webhook/whatsapp-express` et `/whatsapp-express/status` : mettre à jour l'adresse de l'API dans **sa** configuration. |
 | Webhook de paiement (`/api/webhook/payment`) | Oui, s'il sert | Il se contente de journaliser. Si un prestataire l'appelle, lui donner la nouvelle URL. |
 | Anthropic, Gemini, OpenAI, Graph API Meta | Non | Rien (appels sortants avec clé d'API). |
 
@@ -195,7 +195,7 @@ retire les anciennes.
      vers le nouveau dashboard.
    - Changer l'URL du webhook WhatsApp chez Meta, puis vérifier qu'un message de test
      reçoit une réponse.
-   - Mettre à jour l'adresse de l'API dans le bridge WhatsApp Express.
+   - Si le mode Express est activé, mettre à jour l'adresse de l'API dans le bridge.
    - Activer le planificateur sur le VPS et le désactiver sur Render.
 8. **Expéditeur.** `MAIL_FROM_ADDRESS=contact@<domaine>` sur le VPS, puis test d'envoi.
 9. **Ancien dashboard.** Le rediriger (Vercel) vers `https://app.<domaine>` en

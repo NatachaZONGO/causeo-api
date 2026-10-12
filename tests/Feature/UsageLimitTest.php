@@ -87,7 +87,7 @@ class UsageLimitTest extends TestCase
         $this->business = Business::findOrFail($id);
 
         Http::fake();
-        config(['services.whatsapp_bridge.token' => 'bridge-token']);
+        config(['services.whatsapp_bridge.enabled' => true, 'services.whatsapp_bridge.token' => 'bridge-token']);
     }
 
     // --- Gratuit : limite quotidienne -----------------------------------------------

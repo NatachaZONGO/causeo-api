@@ -498,7 +498,7 @@ class WebhookController extends Controller
 
     private function verifyBridgeToken(Request $request): bool
     {
-        return $request->header('X-Bridge-Token') === config('services.whatsapp_bridge.token');
+        return hash_equals((string) config('services.whatsapp_bridge.token'), (string) $request->header('X-Bridge-Token'));
     }
 
     /**
