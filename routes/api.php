@@ -131,6 +131,7 @@ Route::prefix('v1/admin')->middleware(['auth:sanctum', 'admin'])->group(function
     Route::post('notifications/{notification}/read', [AdminNotificationController::class, 'read']);
 
     Route::get('feedback', [AdminFeedbackController::class, 'index']);
+    Route::get('feedback/{feedback}', [AdminFeedbackController::class, 'show']);
     Route::patch('feedback/{feedback}', [AdminFeedbackController::class, 'update']);
     Route::get('feedback/{feedback}/screenshot', [AdminFeedbackController::class, 'screenshot']);
 });

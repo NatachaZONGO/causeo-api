@@ -52,6 +52,15 @@ class AdminFeedbackController extends Controller
     }
 
     /**
+     * Un retour, pour l'ouvrir depuis une notification ou un e-mail même s'il n'est
+     * pas sur la première page de la liste.
+     */
+    public function show(Feedback $feedback): JsonResponse
+    {
+        return response()->json(['feedback' => $feedback->load(['user:id,name,email', 'business:id,name'])]);
+    }
+
+    /**
      * Changer le statut et/ou répondre. Une nouvelle réponse ou le passage en
      * « résolu » prévient le gérant (cloche et e-mail).
      */

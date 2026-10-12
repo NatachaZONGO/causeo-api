@@ -83,7 +83,7 @@ class FeedbackTest extends TestCase
         Mail::assertQueued(OwnerNotificationMail::class, 1);
         Mail::assertQueued(OwnerNotificationMail::class, fn (OwnerNotificationMail $mail) => $mail->hasTo('admin@example.test')
             && $mail->title === 'Nouveau retour : Bug'
-            && $mail->actionUrl === 'https://dashboard.example.test/admin/feedback');
+            && $mail->actionUrl === "https://dashboard.example.test/dashboard/admin/feedback?feedback={$feedback->id}");
 
         // Le gérant ne voit pas la notification des admins.
         $this->getJson("/api/v1/businesses/{$this->business->id}/notifications")->assertJsonPath('total', 0);
@@ -257,6 +257,22 @@ class FeedbackTest extends TestCase
         $this->assertSame('feedback_resolved', $notification->data['kind']);
         Mail::assertQueued(OwnerNotificationMail::class, 1);
         Mail::assertQueued(OwnerNotificationMail::class, fn (OwnerNotificationMail $mail) => $mail->hasTo('joyce@example.test'));
+    }
+
+    public function test_admin_opens_one_feedback(): void
+    {
+        $feedback = $this->feedback($this->owner, ['type' => 'question', 'message' => 'Comment exporter mes commandes ?', 'page' => '/dashboard/orders']);
+
+        Sanctum::actingAs($this->admin);
+        $this->getJson("/api/v1/admin/feedback/{$feedback->id}")
+            ->assertOk()
+            ->assertJsonPath('feedback.id', $feedback->id)
+            ->assertJsonPath('feedback.page', '/dashboard/orders')
+            ->assertJsonPath('feedback.user.email', 'joyce@example.test')
+            ->assertJsonMissingPath('feedback.screenshot_path');
+
+        Sanctum::actingAs($this->owner);
+        $this->getJson("/api/v1/admin/feedback/{$feedback->id}")->assertForbidden();
     }
 
     public function test_admin_downloads_the_screenshot(): void

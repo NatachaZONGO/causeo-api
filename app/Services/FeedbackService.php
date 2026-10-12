@@ -21,8 +21,8 @@ class FeedbackService
     /** Longueur du début du message repris dans les notifications. */
     public const EXCERPT_LENGTH = 140;
 
-    /** Pages du dashboard vers lesquelles pointent les e-mails. */
-    public const ADMIN_PATH = '/admin/feedback';
+    /** Pages du dashboard vers lesquelles pointent les e-mails (les pages admin sont sous /dashboard/admin). */
+    public const ADMIN_PATH = '/dashboard/admin/feedback';
 
     public const OWNER_PATH = '/dashboard/feedback';
 
@@ -121,7 +121,8 @@ class FeedbackService
                 $title,
                 [$body, 'Page : '.($feedback->page ?: 'non précisée').'.'],
                 'Voir le retour',
-                $this->url(self::ADMIN_PATH),
+                // ?feedback= ouvre directement le détail de ce retour.
+                $this->url(self::ADMIN_PATH.'?feedback='.$feedback->id),
             ));
         }
     }
