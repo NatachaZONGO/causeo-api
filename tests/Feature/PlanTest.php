@@ -61,16 +61,16 @@ class PlanTest extends TestCase
         $plans = Plan::all()->keyBy('slug');
 
         $this->assertSame([
-            "Jusqu'à 66 h économisées par mois (2 000 réponses automatiques)",
+            "Jusqu'à 66 h économisées par mois (2 000 unités)",
             'Votre vendeuse disponible 24 h/24',
             'Commandes et rendez-vous pris directement sur WhatsApp',
             "L'assistant apprend de vos réponses",
             'Documents illimités',
         ], $plans['pro']->features);
 
-        $this->assertSame("Jusqu'à 10 h économisées par mois (300 réponses automatiques)", $plans['free']->features[0]);
-        $this->assertSame("Jusqu'à 25 h économisées par mois (750 réponses automatiques)", $plans['starter']->features[0]);
-        $this->assertSame("Jusqu'à 200 h économisées par mois (6 000 réponses automatiques)", $plans['business']->features[0]);
+        $this->assertSame("Jusqu'à 10 h économisées par mois (10 unités par jour)", $plans['free']->features[0]);
+        $this->assertSame("Jusqu'à 25 h économisées par mois (750 unités)", $plans['starter']->features[0]);
+        $this->assertSame("Jusqu'à 200 h économisées par mois (6 000 unités)", $plans['business']->features[0]);
         $this->assertNotContains('Commandes et rendez-vous pris directement sur WhatsApp', $plans['starter']->features);
     }
 
@@ -95,6 +95,8 @@ class PlanTest extends TestCase
         $response = $this->getJson('/api/v1/plans')->assertOk();
 
         $this->assertSame(['free', 'starter', 'pro', 'business'], $response->json('plans.*.slug'));
+        // Essai offert à l'inscription (TRIAL_DAYS, TRIAL_UNITS).
+        $response->assertJsonPath('trial', ['plan' => 'pro', 'days' => 15, 'units' => 300]);
         $response->assertJsonPath('plans.0', [
             'slug' => 'free',
             'name' => 'Gratuit',
@@ -105,14 +107,16 @@ class PlanTest extends TestCase
             'daily_price_fcfa' => null,
             'highlight_daily_price' => false,
             'badge' => null,
+            'unit_limit' => 10,
+            'unit_limit_period' => 'day',
             'reply_limit' => 10,
             'reply_limit_period' => 'day',
             'document_limit' => 1,
             'modules' => [],
             'learning' => false,
             'features' => [
-                "Jusqu'à 10 h économisées par mois (300 réponses automatiques)",
-                'Votre vendeuse disponible 24 h/24, pour les 10 premiers clients du jour',
+                "Jusqu'à 10 h économisées par mois (10 unités par jour)",
+                'Votre vendeuse disponible 24 h/24',
                 "1 document pour informer l'assistant",
             ],
         ]);

@@ -5,10 +5,11 @@ namespace App\Services\Billing;
 use Carbon\CarbonInterface;
 
 /**
- * Consommation des réponses automatiques d'un business sur la fenêtre de sa formule.
+ * Consommation d'unités (1 unité = 1 réponse de l'assistant) d'un business sur la
+ * fenêtre de sa formule.
  *
- * window : day (Gratuit, remis à zéro à minuit à Ouagadougou), period (période
- * payée ou essai) ou null (formule sans limite).
+ * window : day (Gratuit, remis à zéro à minuit à Ouagadougou), period (période payée,
+ * ou essai, dont les unités ne se renouvellent pas) ou null (formule sans limite).
  */
 final readonly class Usage
 {

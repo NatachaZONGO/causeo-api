@@ -54,8 +54,9 @@ class BillingService
     }
 
     /**
-     * À la création d'un business : 30 jours de Pro offerts, sauf si l'utilisateur
-     * a déjà eu un essai (le business démarre alors en Gratuit).
+     * À la création d'un business : essai Pro de TRIAL_DAYS jours ou TRIAL_UNITS unités,
+     * selon ce qui arrive en premier (config/billing.php), sauf si l'utilisateur a déjà
+     * eu un essai (le business démarre alors en Gratuit).
      */
     public function startTrial(Business $business, ?User $user): BillingState
     {
@@ -73,7 +74,10 @@ class BillingService
                 'business_id' => $business->id,
                 'plan_id' => Plan::bySlug(Plan::PRO)->id,
                 'status' => 'trialing',
-                'trial_ends_at' => now()->addDays(Subscription::TRIAL_DAYS),
+                // Conditions figées : changer la configuration ne touche pas les essais en cours.
+                'trial_started_at' => now(),
+                'trial_ends_at' => now()->addDays(max(1, (int) config('billing.trial_days'))),
+                'trial_unit_limit' => max(1, (int) config('billing.trial_units')),
             ]);
 
             TrialUsage::create(['user_id' => $user?->id, 'business_id' => $business->id]);
@@ -200,6 +204,20 @@ class BillingService
         }
 
         return $state;
+    }
+
+    /**
+     * Terminer l'essai maintenant (unités épuisées) : le business passe en Gratuit,
+     * comme à la fin de la durée de l'essai. Sans effet si l'essai n'est plus en cours.
+     */
+    public function endTrial(Business $business): BillingState
+    {
+        Subscription::query()
+            ->where('business_id', $business->id)
+            ->where('status', 'trialing')
+            ->update(['status' => 'expired', 'ended_at' => now()]);
+
+        return $this->syncPlanColumn($business->fresh());
     }
 
     /**

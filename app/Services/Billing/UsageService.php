@@ -14,8 +14,9 @@ use Illuminate\Support\Facades\Log;
 use Throwable;
 
 /**
- * Limites de réponses automatiques : calcul de l'usage depuis la table messages,
- * blocage des réponses une fois la limite atteinte et notifications au gérant.
+ * Limites en unités (1 unité = 1 réponse de l'assistant) : calcul de l'usage depuis
+ * la table messages, blocage des réponses une fois la limite atteinte, fin de l'essai
+ * quand ses unités sont épuisées, et notifications au gérant.
  */
 class UsageService
 {
@@ -25,11 +26,15 @@ class UsageService
     /** Statut d'un message entrant resté sans réponse automatique (limite atteinte). */
     public const LIMIT_REACHED = 'limit_reached';
 
+    /** Page Abonnement du dashboard, vers laquelle pointent les notifications. */
+    public const BILLING_PATH = '/dashboard/billing';
+
     /** Seuils de consommation notifiés pour une formule à limite mensuelle. */
     private const THRESHOLDS = [80, 100];
 
     public function __construct(
         private readonly BillingService $billing,
+        private readonly ReminderService $reminders,
     ) {
     }
 
@@ -37,16 +42,19 @@ class UsageService
     {
         $state ??= $this->billing->state($business);
         $plan = $state->plan;
+        $limit = $state->isTrial()
+            ? ($state->subscription?->trial_unit_limit ?? $plan->reply_limit)
+            : $plan->reply_limit;
 
-        if ($plan->reply_limit === null) {
+        if ($limit === null) {
             return new Usage(null, 0, null, null, null);
         }
 
-        [$startsAt, $resetsAt] = $plan->reply_limit_period === 'day'
-            ? $this->today()
+        [$startsAt, $resetsAt] = $plan->reply_limit_period === 'day' && ! $state->isTrial()
+            ? $this->today($state)
             : $this->period($state);
 
-        return new Usage($plan->reply_limit, $this->repliesSince($business, $startsAt), $plan->reply_limit_period, $startsAt, $resetsAt);
+        return new Usage($limit, $this->repliesSince($business, $startsAt), $state->isTrial() ? 'period' : $plan->reply_limit_period, $startsAt, $resetsAt);
     }
 
     /**
@@ -84,9 +92,9 @@ class UsageService
             $clients = $missed > 1 ? "{$missed} clients n'ont" : "1 client n'a";
             $upgrade = $this->upgradeFor($state->plan);
             $body = $usage->window === 'day'
-                ? "Vos {$usage->limit} réponses automatiques du jour sont utilisées : {$clients} pas reçu de réponse automatique aujourd'hui. "
+                ? "Vos {$usage->limit} unités du jour sont utilisées : {$clients} pas reçu de réponse automatique aujourd'hui. "
                     .'Répondez-leur depuis WhatsApp'.($upgrade ? ", ou passez en {$upgrade->name} pour que l'assistant réponde à tous vos clients." : '.')
-                : "Les {$usage->limit} réponses de votre formule {$state->plan->name} sont utilisées"
+                : "Les {$usage->limit} unités de votre formule {$state->plan->name} sont utilisées"
                     .($usage->resetsAt ? ' jusqu\'au '.$usage->resetsAt->setTimezone(self::TIMEZONE)->format('d/m/Y') : '')
                     ." : {$clients} pas reçu de réponse automatique aujourd'hui. "
                     .'Répondez-leur depuis WhatsApp'.($upgrade ? ", ou passez en {$upgrade->name} pour que l'assistant continue de répondre." : '.');
@@ -94,7 +102,7 @@ class UsageService
             $attributes = [
                 'title' => ($missed > 1 ? "{$missed} clients" : '1 client').' sans réponse automatique aujourd\'hui',
                 'body' => $body,
-                'data' => ['kind' => 'replies_missed', 'date' => $date, 'missed_customers' => $missed, 'plan' => $state->plan->slug],
+                'data' => ['kind' => 'replies_missed', 'date' => $date, 'missed_customers' => $missed, 'plan' => $state->plan->slug, ...$this->billingLink()],
             ];
 
             $existing = Notification::query()
@@ -118,13 +126,21 @@ class UsageService
     }
 
     /**
-     * Après une réponse du bot : prévenir le gérant à 80 % et à 100 % de sa
+     * Après une réponse du bot : pendant l'essai, notifier à 80 % de ses unités et le
+     * terminer à 100 % ; sur une formule payante, prévenir à 80 % et à 100 % de la
      * limite mensuelle (une fois par seuil et par période).
      */
     public function afterReply(Business $business): void
     {
         try {
             $state = $this->billing->state($business);
+
+            if ($state->isTrial()) {
+                $this->checkTrialUnits($business, $state);
+
+                return;
+            }
+
             $usage = $this->usage($business, $state);
 
             if ($usage->window !== 'period' || $usage->percent() === null) {
@@ -154,7 +170,7 @@ class UsageService
                     'business_id' => $business->id,
                     'type' => 'billing',
                     ...$this->thresholdMessage($threshold, $state, $usage),
-                    'data' => ['kind' => $kind, 'period_start' => $periodKey, 'plan' => $state->plan->slug],
+                    'data' => ['kind' => $kind, 'period_start' => $periodKey, 'plan' => $state->plan->slug, ...$this->billingLink()],
                 ]);
             }
         } catch (Throwable $e) {
@@ -163,6 +179,85 @@ class UsageService
                 'message' => $e->getMessage(),
             ]);
         }
+    }
+
+    /**
+     * Unités de l'essai : notification à 80 %, et à 100 % fin de l'essai (passage en
+     * Gratuit, comme à la fin de sa durée) avec sa notification. Chaque seuil n'est
+     * notifié qu'une fois (ReminderService). Appelé après chaque réponse et par
+     * billing:sync, qui rattrape un seuil manqué.
+     *
+     * @return bool true si l'essai vient de se terminer
+     */
+    public function checkTrialUnits(Business $business, ?BillingState $state = null): bool
+    {
+        $state ??= $this->billing->state($business);
+
+        if (! $state->isTrial() || $state->subscription?->trial_unit_limit === null) {
+            return false; // essai de l'ancienne offre : limite du Pro, sans fin anticipée
+        }
+
+        $usage = $this->usage($business, $state);
+        $percent = $usage->percent() ?? 0;
+        $thresholds = collect((array) config('billing.trial_unit_thresholds', [80, 100]))->map(fn ($t) => (int) $t)->sort()->values();
+        $periodKey = $usage->startsAt->toIso8601String();
+        $data = ['plan' => $state->plan->slug, 'units_used' => $usage->used, 'units_limit' => $usage->limit];
+
+        if ($usage->isExhausted()) {
+            $this->billing->endTrial($business);
+            $free = Plan::bySlug(Plan::FREE);
+
+            $this->reminders->send(
+                $business,
+                'trial_units_100',
+                $periodKey,
+                "Votre essai {$state->plan->name} est terminé : {$usage->limit} unités utilisées",
+                [
+                    "Les {$usage->limit} unités de votre essai {$state->plan->name} sont utilisées (1 unité = 1 réponse de l'assistant).",
+                    "Votre assistant reste actif en formule Gratuit : {$free->reply_limit} unités par jour, sans prise de commandes ni de rendez-vous.",
+                    'Choisissez une formule depuis votre page Abonnement pour retrouver toutes ses fonctions.',
+                ],
+                $data + ['threshold' => 100],
+            );
+
+            return true;
+        }
+
+        // Le seuil atteint le plus haut, sous 100 % (rattrapage compris : on ne notifie pas 50 % à 85 %).
+        $threshold = $thresholds->filter(fn (int $t) => $t < 100 && $percent >= $t)->last();
+
+        if ($threshold !== null) {
+            $free = Plan::bySlug(Plan::FREE);
+
+            $this->reminders->send(
+                $business,
+                "trial_units_{$threshold}",
+                $periodKey,
+                "{$threshold} % des unités de votre essai utilisées",
+                [
+                    "Vous avez utilisé {$usage->used} des {$usage->limit} unités de votre essai {$state->plan->name} (1 unité = 1 réponse de l'assistant).",
+                    "L'essai se termine à {$usage->limit} unités ou le {$this->dateTime($state->endsAt)}, selon ce qui arrive en premier. "
+                        ."Votre assistant passera alors en formule Gratuit : {$free->reply_limit} unités par jour.",
+                    'Choisissez une formule depuis votre page Abonnement pour qu\'il continue de répondre à tous vos clients.',
+                ],
+                $data + ['threshold' => $threshold],
+            );
+        }
+
+        return false;
+    }
+
+    /**
+     * Lien vers la page Abonnement, ajouté aux données de chaque notification.
+     *
+     * @return array{action_path: string, action_url: string}
+     */
+    public function billingLink(): array
+    {
+        return [
+            'action_path' => self::BILLING_PATH,
+            'action_url' => rtrim((string) config('app.frontend_url'), '/').self::BILLING_PATH,
+        ];
     }
 
     /**
@@ -177,16 +272,16 @@ class UsageService
 
         if ($threshold < 100) {
             return [
-                'title' => "{$threshold} % de vos réponses automatiques utilisées",
-                'body' => "Vous avez utilisé {$usage->used} des {$usage->limit} réponses de votre formule {$plan}"
+                'title' => "{$threshold} % de vos unités utilisées",
+                'body' => "Vous avez utilisé {$usage->used} des {$usage->limit} unités de votre formule {$plan}"
                     .($until ? " (période jusqu'au {$until})" : '')
                     .'. Une fois la limite atteinte, l\'assistant ne répondra plus automatiquement jusqu\'au renouvellement.'.$advice,
             ];
         }
 
         return [
-            'title' => 'Toutes vos réponses automatiques sont utilisées',
-            'body' => "Les {$usage->limit} réponses de votre formule {$plan} sont utilisées"
+            'title' => 'Toutes vos unités sont utilisées',
+            'body' => "Les {$usage->limit} unités de votre formule {$plan} sont utilisées"
                 .($until ? " jusqu'au {$until}" : '')
                 .'. Les nouveaux messages de vos clients restent visibles, mais l\'assistant n\'y répond plus automatiquement.'.$advice,
         ];
@@ -208,19 +303,42 @@ class UsageService
     }
 
     /**
-     * Journée en cours à Ouagadougou, en UTC.
+     * Journée en cours à Ouagadougou, en UTC. Le jour où un essai ou une formule se
+     * termine, le Gratuit ne compte que les réponses données après le passage en Gratuit.
      *
      * @return array{0: CarbonImmutable, 1: CarbonImmutable}
      */
-    private function today(): array
+    private function today(?BillingState $state = null): array
     {
         $start = CarbonImmutable::now(self::TIMEZONE)->startOfDay();
+        $end = $start->addDay()->utc();
+        $start = $start->utc();
 
-        return [$start->utc(), $start->addDay()->utc()];
+        $freeSince = $state?->isFree() ? $this->freeSince($state->subscription) : null;
+
+        if ($freeSince !== null && $freeSince->greaterThan($start) && $freeSince->lessThan($end)) {
+            // Seconde suivante : la dernière réponse de l'essai peut porter la même heure que la bascule.
+            $start = $freeSince->addSecond();
+        }
+
+        return [$start, $end];
     }
 
     /**
-     * Période en cours : essai (30 jours avant sa fin) ou période payée.
+     * Moment du passage en Gratuit : fin enregistrée, sinon fin de l'essai ou de la grâce.
+     */
+    private function freeSince(?Subscription $subscription): ?CarbonImmutable
+    {
+        $since = $subscription?->ended_at
+            ?? ($subscription?->status === 'trialing'
+                ? $subscription->trial_ends_at
+                : $subscription?->current_period_end?->copy()->addDays(Subscription::GRACE_DAYS));
+
+        return $since ? CarbonImmutable::instance($since)->utc() : null;
+    }
+
+    /**
+     * Période en cours : essai (de son début à sa fin) ou période payée.
      *
      * @return array{0: CarbonImmutable, 1: ?CarbonImmutable}
      */
@@ -228,10 +346,8 @@ class UsageService
     {
         $subscription = $state->subscription;
 
-        if ($state->status === 'trialing') {
-            $end = CarbonImmutable::instance($subscription->trial_ends_at);
-
-            return [$end->subDays(Subscription::TRIAL_DAYS), $end];
+        if ($state->isTrial()) {
+            return [$subscription->trialStartedAt(), CarbonImmutable::instance($subscription->trial_ends_at)];
         }
 
         $start = $subscription?->current_period_start
@@ -243,10 +359,15 @@ class UsageService
         return [$start, $end ? CarbonImmutable::instance($end) : null];
     }
 
+    private function dateTime(?CarbonInterface $date): string
+    {
+        return $date ? CarbonImmutable::instance($date)->setTimezone(self::TIMEZONE)->format('d/m/Y à H\hi') : '';
+    }
+
     /**
-     * Réponses générées par l'IA (messages d'attente des escalades compris) ; les
-     * réponses toutes faites aux salutations et remerciements (metadata.canned),
-     * qui ne coûtent aucun appel à Claude, ne comptent pas.
+     * Unités consommées : réponses générées par l'IA (messages d'attente des escalades
+     * compris) ; les réponses toutes faites aux salutations et remerciements
+     * (metadata.canned), qui ne coûtent aucun appel à Claude, ne comptent pas.
      */
     public function repliesSince(Business $business, CarbonInterface $since, ?CarbonInterface $until = null): int
     {

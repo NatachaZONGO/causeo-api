@@ -2,12 +2,14 @@
 
 namespace Tests\Feature;
 
+use App\Mail\OwnerNotificationMail;
 use App\Models\Appointment;
 use App\Models\Business;
 use App\Models\Escalation;
 use App\Models\LearnedResponse;
 use App\Models\Notification;
 use App\Models\Order;
+use App\Models\Subscription;
 use App\Models\User;
 use App\Services\AI\LearningService;
 use App\Services\Billing\UsageService;
@@ -16,6 +18,7 @@ use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Storage;
@@ -114,11 +117,12 @@ class UsageLimitTest extends TestCase
         $this->assertSame('billing', $notification->type);
         $this->assertSame('1 client sans réponse automatique aujourd\'hui', $notification->title);
         $this->assertSame(
-            "Vos 10 réponses automatiques du jour sont utilisées : 1 client n'a pas reçu de réponse automatique aujourd'hui. "
+            "Vos 10 unités du jour sont utilisées : 1 client n'a pas reçu de réponse automatique aujourd'hui. "
             ."Répondez-leur depuis WhatsApp, ou passez en Starter pour que l'assistant réponde à tous vos clients.",
             $notification->body,
         );
-        $this->assertSame(['kind' => 'replies_missed', 'date' => '2026-10-09', 'missed_customers' => 1, 'plan' => 'free'], $notification->data);
+        $this->assertSame(['kind' => 'replies_missed', 'date' => '2026-10-09', 'missed_customers' => 1, 'plan' => 'free',
+            'action_path' => '/dashboard/billing', 'action_url' => rtrim(config('app.frontend_url'), '/').'/dashboard/billing'], $notification->data);
 
         // Un autre client : même notification, compteur mis à jour. Le même client : rien ne change.
         $this->receive('22670000002', 'Prix du pagne ?');
@@ -192,14 +196,15 @@ class UsageLimitTest extends TestCase
         $this->usage()->afterReply($this->business);
 
         $alert = Notification::sole();
-        $this->assertSame('80 % de vos réponses automatiques utilisées', $alert->title);
+        $this->assertSame('80 % de vos unités utilisées', $alert->title);
         $this->assertSame(
-            'Vous avez utilisé 600 des 750 réponses de votre formule Starter (période jusqu\'au 08/11/2026). '
+            'Vous avez utilisé 600 des 750 unités de votre formule Starter (période jusqu\'au 08/11/2026). '
             .'Une fois la limite atteinte, l\'assistant ne répondra plus automatiquement jusqu\'au renouvellement. '
             .'Passez en Pro pour que l\'assistant continue de répondre à tous vos clients.',
             $alert->body,
         );
         $this->assertSame('usage_80', $alert->data['kind']);
+        $this->assertSame('/dashboard/billing', $alert->data['action_path']);
 
         $this->addBotReplies(150);
         $this->assertFalse($this->usage()->allowsReply($this->business));
@@ -207,11 +212,11 @@ class UsageLimitTest extends TestCase
         $this->usage()->afterReply($this->business);
         $this->assertSame(1, Notification::where('data->kind', 'usage_80')->count());
         $this->assertSame(1, Notification::where('data->kind', 'usage_100')->count());
-        $this->assertSame('Toutes vos réponses automatiques sont utilisées', Notification::where('data->kind', 'usage_100')->value('title'));
+        $this->assertSame('Toutes vos unités sont utilisées', Notification::where('data->kind', 'usage_100')->value('title'));
 
         $this->receive('22670000001', 'Bonjour');
         $missed = Notification::where('data->kind', 'replies_missed')->sole();
-        $this->assertStringStartsWith('Les 750 réponses de votre formule Starter sont utilisées jusqu\'au 08/11/2026 : 1 client n\'a pas reçu', $missed->body);
+        $this->assertStringStartsWith('Les 750 unités de votre formule Starter sont utilisées jusqu\'au 08/11/2026 : 1 client n\'a pas reçu', $missed->body);
         $this->assertStringEndsWith("passez en Pro pour que l'assistant continue de répondre.", $missed->body);
         Http::assertNothingSent();
 
@@ -222,15 +227,127 @@ class UsageLimitTest extends TestCase
         $this->assertSame(0, $this->usage()->usage($this->business)->used);
     }
 
-    public function test_trial_uses_the_pro_limit_over_the_trial_period(): void
+    // --- Essai : 15 jours ou 300 unités -------------------------------------------
+
+    public function test_trial_counts_300_units_over_15_days(): void
     {
-        DB::table('trial_usages')->delete();
-        app(\App\Services\Billing\BillingService::class)->startTrial($this->business, $this->owner);
+        $this->startTrial();
+
+        $usage = $this->usage()->usage($this->business->fresh());
+        $this->assertSame([300, 0, 'period'], [$usage->limit, $usage->used, $usage->window]);
+        $this->assertSame('2026-10-09T10:00:00+00:00', $usage->startsAt->toIso8601String());
+        $this->assertSame('2026-10-24T10:00:00+00:00', $usage->resetsAt->toIso8601String());
+
+        // Les unités ne se renouvellent pas pendant l'essai.
+        $this->addBotReplies(120);
+        $this->travelTo('2026-10-15 10:00:00');
+        $this->addBotReplies(30);
+        $this->assertSame(150, $this->usage()->usage($this->business->fresh())->used);
+    }
+
+    public function test_trial_notifies_at_80_percent_then_switches_to_free_when_its_units_run_out(): void
+    {
+        Mail::fake();
+        config(['app.frontend_url' => 'https://dashboard.example.test']);
+        $this->startTrial();
+
+        $this->addBotReplies(239);
+        $this->usage()->afterReply($this->business->fresh());
+        $this->assertSame(0, Notification::count());
+
+        // 80 % : une seule notification, avec un lien vers la page Abonnement.
+        $this->addBotReplies(1);
+        $this->usage()->afterReply($this->business->fresh());
+        $this->usage()->afterReply($this->business->fresh());
+
+        $alert = Notification::sole();
+        $this->assertSame('80 % des unités de votre essai utilisées', $alert->title);
+        $this->assertSame(
+            "Vous avez utilisé 240 des 300 unités de votre essai Pro (1 unité = 1 réponse de l'assistant). "
+            .'L\'essai se termine à 300 unités ou le 24/10/2026 à 10h00, selon ce qui arrive en premier. '
+            .'Votre assistant passera alors en formule Gratuit : 10 unités par jour. '
+            ."Choisissez une formule depuis votre page Abonnement pour qu'il continue de répondre à tous vos clients.",
+            $alert->body,
+        );
+        $this->assertSame('trial_units_80', $alert->data['kind']);
+        $this->assertSame('https://dashboard.example.test/dashboard/billing', $alert->data['action_url']);
+        Mail::assertSent(OwnerNotificationMail::class, fn (OwnerNotificationMail $mail) => $mail->hasTo('owner@example.test')
+            && $mail->title === '80 % des unités de votre essai utilisées'
+            && $mail->actionUrl === 'https://dashboard.example.test/dashboard/billing');
+
+        // 100 % : l'essai se termine maintenant, comme à la fin de sa durée.
+        $this->travelTo('2026-10-12 14:00:00');
+        $this->addBotReplies(60);
+        $this->usage()->afterReply($this->business->fresh());
+        $this->usage()->afterReply($this->business->fresh());
+
+        $subscription = Subscription::sole();
+        $this->assertSame('expired', $subscription->status);
+        $this->assertTrue($subscription->ended_at->equalTo('2026-10-12 14:00:00'));
+        $this->assertSame('free', $this->business->fresh()->getRawOriginal('plan'));
+        $this->assertSame('free', $this->business->fresh()->billingState()->status);
+
+        $ended = Notification::where('data->kind', 'trial_units_100')->sole();
+        $this->assertSame('Votre essai Pro est terminé : 300 unités utilisées', $ended->title);
+        $this->assertStringContainsString('Votre assistant reste actif en formule Gratuit : 10 unités par jour', $ended->body);
+        $this->assertSame('/dashboard/billing', $ended->data['action_path']);
+        Mail::assertSentCount(2);
+
+        // En Gratuit dès maintenant, avec 10 unités neuves aujourd'hui (les réponses de l'essai ne comptent pas).
+        $usage = $this->usage()->usage($this->business->fresh());
+        $this->assertSame([10, 0, 'day'], [$usage->limit, $usage->used, $usage->window]);
+        $this->assertTrue($this->usage()->allowsReply($this->business->fresh()));
+        $this->travelTo('2026-10-12 14:01:00');
+        $this->addBotReplies(9);
+        $this->assertTrue($this->usage()->allowsReply($this->business->fresh()));
+        $this->addBotReplies(1);
+        $this->assertFalse($this->usage()->allowsReply($this->business->fresh()));
+
+        // billing:sync n'annonce pas une seconde fois le passage en Gratuit.
+        $this->artisan('billing:sync')->assertSuccessful();
+        $this->assertSame(['trial_units_80', 'trial_units_100'], Notification::query()->orderBy('created_at')->pluck('data')->pluck('kind')->all());
+    }
+
+    public function test_billing_sync_ends_a_trial_whose_units_ran_out(): void
+    {
+        Mail::fake();
+        $this->startTrial();
+        $this->addBotReplies(300); // sans afterReply (par exemple, une erreur pendant le traitement)
+
+        $this->travelTo('2026-10-09 11:00:00');
+        $this->artisan('billing:sync')->assertSuccessful();
+
+        $this->assertSame('expired', Subscription::sole()->status);
+        $this->assertSame('free', $this->business->fresh()->getRawOriginal('plan'));
+        // Seulement l'annonce de la fin (pas de 80 % rattrapé après coup, pas de second « downgraded »).
+        $this->assertSame(['trial_units_100'], Notification::pluck('data')->pluck('kind')->all());
+    }
+
+    public function test_a_trial_started_before_units_keeps_its_terms(): void
+    {
+        // Essai de l'ancienne offre : 30 jours avec la limite du Pro, sans unités figées.
+        Subscription::create([
+            'business_id' => $this->business->id,
+            'plan_id' => \App\Models\Plan::bySlug('pro')->id,
+            'status' => 'trialing',
+            'trial_ends_at' => '2026-10-29 10:00:00',
+        ]);
 
         $usage = $this->usage()->usage($this->business->fresh());
         $this->assertSame([2000, 'period'], [$usage->limit, $usage->window]);
-        $this->assertSame('2026-10-09T10:00:00+00:00', $usage->startsAt->toIso8601String());
-        $this->assertSame('2026-11-08T10:00:00+00:00', $usage->resetsAt->toIso8601String());
+        $this->assertSame('2026-09-29T10:00:00+00:00', $usage->startsAt->toIso8601String());
+
+        $this->addBotReplies(400);
+        $this->usage()->afterReply($this->business->fresh());
+        $this->assertSame('trialing', Subscription::sole()->status);
+        $this->assertTrue($this->usage()->allowsReply($this->business->fresh()));
+        $this->assertSame(0, Notification::count());
+    }
+
+    private function startTrial(): void
+    {
+        DB::table('trial_usages')->delete();
+        app(\App\Services\Billing\BillingService::class)->startTrial($this->business, $this->owner);
     }
 
     public function test_internal_plan_has_no_limit(): void

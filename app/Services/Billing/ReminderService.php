@@ -37,13 +37,16 @@ class ReminderService
             return false;
         }
 
+        $url = rtrim((string) config('app.frontend_url'), '/').$path;
+
         try {
             Notification::create([
                 'business_id' => $business->id,
                 'type' => 'billing',
                 'title' => $title,
                 'body' => implode(' ', $lines),
-                'data' => ['kind' => $kind, 'period_key' => $periodKey, ...$data],
+                // Lien direct vers la page concernée (Abonnement par défaut), pour la cloche.
+                'data' => ['kind' => $kind, 'period_key' => $periodKey, ...$data, 'action_path' => $path, 'action_url' => $url],
             ]);
         } catch (Throwable $e) {
             Log::error('ReminderService: notification impossible', [
@@ -61,7 +64,7 @@ class ReminderService
                     $title,
                     $lines,
                     $actionLabel,
-                    rtrim((string) config('app.frontend_url'), '/').$path,
+                    $url,
                 ));
             } catch (Throwable $e) {
                 // Le message d'une erreur SMTP peut contenir l'adresse : on ne garde que sa classe.

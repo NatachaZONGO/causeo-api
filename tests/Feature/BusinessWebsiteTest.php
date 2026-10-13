@@ -38,6 +38,7 @@ class BusinessWebsiteTest extends TestCase
 
         (new PlanSeeder())->run();
         (require base_path('database/migrations/2026_10_09_110000_rework_subscriptions_and_trials.php'))->up();
+        (require base_path('database/migrations/2026_10_13_100000_add_trial_terms_to_subscriptions.php'))->up();
 
         // Tables comptées par GET /businesses/{business}.
         foreach (['documents', 'conversations', 'escalations'] as $table) {

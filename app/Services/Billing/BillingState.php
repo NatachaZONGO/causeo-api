@@ -62,6 +62,9 @@ final readonly class BillingState
                 'name' => $this->plan->name,
                 'price_fcfa' => $this->plan->price_fcfa,
                 'period_days' => $this->plan->period_days,
+                // Unités : 1 unité = 1 réponse de l'assistant. reply_limit* : anciens noms, gardés.
+                'unit_limit' => $this->plan->reply_limit,
+                'unit_limit_period' => $this->plan->reply_limit_period,
                 'reply_limit' => $this->plan->reply_limit,
                 'reply_limit_period' => $this->plan->reply_limit_period,
                 'document_limit' => $this->plan->document_limit,
@@ -71,6 +74,29 @@ final readonly class BillingState
             'ends_at' => $this->endsAt?->toIso8601String(),
             'grace_ends_at' => $this->graceEndsAt?->toIso8601String(),
             'days_left' => $this->daysLeft(),
+            'trial' => $this->trial(),
+        ];
+    }
+
+    /**
+     * Conditions de l'essai en cours : durée et unités, la première limite atteinte
+     * y met fin (le compteur est dans billing.usage).
+     *
+     * @return array{started_at: ?string, ends_at: ?string, days: ?int, units: ?int}|null
+     */
+    private function trial(): ?array
+    {
+        if (! $this->isTrial() || $this->subscription === null) {
+            return null;
+        }
+
+        $start = $this->subscription->trialStartedAt();
+
+        return [
+            'started_at' => $start?->toIso8601String(),
+            'ends_at' => $this->endsAt?->toIso8601String(),
+            'days' => $start && $this->endsAt ? (int) round($start->diffInDays($this->endsAt)) : null,
+            'units' => $this->subscription->trial_unit_limit ?? $this->plan->reply_limit,
         ];
     }
 }

@@ -35,6 +35,9 @@ class PlanController extends Controller
             'daily_price_fcfa' => $plan->dailyPrice(),
             'highlight_daily_price' => $plan->highlight_daily_price,
             'badge' => $plan->badge,
+            // Unités : 1 unité = 1 réponse de l'assistant. reply_limit* : anciens noms, gardés.
+            'unit_limit' => $plan->reply_limit,
+            'unit_limit_period' => $plan->reply_limit_period,
             'reply_limit' => $plan->reply_limit,
             'reply_limit_period' => $plan->reply_limit_period,
             'document_limit' => $plan->document_limit,
@@ -46,6 +49,12 @@ class PlanController extends Controller
         return response()->json([
             'currency' => $currency,
             'payable' => Currency::isPayable($currency),
+            // Essai offert à l'inscription : la première limite atteinte y met fin.
+            'trial' => [
+                'plan' => Plan::PRO,
+                'days' => (int) config('billing.trial_days'),
+                'units' => (int) config('billing.trial_units'),
+            ],
             'plans' => $plans,
         ]);
     }

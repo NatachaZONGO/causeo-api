@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
@@ -22,8 +23,11 @@ class Subscription extends Model
     /** Jours pendant lesquels une formule payante échue reste utilisable. */
     public const GRACE_DAYS = 3;
 
-    /** Durée de l'essai Pro offert à la création d'un business. */
-    public const TRIAL_DAYS = 30;
+    /**
+     * Durée des essais commencés avant le passage aux unités (30 jours, limite du Pro).
+     * Les nouveaux essais suivent config/billing.php (TRIAL_DAYS, TRIAL_UNITS).
+     */
+    public const LEGACY_TRIAL_DAYS = 30;
 
     /**
      * The attributes that are mass assignable.
@@ -34,7 +38,9 @@ class Subscription extends Model
         'business_id',
         'plan_id',
         'status',
+        'trial_started_at',
         'trial_ends_at',
+        'trial_unit_limit',
         'current_period_start',
         'current_period_end',
         'ended_at',
@@ -48,11 +54,27 @@ class Subscription extends Model
     protected function casts(): array
     {
         return [
+            'trial_started_at' => 'datetime',
             'trial_ends_at' => 'datetime',
+            'trial_unit_limit' => 'integer',
             'current_period_start' => 'datetime',
             'current_period_end' => 'datetime',
             'ended_at' => 'datetime',
         ];
+    }
+
+    /**
+     * Début de l'essai (déduit de sa fin pour un essai de l'ancienne offre).
+     */
+    public function trialStartedAt(): ?CarbonImmutable
+    {
+        if ($this->trial_started_at !== null) {
+            return CarbonImmutable::instance($this->trial_started_at);
+        }
+
+        return $this->trial_ends_at !== null
+            ? CarbonImmutable::instance($this->trial_ends_at)->subDays(self::LEGACY_TRIAL_DAYS)
+            : null;
     }
 
     /**

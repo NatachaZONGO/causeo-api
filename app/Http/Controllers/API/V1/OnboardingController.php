@@ -59,7 +59,7 @@ class OnboardingController extends Controller
             'modules' => $template->default_modules ?? [],
         ]);
 
-        // 30 jours de Pro offerts, sauf si l'utilisateur a déjà eu un essai.
+        // Essai Pro (TRIAL_DAYS jours ou TRIAL_UNITS unités), sauf si l'utilisateur a déjà eu un essai.
         $billing->startTrial($business, $user);
 
         if (! empty($template->sample_faq)) {

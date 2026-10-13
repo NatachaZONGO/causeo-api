@@ -127,7 +127,7 @@ class WeeklyReportService
         $state = $this->billing->state($business);
 
         if ($state->isFree()) {
-            $lines[] = "En formule Gratuit, il est limité à {$state->plan->reply_limit} réponses par jour : "
+            $lines[] = "En formule Gratuit, il est limité à {$state->plan->reply_limit} unités (réponses) par jour : "
                 .'passez à une formule payante pour qu\'il réponde à tous vos clients et prenne leurs commandes.';
         }
 

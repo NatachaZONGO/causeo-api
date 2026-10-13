@@ -39,7 +39,7 @@ class BusinessController extends Controller
 
         $business = auth()->user()->businesses()->create($data);
 
-        // 30 jours de Pro offerts, sauf si l'utilisateur a déjà eu un essai.
+        // Essai Pro (TRIAL_DAYS jours ou TRIAL_UNITS unités), sauf si l'utilisateur a déjà eu un essai.
         $billing->startTrial($business, auth()->user());
 
         return response()->json([

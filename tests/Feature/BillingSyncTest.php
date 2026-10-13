@@ -40,65 +40,65 @@ class BillingSyncTest extends TestCase
 
     public function test_trial_reminders_are_sent_once_with_catch_up_then_the_business_falls_back_to_free(): void
     {
-        // Essai Pro jusqu'au 8 novembre, 10 h.
+        // Essai Pro de 15 jours : jusqu'au 24 octobre, 10 h.
         app(BillingService::class)->startTrial($this->business, $this->owner);
 
         $this->sync();
         $this->assertSame([], $this->reminderKinds());
 
-        // J-7, deux passages : un seul rappel.
-        $this->travelTo('2026-11-01 09:00:00');
+        // Ni J-7 ni J-5 pendant l'essai : seulement J-3 et J-1.
+        $this->travelTo('2026-10-17 09:00:00');
+        $this->sync();
+        $this->travelTo('2026-10-19 09:00:00');
+        $this->sync();
+        $this->assertSame([], $this->reminderKinds());
+
+        // J-3 manqué (serveur arrêté) : rattrapé à J-2, avec le bon nombre de jours ; deux passages, un seul rappel.
+        $this->travelTo('2026-10-22 09:00:00');
         $this->sync();
         $this->sync();
-        $this->assertSame(['reminder_7'], $this->reminderKinds());
+        $this->assertSame(['reminder_3'], $this->reminderKinds());
         $notification = $this->business->notifications()->sole();
         $this->assertSame('billing', $notification->type);
-        $this->assertSame('Votre essai Pro se termine dans 7 jours', $notification->title);
-        $this->assertStringContainsString('prend fin le 08/11/2026 à 10h00', $notification->body);
-        $this->assertStringContainsString('formule Gratuit : 10 réponses automatiques par jour', $notification->body);
-        $this->assertSame('reminder_7', $notification->data['kind']);
+        $this->assertSame('Votre essai Pro se termine dans 2 jours', $notification->title);
+        $this->assertStringContainsString('prend fin le 24/10/2026 à 10h00, ou plus tôt si votre assistant utilise ses 300 unités restantes.', $notification->body);
+        $this->assertStringContainsString('formule Gratuit : 10 unités par jour', $notification->body);
+        $this->assertSame('reminder_3', $notification->data['kind']);
+        // Lien direct vers la page Abonnement, dans la cloche comme dans l'e-mail.
+        $this->assertSame('/dashboard/billing', $notification->data['action_path']);
+        $this->assertSame('https://dashboard.example.test/dashboard/billing', $notification->data['action_url']);
         Mail::assertSent(OwnerNotificationMail::class, fn (OwnerNotificationMail $mail) => $mail->hasTo('owner@example.test')
-            && $mail->title === 'Votre essai Pro se termine dans 7 jours'
+            && $mail->title === 'Votre essai Pro se termine dans 2 jours'
             && $mail->actionUrl === 'https://dashboard.example.test/dashboard/billing');
 
-        // J-5 : rien de nouveau.
-        $this->travelTo('2026-11-03 09:00:00');
-        $this->sync();
-        $this->assertSame(['reminder_7'], $this->reminderKinds());
-
-        // J-3 manqué (serveur arrêté) : rattrapé à J-2, avec le bon nombre de jours.
-        $this->travelTo('2026-11-06 09:00:00');
-        $this->sync();
-        $this->assertSame(['reminder_7', 'reminder_3'], $this->reminderKinds());
-        $this->assertSame('Votre essai Pro se termine dans 2 jours', $this->latestNotification()->title);
-
         // J-1 la nuit : on attend le matin.
-        $this->travelTo('2026-11-07 03:00:00');
+        $this->travelTo('2026-10-23 03:00:00');
         $this->sync();
-        $this->assertCount(2, $this->reminderKinds());
-        $this->travelTo('2026-11-07 08:00:00');
+        $this->assertCount(1, $this->reminderKinds());
+        $this->travelTo('2026-10-23 08:00:00');
         $this->sync();
         $this->assertSame('Votre essai Pro se termine demain', $this->latestNotification()->title);
 
-        $this->travelTo('2026-11-08 08:30:00');
+        // Le jour même : plus de rappel (J-1 déjà envoyé).
+        $this->travelTo('2026-10-24 08:30:00');
         $this->sync();
-        $this->assertSame('Votre essai Pro se termine aujourd\'hui', $this->latestNotification()->title);
+        $this->assertSame(['reminder_3', 'reminder_1'], $this->reminderKinds());
         $this->assertSame('trialing', Subscription::sole()->status);
 
         // Fin de l'essai : statut et formule enregistrés, gérant prévenu une fois.
-        $this->travelTo('2026-11-08 11:00:00');
+        $this->travelTo('2026-10-24 11:00:00');
         $this->sync();
         $this->sync();
 
         $subscription = Subscription::sole();
         $this->assertSame('expired', $subscription->status);
-        $this->assertTrue($subscription->ended_at->equalTo('2026-11-08 10:00:00'));
+        $this->assertTrue($subscription->ended_at->equalTo('2026-10-24 10:00:00'));
         $this->assertSame('free', $this->business->fresh()->getRawOriginal('plan'));
-        $this->assertSame(['reminder_7', 'reminder_3', 'reminder_1', 'reminder_0', 'downgraded'], $this->reminderKinds());
+        $this->assertSame(['reminder_3', 'reminder_1', 'downgraded'], $this->reminderKinds());
         $this->assertSame('Votre assistant est passé en formule Gratuit', $this->latestNotification()->title);
         $this->assertStringContainsString('Votre essai de la formule Pro est terminé.', $this->latestNotification()->body);
-        $this->assertSame(5, $this->business->notifications()->count());
-        Mail::assertSentCount(5);
+        $this->assertSame(3, $this->business->notifications()->count());
+        Mail::assertSentCount(3);
     }
 
     public function test_paid_plan_goes_through_grace_then_free(): void
@@ -208,7 +208,7 @@ class BillingSyncTest extends TestCase
         );
         $this->assertEquals(['kind' => 'weekly_report', 'period_key' => '2026-10-12', 'week_start' => '2026-10-12',
             'replies' => 45, 'minutes_saved' => 90, 'orders_count' => 1, 'orders_total' => 15000, 'appointments_count' => 1,
-            'appointments_total' => 5000], $notification->data);
+            'appointments_total' => 5000, 'action_path' => '/dashboard', 'action_url' => 'https://dashboard.example.test/dashboard'], $notification->data);
         $this->assertSame(0, $quiet->notifications()->count());
         Mail::assertSent(OwnerNotificationMail::class, fn (OwnerNotificationMail $mail) => $mail->actionUrl === 'https://dashboard.example.test/dashboard');
         Mail::assertSentCount(1);
@@ -230,7 +230,7 @@ class BillingSyncTest extends TestCase
         $notification = $this->business->notifications()->sole();
         $this->assertSame('Votre assistant cette semaine : 1 réponse', $notification->title);
         $this->assertStringContainsString('soit environ 2 minutes de votre temps', $notification->body);
-        $this->assertStringContainsString('En formule Gratuit, il est limité à 10 réponses par jour', $notification->body);
+        $this->assertStringContainsString('En formule Gratuit, il est limité à 10 unités (réponses) par jour', $notification->body);
     }
 
     public function test_commands_are_scheduled_hourly_without_overlapping(): void

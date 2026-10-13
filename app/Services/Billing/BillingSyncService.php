@@ -18,7 +18,10 @@ use Throwable;
  */
 class BillingSyncService
 {
-    /** Rappels avant la fin d'un essai ou d'une période payée, en jours. */
+    /**
+     * Rappels avant la fin d'une période payée, en jours. Pour l'essai :
+     * config('billing.trial_reminder_days') (J-3 et J-1).
+     */
     public const REMINDER_DAYS = [7, 3, 1, 0];
 
     /** Pas d'email la nuit (heure de Ouagadougou), sauf si l'échéance tombe avant le matin. */
@@ -29,6 +32,7 @@ class BillingSyncService
     public function __construct(
         private readonly BillingService $billing,
         private readonly ReminderService $reminders,
+        private readonly UsageService $usage,
     ) {
     }
 
@@ -73,6 +77,16 @@ class BillingSyncService
         $business->setRelation('subscription', $subscription);
 
         $state = $this->billing->state($business);
+
+        // Unités de l'essai : seuil manqué rattrapé, ou essai terminé faute d'unités
+        // (UsageService a déjà basculé en Gratuit et prévenu le gérant).
+        if ($state->isTrial() && $this->usage->checkTrialUnits($business, $state)) {
+            $stats['updated']++;
+            $stats['reminders']++;
+
+            return;
+        }
+
         $wasTrial = $subscription->status === 'trialing';
         $target = $state->isFree() ? 'expired' : $state->status;
 
@@ -94,7 +108,7 @@ class BillingSyncService
     private function remind(Business $business, Subscription $subscription, BillingState $state, bool $wasTrial): bool
     {
         $free = Plan::bySlug(Plan::FREE);
-        $freeLimit = "{$free->reply_limit} réponses automatiques par jour, sans prise de commandes ni de rendez-vous";
+        $freeLimit = "{$free->reply_limit} unités par jour, sans prise de commandes ni de rendez-vous";
 
         if ($state->isFree()) {
             // Fin de l'essai, ou de la grâce d'une formule payante.
@@ -141,8 +155,11 @@ class BillingSyncService
         }
 
         $days = $this->calendarDaysUntil($state->endsAt);
+        $reminderDays = $state->isTrial()
+            ? array_map('intval', (array) config('billing.trial_reminder_days', [3, 1]))
+            : self::REMINDER_DAYS;
         // Rappel le plus proche encore dû : si J-3 a été manqué à J-2, il part à J-2.
-        $threshold = collect(self::REMINDER_DAYS)->sort()->first(fn (int $day) => $day >= $days);
+        $threshold = collect($reminderDays)->sort()->first(fn (int $day) => $day >= $days);
 
         if ($threshold === null || ! $this->sendable($state->endsAt, urgent: true)) {
             return false;
@@ -158,7 +175,8 @@ class BillingSyncService
             ? [
                 "Votre essai {$state->plan->name} se termine {$when}",
                 [
-                    "Votre essai gratuit de la formule {$state->plan->name} prend fin le {$this->dateTime($state->endsAt)}.",
+                    "Votre essai gratuit de la formule {$state->plan->name} prend fin le {$this->dateTime($state->endsAt)}"
+                        .$this->unitsLeft($business, $state).'.',
                     "Ensuite, votre assistant passe en formule Gratuit : {$freeLimit}.",
                     'Choisissez une formule depuis votre page Abonnement pour qu\'il continue de répondre à tous vos clients.',
                 ],
@@ -180,6 +198,20 @@ class BillingSyncService
             $lines,
             ['plan' => $state->plan->slug, 'status' => $state->status, 'days_left' => $days, 'ends_at' => $state->endsAt->toIso8601String()],
         );
+    }
+
+    /**
+     * « , ou avant s'il utilise ses 75 unités restantes » (essai limité en unités).
+     */
+    private function unitsLeft(Business $business, BillingState $state): string
+    {
+        if ($state->subscription?->trial_unit_limit === null) {
+            return '';
+        }
+
+        $remaining = $this->usage->usage($business, $state)->remaining();
+
+        return ", ou plus tôt si votre assistant utilise ses {$remaining} unités restantes";
     }
 
     /**

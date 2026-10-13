@@ -48,8 +48,8 @@ class PlanSeeder extends Seeder
                 'modules' => [],
                 'learning' => false,
                 'features' => [
-                    $this->hoursSaved(10 * 30),
-                    "{$available}, pour les 10 premiers clients du jour",
+                    $this->hoursSaved(10, 'day'),
+                    $available,
                     '1 document pour informer l\'assistant',
                 ],
                 'badge' => null,
@@ -161,14 +161,16 @@ class PlanSeeder extends Seeder
     }
 
     /**
-     * « Jusqu'à 66 h économisées par mois (2 000 réponses) », à raison de
-     * MINUTES_PER_REPLY minutes par réponse.
+     * « Jusqu'à 66 h économisées par mois (2 000 unités) », à raison de
+     * MINUTES_PER_REPLY minutes par unité (1 unité = 1 réponse de l'assistant).
+     * Gratuit : « (10 unités par jour) », sur 30 jours pour les heures.
      */
-    private function hoursSaved(int $repliesPerMonth): string
+    private function hoursSaved(int $units, string $period = 'month'): string
     {
-        $hours = intdiv($repliesPerMonth * self::MINUTES_PER_REPLY, 60);
+        $perMonth = $period === 'day' ? $units * 30 : $units;
+        $hours = intdiv($perMonth * self::MINUTES_PER_REPLY, 60);
 
         return 'Jusqu\'à '.number_format($hours, 0, ',', ' ').' h économisées par mois ('
-            .number_format($repliesPerMonth, 0, ',', ' ').' réponses automatiques)';
+            .number_format($units, 0, ',', ' ').' unités'.($period === 'day' ? ' par jour' : '').')';
     }
 }

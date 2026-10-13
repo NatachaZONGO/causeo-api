@@ -50,6 +50,7 @@ class BillingTest extends TestCase
         }
         (new PlanSeeder())->run();
         (require base_path(self::REWORK_MIGRATION))->up();
+        (require base_path('database/migrations/2026_10_13_100000_add_trial_terms_to_subscriptions.php'))->up();
 
         // Tables comptées par GET /businesses/{business}.
         foreach (['documents', 'conversations', 'escalations'] as $table) {
@@ -84,7 +85,7 @@ class BillingTest extends TestCase
         ]);
     }
 
-    public function test_onboarding_offers_30_days_of_pro(): void
+    public function test_onboarding_offers_a_pro_trial_of_15_days_or_300_units(): void
     {
         $user = $this->makeUser();
         $business = $this->onboard($user);
@@ -92,19 +93,47 @@ class BillingTest extends TestCase
         $state = app(BillingService::class)->state($business);
         $this->assertSame('trialing', $state->status);
         $this->assertSame('pro', $state->plan->slug);
-        $this->assertSame('2026-11-08 10:00:00', $state->endsAt->toDateTimeString());
-        $this->assertSame(30, $state->daysLeft());
+        $this->assertSame('2026-10-24 10:00:00', $state->endsAt->toDateTimeString());
+        $this->assertSame(15, $state->daysLeft());
         $this->assertSame('pro', $business->fresh()->getRawOriginal('plan'));
         $this->assertSame(1, TrialUsage::where('user_id', $user->id)->where('business_id', $business->id)->count());
+
+        $subscription = Subscription::where('business_id', $business->id)->sole();
+        $this->assertTrue($subscription->trial_started_at->equalTo('2026-10-09 10:00:00'));
+        $this->assertSame(300, $subscription->trial_unit_limit);
 
         Sanctum::actingAs($user);
         $this->getJson("/api/v1/businesses/{$business->id}/billing")
             ->assertOk()
             ->assertJsonPath('billing.status', 'trialing')
             ->assertJsonPath('billing.plan.slug', 'pro')
+            ->assertJsonPath('billing.plan.unit_limit', 2000)
             ->assertJsonPath('billing.plan.reply_limit', 2000)
-            ->assertJsonPath('billing.days_left', 30)
-            ->assertJsonPath('billing.grace_ends_at', null);
+            ->assertJsonPath('billing.days_left', 15)
+            ->assertJsonPath('billing.grace_ends_at', null)
+            ->assertJsonPath('billing.trial', [
+                'started_at' => '2026-10-09T10:00:00+00:00',
+                'ends_at' => '2026-10-24T10:00:00+00:00',
+                'days' => 15,
+                'units' => 300,
+            ])
+            // L'essai se compte en unités : 300, pas la limite mensuelle du Pro.
+            ->assertJsonPath('billing.usage.limit', 300)
+            ->assertJsonPath('billing.usage.used', 0);
+    }
+
+    public function test_trial_length_and_units_come_from_the_configuration(): void
+    {
+        config(['billing.trial_days' => 7, 'billing.trial_units' => 50]);
+        $business = $this->onboard($this->makeUser());
+
+        $this->assertSame('2026-10-16 10:00:00', $business->billingState()->endsAt->toDateTimeString());
+        $this->assertSame(50, Subscription::where('business_id', $business->id)->value('trial_unit_limit'));
+
+        // Les conditions sont figées au début de l'essai.
+        config(['billing.trial_days' => 30, 'billing.trial_units' => 1000]);
+        $this->assertSame('2026-10-16 10:00:00', $business->fresh()->billingState()->endsAt->toDateTimeString());
+        $this->assertSame(50, app(\App\Services\Billing\UsageService::class)->usage($business->fresh())->limit);
     }
 
     public function test_a_user_gets_only_one_trial(): void
@@ -128,13 +157,13 @@ class BillingTest extends TestCase
     {
         $business = $this->onboard($this->makeUser());
 
-        $this->travelTo('2026-11-07 10:00:00');
+        $this->travelTo('2026-10-23 10:00:00');
         $this->assertSame(['trialing', 1], $this->statusAndDaysLeft($business));
 
-        $this->travelTo('2026-11-08 09:59:59');
+        $this->travelTo('2026-10-24 09:59:59');
         $this->assertSame('trialing', $business->billingState()->status);
 
-        $this->travelTo('2026-11-08 10:00:00');
+        $this->travelTo('2026-10-24 10:00:00');
         $state = $business->billingState();
         $this->assertSame('free', $state->status);
         $this->assertSame('free', $state->plan->slug);
@@ -270,10 +299,10 @@ class BillingTest extends TestCase
             ->assertJsonPath('data.0.billing.status', 'trialing')
             ->assertJsonPath('data.0.billing.plan.slug', 'pro')
             ->assertJsonPath('data.0.billing.plan.name', 'Pro')
-            ->assertJsonPath('data.0.billing.days_left', 30);
+            ->assertJsonPath('data.0.billing.days_left', 15);
 
         // Essai terminé, avant le passage horaire de billing:sync : la colonne dit encore « pro ».
-        $this->travel(31)->days();
+        $this->travel(16)->days();
         $this->assertSame('pro', $business->fresh()->getRawOriginal('plan'));
         $this->getJson('/api/v1/admin/businesses')
             ->assertJsonPath('data.0.plan', 'pro')
