@@ -98,8 +98,11 @@ apt-get install -y -q "php${PHP_VERSION}-fpm" "php${PHP_VERSION}-cli" "php${PHP_
 update-alternatives --set php "/usr/bin/php${PHP_VERSION}" >/dev/null
 
 # pcntl est compilé dans PHP CLI (queue:work en a besoin pour --timeout).
+# Liste lue une fois : avec pipefail, « php -m | grep -q » échoue au hasard (grep -q
+# s'arrête au premier résultat et PHP reçoit SIGPIPE en écrivant la suite).
+php_modules="$("php${PHP_VERSION}" -m)"
 for ext in pcntl pdo_pgsql mbstring xml curl zip bcmath intl; do
-    "php${PHP_VERSION}" -m | grep -qi "^${ext}$" || die "Extension PHP manquante : ${ext}"
+    grep -qix "$ext" <<< "$php_modules" || die "Extension PHP manquante : ${ext}"
 done
 
 log "Composer"
