@@ -17,6 +17,8 @@
 #                   pour deploy avec une commande forcée : elle ne peut que lancer deploy.sh.
 #   CI_DASHBOARD_PUBLIC_KEY   clé publique SSH du workflow du dépôt causeo-dashboard. Commande
 #                   forcée : dashboard-release.sh (copie d'une version par rsync, bascule).
+#   SKIP_SSH_HARDENING=1   ne pas encore interdire la connexion root par mot de passe (le
+#                   temps de vérifier que deploy se connecte par clé ; relancer ensuite sans).
 #
 # Ne fait PAS : copier le .env, déployer le code (deploy.sh), activer le planificateur
 # (scheduler.sh). Voir deploy/MIGRATION.md.
@@ -364,7 +366,9 @@ ufw status | sed 's/^/    /'
 # --- SSH ----------------------------------------------------------------------------------
 
 log "SSH : plus de connexion root par mot de passe"
-if [[ -s /root/.ssh/authorized_keys ]]; then
+if [[ "${SKIP_SSH_HARDENING:-0}" == "1" ]]; then
+    warn "SKIP_SSH_HARDENING=1 : connexion root par mot de passe laissée telle quelle. Vérifiez la connexion de ${DEPLOY_USER} par clé dans une autre session, puis relancez setup.sh sans cette variable."
+elif [[ -s /root/.ssh/authorized_keys ]]; then
     # Les fichiers de sshd_config.d sont lus par ordre alphabétique et la première valeur
     # l'emporte : 00- passe avant 50-cloud-init.conf de Hostinger.
     printf '# Causeo : root seulement par clé SSH.\nPermitRootLogin prohibit-password\n' > /tmp/00-causeo.conf
