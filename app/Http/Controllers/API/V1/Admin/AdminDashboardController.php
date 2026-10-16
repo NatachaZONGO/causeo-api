@@ -144,27 +144,15 @@ class AdminDashboardController extends Controller
     }
 
     /**
-     * Finaliser manuellement la configuration WhatsApp d'une entreprise
-     * (WABA ID + phone_number_id saisis par l'admin après vérification côté Meta).
+     * Ancienne finalisation manuelle d'une demande d'activation WhatsApp (mode « Pro ») :
+     * abandonnée, les entreprises se connectent elles-mêmes par Embedded Signup.
      */
-    public function configureBusinessWhatsapp(Request $request, Business $business): JsonResponse
+    public function configureBusinessWhatsapp(Business $business): JsonResponse
     {
-        $data = $request->validate([
-            'waba_id' => ['required', 'string'],
-            'phone_number_id' => ['required', 'string'],
-        ]);
-
-        $business->update([
-            'whatsapp_waba_id' => $data['waba_id'],
-            'whatsapp_phone_number_id' => $data['phone_number_id'],
-            'whatsapp_verified' => true,
-            'whatsapp_connected_at' => now(),
-        ]);
-
         return response()->json([
-            'message' => 'WhatsApp configuré avec succès pour cette entreprise.',
-            'business' => $business,
-        ]);
+            'message' => 'La configuration manuelle de WhatsApp n\'est plus proposée : '
+                .'l\'entreprise doit se connecter elle-même depuis sa page WhatsApp (Coexistence).',
+        ], 410);
     }
 
     /**
