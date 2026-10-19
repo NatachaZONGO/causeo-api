@@ -97,9 +97,9 @@ class AppointmentTest extends TestCase
 
         $requests = Http::recorded()->map(fn (array $pair) => $pair[0]->data());
         $this->assertSame(['create_appointment'], array_column($requests[0]['tools'], 'name'));
-        $this->assertStringContainsString('# Prise de rendez-vous', $requests[0]['system']);
-        $this->assertStringContainsString('Nous sommes le jeudi 8 octobre 2026.', $requests[0]['system']);
-        $this->assertStringNotContainsString('# Prise de commande', $requests[0]['system']);
+        $this->assertStringContainsString('# Prise de rendez-vous', $this->systemPrompt($requests[0]));
+        $this->assertStringContainsString('Nous sommes le jeudi 8 octobre 2026.', $this->systemPrompt($requests[0]));
+        $this->assertStringNotContainsString('# Prise de commande', $this->systemPrompt($requests[0]));
 
         $toolResult = json_decode($requests[1]['messages'][4]['content'][0]['content'], true);
         $this->assertSame($appointment->reference(), $toolResult['reference']);
@@ -116,8 +116,8 @@ class AppointmentTest extends TestCase
 
         $request = Http::recorded()[0][0]->data();
         $this->assertSame(['create_order', 'create_appointment'], array_column($request['tools'], 'name'));
-        $this->assertStringContainsString('# Prise de commande', $request['system']);
-        $this->assertStringContainsString('# Prise de rendez-vous', $request['system']);
+        $this->assertStringContainsString('# Prise de commande', $this->systemPrompt($request));
+        $this->assertStringContainsString('# Prise de rendez-vous', $this->systemPrompt($request));
     }
 
     public function test_tool_and_prompt_are_not_offered_without_the_module(): void
@@ -130,7 +130,7 @@ class AppointmentTest extends TestCase
 
         $request = Http::recorded()[0][0]->data();
         $this->assertArrayNotHasKey('tools', $request);
-        $this->assertStringNotContainsString('# Prise de rendez-vous', $request['system']);
+        $this->assertStringNotContainsString('# Prise de rendez-vous', $this->systemPrompt($request));
     }
 
     public function test_invalid_requests_are_rejected(): void

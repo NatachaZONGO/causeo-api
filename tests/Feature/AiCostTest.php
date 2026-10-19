@@ -80,6 +80,47 @@ class AiCostTest extends TestCase
         ], $result['tool_trace']['ai_usage']);
     }
 
+    public function test_stable_part_of_the_prompt_is_cached_and_the_variable_part_is_not(): void
+    {
+        $conversationId = $this->conversation($this->business);
+        Http::fake(['api.anthropic.com/*' => Http::sequence()
+            ->push([
+                'stop_reason' => 'end_turn',
+                'content' => [['type' => 'text', 'text' => 'Le pagne wax coûte 7 500 FCFA.']],
+                'usage' => ['input_tokens' => 300, 'output_tokens' => 20, 'cache_creation_input_tokens' => 4200, 'cache_read_input_tokens' => 0],
+            ])
+            ->push([
+                'stop_reason' => 'end_turn',
+                'content' => [['type' => 'text', 'text' => 'Oui, en bleu et en rouge.']],
+                'usage' => ['input_tokens' => 320, 'output_tokens' => 15, 'cache_creation_input_tokens' => 0, 'cache_read_input_tokens' => 4200],
+            ]),
+        ]);
+
+        $this->service()->answer($this->business, 'Combien coûte le pagne wax ?', $conversationId);
+        $this->travel(2)->hours();
+        $second = $this->service()->answer($this->business, 'Vous l\'avez en quelles couleurs ?', $conversationId);
+
+        [$first, $later] = [Http::recorded()[0][0]->data(), Http::recorded()[1][0]->data()];
+
+        $this->assertCount(2, $first['system']);
+        [$stable, $variable] = $first['system'];
+        $this->assertSame(['type' => 'ephemeral'], $stable['cache_control']);
+        $this->assertStringContainsString('# Règles absolues', $stable['text']);
+        $this->assertStringContainsString('# Prise de commande', $stable['text']);
+        $this->assertArrayNotHasKey('cache_control', $variable);
+        $this->assertStringContainsString('# Moment de la journée', $variable['text']);
+        $this->assertStringNotContainsString('# Moment de la journée', $stable['text']);
+        $this->assertArrayHasKey('tools', $first);
+
+        // L'heure a changé, pas le bloc mis en cache ni les outils : le préfixe reste identique.
+        $this->assertSame($stable, $later['system'][0]);
+        $this->assertSame($first['tools'], $later['tools']);
+        $this->assertNotSame($variable['text'], $later['system'][1]['text']);
+
+        $this->assertSame(4200, $second['tool_trace']['ai_usage']['cache_read_input_tokens']);
+        $this->assertSame(0, $second['tool_trace']['ai_usage']['cache_creation_input_tokens']);
+    }
+
     public function test_canned_replies_record_no_tokens(): void
     {
         Http::fake();

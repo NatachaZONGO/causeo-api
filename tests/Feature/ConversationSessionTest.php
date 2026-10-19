@@ -76,8 +76,8 @@ class ConversationSessionTest extends TestCase
         $this->assertSame('user', $request['messages'][0]['role']);
         $this->assertStringEndsWith('Question du client : Vous avez des sacs ?', $request['messages'][0]['content']);
         $this->assertStringNotContainsString('Pagne wax bleu, 15 000', json_encode($request['messages'], JSON_UNESCAPED_UNICODE));
-        $this->assertStringNotContainsString(self::IN_PROGRESS_NOTE, $request['system']);
-        $this->assertStringContainsString('Un récapitulatif resté sans réponse lors d\'un échange précédent est abandonné', $request['system']);
+        $this->assertStringNotContainsString(self::IN_PROGRESS_NOTE, $this->systemPrompt($request));
+        $this->assertStringContainsString('Un récapitulatif resté sans réponse lors d\'un échange précédent est abandonné', $this->systemPrompt($request));
     }
 
     public function test_session_keeps_recent_messages_and_stops_at_the_first_long_pause(): void
@@ -98,7 +98,7 @@ class ConversationSessionTest extends TestCase
         $this->assertStringStartsWith('Et en rouge ?', $request['messages'][2]['content']);
         $this->assertStringEndsWith('Question du client : Je le prends.', $request['messages'][2]['content']);
         $this->assertStringNotContainsString('horaires', json_encode($request['messages'], JSON_UNESCAPED_UNICODE));
-        $this->assertStringContainsString(self::IN_PROGRESS_NOTE, $request['system']);
+        $this->assertStringContainsString(self::IN_PROGRESS_NOTE, $this->systemPrompt($request));
     }
 
     public function test_session_gap_is_configurable(): void
@@ -163,9 +163,9 @@ class ConversationSessionTest extends TestCase
         $this->assertCount(1, $request['messages']);
         $this->assertStringContainsString(
             'Quand le client ouvre un nouvel échange par une salutation (il n\'y a pas d\'historique de messages), réponds à sa salutation et demande-lui comment tu peux l\'aider',
-            $request['system'],
+            $this->systemPrompt($request),
         );
-        $this->assertStringNotContainsString('# Demandes en cours', $request['system']);
+        $this->assertStringNotContainsString('# Demandes en cours', $this->systemPrompt($request));
     }
 
     public function test_pending_order_and_appointment_are_summarized_instead_of_the_old_history(): void
@@ -195,16 +195,16 @@ class ConversationSessionTest extends TestCase
 
         $request = $this->sentRequest();
         $this->assertCount(1, $request['messages']);
-        $this->assertStringContainsString("# Demandes en cours de ce client\nCes demandes ont été enregistrées et ne sont pas encore traitées. N'en parle pas de toi-même", $request['system']);
+        $this->assertStringContainsString("# Demandes en cours de ce client\nCes demandes ont été enregistrées et ne sont pas encore traitées. N'en parle pas de toi-même", $this->systemPrompt($request));
         $this->assertStringContainsString(
             "- Commande {$pending->reference()} du 06/10/2026 : 2 × Pagne wax (bleu), total 15 000 FCFA, livraison à Ouagadougou. Statut : enregistrée, pas encore traitée par l'entreprise.",
-            $request['system'],
+            $this->systemPrompt($request),
         );
         $this->assertStringContainsString(
             "- Demande de rendez-vous {$appointment->reference()} : Retouche, samedi 10 octobre à 15h. Statut : en attente de confirmation par l'entreprise.",
-            $request['system'],
+            $this->systemPrompt($request),
         );
-        $this->assertStringNotContainsString($handled->reference(), $request['system']);
+        $this->assertStringNotContainsString($handled->reference(), $this->systemPrompt($request));
     }
 
     public function test_no_summary_when_nothing_is_pending(): void
@@ -214,7 +214,7 @@ class ConversationSessionTest extends TestCase
 
         $this->service()->answer($this->business, 'Vous avez des sacs ?', $this->conversationId);
 
-        $this->assertStringNotContainsString('# Demandes en cours', $this->sentRequest()['system']);
+        $this->assertStringNotContainsString('# Demandes en cours', $this->systemPrompt($this->sentRequest()));
     }
 
     private function addMessage(string $at, string $direction, string $content): void

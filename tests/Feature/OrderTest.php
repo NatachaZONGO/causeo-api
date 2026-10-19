@@ -108,10 +108,10 @@ class OrderTest extends TestCase
         // 1er appel : « oui » est bien envoyé à Claude avec l'outil et les règles de commande.
         $this->assertSame('create_order', $requests[0]['tools'][0]['name']);
         $this->assertSame(['delivery', 'pickup'], $requests[0]['tools'][0]['input_schema']['properties']['fulfillment_type']['enum']);
-        $this->assertStringContainsString('- livraison à domicile (delivery)', $requests[0]['system']);
-        $this->assertStringContainsString('- retrait en boutique (pickup)', $requests[0]['system']);
-        $this->assertStringNotContainsString('(shipping)', $requests[0]['system']);
-        $this->assertStringContainsString('# Prise de commande', $requests[0]['system']);
+        $this->assertStringContainsString('- livraison à domicile (delivery)', $this->systemPrompt($requests[0]));
+        $this->assertStringContainsString('- retrait en boutique (pickup)', $this->systemPrompt($requests[0]));
+        $this->assertStringNotContainsString('(shipping)', $this->systemPrompt($requests[0]));
+        $this->assertStringContainsString('# Prise de commande', $this->systemPrompt($requests[0]));
         $this->assertStringContainsString('Je confirme la commande ?', $requests[0]['messages'][1]['content']);
         $this->assertStringEndsWith('Question du client : oui', $requests[0]['messages'][2]['content']);
 
@@ -204,7 +204,7 @@ class OrderTest extends TestCase
         $this->service()->answer($this->business, 'Combien coûte le pagne wax ?');
 
         Http::assertSent(fn (Request $request) => ! array_key_exists('tools', $request->data())
-            && ! str_contains($request->data()['system'], '# Prise de commande'));
+            && ! str_contains($this->systemPrompt($request->data()), '# Prise de commande'));
     }
 
     public function test_index_filters_by_status_and_lists_latest_first(): void
@@ -279,7 +279,7 @@ class OrderTest extends TestCase
 
         $request = Http::recorded()[0][0]->data();
         $this->assertArrayNotHasKey('tools', $request);
-        $this->assertStringNotContainsString('# Prise de commande', $request['system']);
+        $this->assertStringNotContainsString('# Prise de commande', $this->systemPrompt($request));
         $this->assertSame(0, Order::count());
     }
 
@@ -392,10 +392,10 @@ class OrderTest extends TestCase
         $request = Http::recorded()[0][0]->data();
         $this->assertSame(['pickup', 'shipping'], $request['tools'][0]['input_schema']['properties']['fulfillment_type']['enum']);
         $this->assertSame(['items', 'fulfillment_type', 'customer_name', 'payment_method'], $request['tools'][0]['input_schema']['required']);
-        $this->assertStringContainsString('- retrait en boutique (pickup)', $request['system']);
-        $this->assertStringContainsString('- expédition vers une autre ville (shipping)', $request['system']);
-        $this->assertStringNotContainsString('(delivery)', $request['system']);
-        $this->assertStringContainsString('Ne facture JAMAIS de frais de livraison pour un retrait en boutique', $request['system']);
+        $this->assertStringContainsString('- retrait en boutique (pickup)', $this->systemPrompt($request));
+        $this->assertStringContainsString('- expédition vers une autre ville (shipping)', $this->systemPrompt($request));
+        $this->assertStringNotContainsString('(delivery)', $this->systemPrompt($request));
+        $this->assertStringContainsString('Ne facture JAMAIS de frais de livraison pour un retrait en boutique', $this->systemPrompt($request));
     }
 
     public function test_order_tool_is_not_offered_when_every_mode_is_disabled(): void
@@ -408,7 +408,7 @@ class OrderTest extends TestCase
 
         $request = Http::recorded()[0][0]->data();
         $this->assertArrayNotHasKey('tools', $request);
-        $this->assertStringNotContainsString('# Prise de commande', $request['system']);
+        $this->assertStringNotContainsString('# Prise de commande', $this->systemPrompt($request));
     }
 
     public function test_owner_can_toggle_fulfillment_modes(): void
@@ -634,7 +634,7 @@ class OrderTest extends TestCase
         Http::fake(['api.anthropic.com/*' => Http::response($this->textResponse('Très bien.'))]);
 
         $this->service()->answer($this->business, 'Je veux un pagne wax à Bobo', $this->conversationId);
-        $system = Http::recorded()[0][0]->data()['system'];
+        $system = $this->systemPrompt(Http::recorded()[0][0]->data());
 
         $this->assertStringContainsString('ajouter cela à sa commande en cours ou remplacer sa commande', $system);
         $this->assertStringContainsString("traite la commande comme une livraison (delivery) vers cette ville", $system);
@@ -644,7 +644,7 @@ class OrderTest extends TestCase
         $this->business->update(['shipping_enabled' => true]);
         $this->service()->answer($this->business, 'Je veux un pagne wax à Bobo', $this->conversationId);
 
-        $this->assertStringNotContainsString('traite la commande comme une livraison (delivery) vers cette ville', Http::recorded()[1][0]->data()['system']);
+        $this->assertStringNotContainsString('traite la commande comme une livraison (delivery) vers cette ville', $this->systemPrompt(Http::recorded()[1][0]->data()));
     }
 
     /**

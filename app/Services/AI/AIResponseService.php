@@ -85,7 +85,26 @@ class AIResponseService
 
             $messages = $this->buildConversationHistory($session, $conversation, $question);
 
-            $systemPrompt = $this->buildSystemPrompt($business);
+            // Le prompt système est envoyé en deux blocs : d'abord la partie stable pour une
+            // entreprise (règles, informations, consignes de commande et de rendez-vous), mise en
+            // cache avec les outils qui la précèdent ; puis la partie qui change d'une question à
+            // l'autre (heure, demandes en cours, médias…), hors cache.
+            $stablePrompt = $this->buildSystemPrompt($business);
+
+            // Commandes et rendez-vous ne sont possibles que dans une vraie conversation
+            // client, avec le module correspondant actif (et au moins un mode de remise
+            // proposé pour les commandes).
+            $tools = [];
+            if ($conversation !== null && $business->hasModule('orders') && $business->enabledFulfillmentTypes() !== []) {
+                $stablePrompt .= "\n\n".$this->orderInstructions($business);
+                $tools[] = $this->createOrderTool($business);
+            }
+            if ($conversation !== null && $business->hasModule('appointments')) {
+                $stablePrompt .= "\n\n".$this->appointmentInstructions($business);
+                $tools[] = $this->createAppointmentTool();
+            }
+
+            $systemPrompt = $this->timeOfDayBlock($business);
 
             $pendingSummary = $this->pendingRequestsSummary($conversation);
             if ($pendingSummary !== null) {
@@ -141,23 +160,16 @@ class AIResponseService
                 $messages[] = ['role' => 'user', 'content' => $userMessage];
             }
 
-            // Commandes et rendez-vous ne sont possibles que dans une vraie conversation
-            // client, avec le module correspondant actif (et au moins un mode de remise
-            // proposé pour les commandes).
-            $tools = [];
-            if ($conversation !== null && $business->hasModule('orders') && $business->enabledFulfillmentTypes() !== []) {
-                $systemPrompt .= "\n\n".$this->orderInstructions($business);
-                $tools[] = $this->createOrderTool($business);
-            }
-            if ($conversation !== null && $business->hasModule('appointments')) {
-                $systemPrompt .= "\n\n".$this->appointmentInstructions($business);
-                $tools[] = $this->createAppointmentTool();
-            }
-
+            // Le cache couvre les outils et le premier bloc (rendus dans cet ordre). En dessous
+            // de la taille minimale du modèle (4 096 tokens pour Haiku 4.5), l'API ignore
+            // simplement le marqueur ; usage.cache_* reste alors à zéro.
             $request = [
                 'model' => $this->model,
                 'max_tokens' => 1024,
-                'system' => $systemPrompt,
+                'system' => [
+                    ['type' => 'text', 'text' => $stablePrompt, 'cache_control' => ['type' => 'ephemeral']],
+                    ['type' => 'text', 'text' => $systemPrompt],
+                ],
                 'messages' => $messages,
             ];
             if ($tools !== []) {
@@ -1418,13 +1430,6 @@ PROMPT;
             ? "Message d'accueil défini par l'entreprise (inspire-t'en pour saluer, sans le répéter mot pour mot à chaque fois) :\n\"{$business->custom_greeting}\""
             : "Aucun message d'accueil personnalisé n'a été défini : accueille le client chaleureusement avec tes propres mots.";
 
-        $hour = $this->currentHour($business);
-        $ville = ! empty($business->city) ? $business->city : 'Ouagadougou';
-        $heureStr = str_pad((string) $hour, 2, '0', STR_PAD_LEFT).'h';
-        $heureBloc = "Il est actuellement environ {$heureStr} ({$this->partOfDay($hour)}) à {$ville}. "
-            .'Adapte tes salutations en conséquence : « Bonjour » le matin et l\'après-midi, « Bonsoir » à partir de 18h et la nuit. '
-            ."Si le client te dit « Bonsoir », ne réponds jamais « Bonjour », et inversement.";
-
         $prompt = <<<PROMPT
 {$identite}
 
@@ -1465,9 +1470,6 @@ Tu discutes avec un client sur WhatsApp. Tu réponds au nom de {$business->name}
 
 # Accueil
 {$accueil}
-
-# Moment de la journée
-{$heureBloc}
 PROMPT;
 
         if (! empty($business->ai_instructions)) {
@@ -1480,6 +1482,22 @@ PROMPT;
         }
 
         return $prompt;
+    }
+
+    /**
+     * Heure locale de l'entreprise pour le prompt système. Hors de buildSystemPrompt :
+     * elle change toutes les heures et invaliderait la partie mise en cache.
+     */
+    private function timeOfDayBlock(Business $business): string
+    {
+        $hour = $this->currentHour($business);
+        $ville = ! empty($business->city) ? $business->city : 'Ouagadougou';
+        $heureStr = str_pad((string) $hour, 2, '0', STR_PAD_LEFT).'h';
+
+        return "# Moment de la journée\n"
+            ."Il est actuellement environ {$heureStr} ({$this->partOfDay($hour)}) à {$ville}. "
+            .'Adapte tes salutations en conséquence : « Bonjour » le matin et l\'après-midi, « Bonsoir » à partir de 18h et la nuit. '
+            ."Si le client te dit « Bonsoir », ne réponds jamais « Bonjour », et inversement.";
     }
 
     /**
