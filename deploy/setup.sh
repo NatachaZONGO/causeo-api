@@ -261,7 +261,11 @@ chmod 644 /etc/causeo-deploy.env
 log "PHP-FPM (pool causeo)"
 touch "/var/log/php${PHP_VERSION}-fpm-causeo.log"
 chown "$DEPLOY_USER:$DEPLOY_USER" "/var/log/php${PHP_VERSION}-fpm-causeo.log"
-if install_file "$SOURCE_DIR/php/causeo-pool.conf" "/etc/php/${PHP_VERSION}/fpm/pool.d/causeo.conf"; then
+fpm_changed=false
+install_file "$SOURCE_DIR/php/causeo-pool.conf" "/etc/php/${PHP_VERSION}/fpm/pool.d/causeo.conf" && fpm_changed=true
+# Limites d'upload et de mémoire (php-fpm seulement : la CLI et le worker ne reçoivent pas d'upload).
+install_file "$SOURCE_DIR/php/99-causeo.ini" "/etc/php/${PHP_VERSION}/fpm/conf.d/99-causeo.ini" && fpm_changed=true
+if $fpm_changed; then
     "php-fpm${PHP_VERSION}" -t
     systemctl restart "php${PHP_VERSION}-fpm"
 fi
