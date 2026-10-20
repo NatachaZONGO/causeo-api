@@ -11,14 +11,20 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Validation\Validator;
 use Throwable;
 
 class BusinessMediaController extends Controller
 {
+    /**
+     * Le bot envoie les images (et les catalogues) en message « image » WhatsApp, qui n'accepte que
+     * le JPEG et le PNG jusqu'à 5 Mo ; les documents (PDF, DOC, DOCX, 16 Mo) partent en message « document ».
+     */
+    public const IMAGE_MAX_KB = 5120;
+
     public function __construct(
         private readonly EmbeddingService $embeddingService,
-    ) {
-    }
+    ) {}
 
     /**
      * Lister les médias d'une entreprise.
@@ -41,8 +47,9 @@ class BusinessMediaController extends Controller
     {
         $this->checkOwnership($business);
 
-        $data = $request->validate([
-            'file' => ['required', 'file', 'max:16384', 'mimes:jpg,jpeg,png,webp,gif,pdf,doc,docx'],
+        $validator = validator($request->all(), [
+            // max en clair : DeployConfigTest y lit la plus grosse limite d'upload (nginx et PHP doivent suivre).
+            'file' => ['required', 'file', 'max:16384', 'mimes:jpg,jpeg,png,pdf,doc,docx'],
             'title' => ['required', 'string', 'max:255'],
             'description' => ['nullable', 'string'],
             'keywords' => ['nullable'],
@@ -51,16 +58,33 @@ class BusinessMediaController extends Controller
             'file.required' => 'Le fichier est obligatoire.',
             'file.file' => 'Le fichier téléversé n\'est pas valide.',
             'file.max' => 'Le fichier ne doit pas dépasser 16 Mo.',
-            'file.mimes' => 'Le fichier doit être une image (JPG, PNG, WEBP, GIF) ou un document (PDF, DOC, DOCX).',
+            'file.mimes' => 'Le fichier doit être une image JPG ou PNG, ou un document PDF, DOC ou DOCX.',
             'title.required' => 'Le titre est obligatoire.',
             'type.in' => 'Le type doit être « image », « document » ou « catalog ».',
         ]);
+
+        $validator->after(function (Validator $validator) use ($request): void {
+            $file = $request->file('file');
+            if ($file === null || $validator->errors()->has('file')) {
+                return;
+            }
+
+            if ($this->isImage($file->getMimeType())) {
+                if ($file->getSize() > self::IMAGE_MAX_KB * 1024) {
+                    $validator->errors()->add('file', 'Une image ne doit pas dépasser 5 Mo : WhatsApp refuse d\'envoyer les images plus lourdes.');
+                }
+            } elseif (in_array($request->input('type'), ['image', 'catalog'], true)) {
+                $validator->errors()->add('type', 'Seule une image JPG ou PNG peut être une image ou un catalogue : un PDF ou un fichier Word est envoyé comme document.');
+            }
+        });
+
+        $data = $validator->validate();
 
         $keywords = $this->normalizeKeywords($request->input('keywords'));
 
         $file = $request->file('file');
         $mimeType = $file->getClientMimeType();
-        $type = $data['type'] ?? (str_starts_with($mimeType, 'image/') ? 'image' : 'document');
+        $type = $data['type'] ?? ($this->isImage($file->getMimeType()) ? 'image' : 'document');
 
         $path = $file->store("media/{$business->id}", 'supabase_media');
         $publicUrl = Storage::disk('supabase_media')->url($path);
@@ -171,6 +195,14 @@ class BusinessMediaController extends Controller
             static fn ($k) => trim((string) $k),
             $keywords,
         )));
+    }
+
+    /**
+     * Type détecté d'après le contenu du fichier (et non le type annoncé par le navigateur).
+     */
+    private function isImage(?string $mimeType): bool
+    {
+        return str_starts_with((string) $mimeType, 'image/');
     }
 
     /**
