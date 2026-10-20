@@ -66,8 +66,12 @@ class DeployConfigTest extends TestCase
         $this->assertGreaterThanOrEqual(16384, $largest);
 
         preg_match('/client_max_body_size (\d+)M;/', $this->file('deploy/nginx/api.conf'), $nginx);
-        preg_match('/upload_max_filesize\] = (\d+)M/', $this->file('deploy/php/causeo-pool.conf'), $upload);
-        preg_match('/post_max_size\] = (\d+)M/', $this->file('deploy/php/causeo-pool.conf'), $post);
+        // Limites PHP dans conf.d (99-causeo.ini) : le pool ne doit plus les redéfinir.
+        $ini = $this->file('deploy/php/99-causeo.ini');
+        preg_match('/^upload_max_filesize = (\d+)M$/m', $ini, $upload);
+        preg_match('/^post_max_size = (\d+)M$/m', $ini, $post);
+        $pool = $this->file('deploy/php/causeo-pool.conf');
+        $this->assertDoesNotMatchRegularExpression('/^\s*php_(admin_)?value\[(upload_max_filesize|post_max_size)\]/m', $pool);
 
         $this->assertGreaterThanOrEqual($largest, (int) $nginx[1] * 1024);
         $this->assertGreaterThanOrEqual($largest, (int) $upload[1] * 1024);
