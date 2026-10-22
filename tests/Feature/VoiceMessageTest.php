@@ -4,6 +4,7 @@ namespace Tests\Feature;
 
 use App\Http\Controllers\API\V1\WebhookController;
 use App\Mail\OwnerNotificationMail;
+use App\Models\AdminAccessLog;
 use App\Models\Business;
 use App\Models\Escalation;
 use App\Models\LearnedResponse;
@@ -309,6 +310,41 @@ class VoiceMessageTest extends TestCase
 
         Sanctum::actingAs(User::forceCreate(['name' => 'Autre', 'email' => 'autre@example.test', 'password' => 'x']));
         $this->get("/api/v1/messages/{$inbound->id}/audio")->assertForbidden();
+    }
+
+    public function test_an_admin_can_listen_and_each_listening_is_logged(): void
+    {
+        (require base_path('database/migrations/2026_10_23_110000_create_admin_access_logs_table.php'))->up();
+        $this->postJson('/api/webhook/whatsapp', $this->audioPayload())->assertOk();
+        $inbound = Message::where('direction', 'inbound')->sole();
+
+        // Le gérant écoute son propre vocal : rien à journaliser.
+        Sanctum::actingAs($this->owner);
+        $this->get("/api/v1/messages/{$inbound->id}/audio")->assertOk();
+        $this->assertSame(0, AdminAccessLog::count());
+
+        $admin = User::forceCreate(['name' => 'Admin', 'email' => 'admin@example.test', 'password' => 'x', 'is_admin' => true]);
+        Sanctum::actingAs($admin);
+        $response = $this->get("/api/v1/messages/{$inbound->id}/audio")->assertOk();
+        $this->assertSame($this->ogg(12), $response->getContent());
+        $this->travel(5)->minutes();
+        $this->get("/api/v1/messages/{$inbound->id}/audio")->assertOk();
+
+        $logs = AdminAccessLog::orderBy('id')->get();
+        $this->assertCount(2, $logs);
+        $this->assertSame(
+            ['admin_id' => $admin->id, 'action' => 'voice_message_listened', 'message_id' => $inbound->id, 'business_id' => $this->business->id],
+            $logs[0]->only(['admin_id', 'action', 'message_id', 'business_id']),
+        );
+        $this->assertSame('2026-10-23 10:00:00', $logs[0]->created_at->toDateTimeString());
+        $this->assertSame('2026-10-23 10:05:00', $logs[1]->created_at->toDateTimeString());
+        // Ni le son ni la transcription dans le journal.
+        $this->assertSame(['id', 'admin_id', 'action', 'message_id', 'business_id', 'created_at'], array_keys($logs[0]->getAttributes()));
+
+        // Un utilisateur ordinaire reste refusé, sans entrée.
+        Sanctum::actingAs(User::forceCreate(['name' => 'Autre', 'email' => 'autre@example.test', 'password' => 'x']));
+        $this->get("/api/v1/messages/{$inbound->id}/audio")->assertForbidden();
+        $this->assertSame(2, AdminAccessLog::count());
     }
 
     public function test_an_expired_voice_message_returns_410(): void

@@ -218,7 +218,8 @@ class AdminDashboardController extends Controller
     {
         $query = Conversation::query()
             ->with('business:id,name')
-            ->with('latestMessage:id,conversation_id,content,created_at')
+            // Colonnes préfixées : latestOfMany joint messages à lui-même (sinon « ambiguous column »).
+            ->with('latestMessage:messages.id,messages.conversation_id,messages.content,messages.created_at')
             ->withCount([
                 'escalations as pending_escalations_count' => fn ($q) => $q->where('status', 'pending'),
             ]);
@@ -236,6 +237,12 @@ class AdminDashboardController extends Controller
         }
 
         $conversations = $query->latest('last_message_at')->paginate(15);
+
+        // Champs attendus par la liste admin, tirés de ce qui est déjà chargé (pas de requête en plus).
+        $conversations->getCollection()->each(function (Conversation $conversation) {
+            $conversation->setAttribute('business_name', $conversation->business?->name);
+            $conversation->setAttribute('has_pending_escalation', $conversation->pending_escalations_count > 0);
+        });
 
         return response()->json($conversations);
     }
