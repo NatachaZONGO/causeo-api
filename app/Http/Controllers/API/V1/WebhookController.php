@@ -533,15 +533,15 @@ class WebhookController extends Controller
 
             $whatsApp->markAsRead($incoming['message_id']);
 
-            $transcriptionUsage = null;
-
             if ($isVoice) {
                 $voice = $this->voiceMessages->handle($business, $incoming['media_id'], $incoming['mime_type']);
-                $transcriptionUsage = $voice->usage;
 
+                // Le coût de la transcription reste sur le vocal lui-même (ai_usage.transcription),
+                // que le bot réponde ou non.
                 $inboundMessage->update([
                     'content' => $voice->transcript ?? self::VOICE_PLACEHOLDER,
-                    'metadata' => $this->audioMetadata($incoming) + $voice->metadata(),
+                    'metadata' => $this->audioMetadata($incoming) + $voice->metadata()
+                        + ($voice->usage !== null ? ['ai_usage' => ['transcription' => $voice->usage]] : []),
                 ]);
 
                 if (! $voice->isUsable()) {
@@ -582,7 +582,7 @@ class WebhookController extends Controller
                     'metadata' => [
                         'context_used' => $result['context_used'],
                         'escalated' => true,
-                    ] + $this->withTranscriptionUsage($result['tool_trace'] ?? [], $transcriptionUsage),
+                    ] + ($result['tool_trace'] ?? []),
                 ]);
             } else {
                 $sent = $whatsApp->sendMessage($incoming['from'], $result['answer']);
@@ -596,7 +596,7 @@ class WebhookController extends Controller
                     'whatsapp_message_id' => data_get($sent, 'messages.0.id'),
                     'metadata' => [
                         'context_used' => $result['context_used'],
-                    ] + $this->withTranscriptionUsage($result['tool_trace'] ?? [], $transcriptionUsage)
+                    ] + ($result['tool_trace'] ?? [])
                         // Un vocal compte toujours comme une unité, même avec une réponse toute faite.
                         + (! empty($result['canned']) && ! $isVoice ? ['canned' => true] : []),
                 ]);
@@ -624,8 +624,9 @@ class WebhookController extends Controller
 
     /**
      * Vocal que le bot ne traite pas (autre langue, incompréhensible, trop long, non
-     * transcrit) : réponse d'attente au client, escalade avec le motif (cloche et alerte
-     * WhatsApp à sa création), e-mail au gérant. Compte comme une unité.
+     * transcrit) : escalade avec le motif (cloche et alerte WhatsApp à sa création) et
+     * e-mail au gérant. Le bot ne répond au client que si le gérant l'a activé
+     * (voice_fallback_reply) ; il ne compte alors une unité que dans ce cas.
      */
     private function escalateVoice(Business $business, Conversation $conversation, Message $inboundMessage, WhatsAppService $whatsApp, string $to, VoiceMessageResult $voice): void
     {
@@ -640,30 +641,36 @@ class WebhookController extends Controller
 
         $inboundMessage->update(['status' => 'escalated']);
 
-        $sent = $whatsApp->sendMessage($to, self::VOICE_FALLBACK_MESSAGE);
-
-        $conversation->messages()->create([
-            'direction' => 'outbound',
-            'sender_type' => 'ai',
-            'content' => self::VOICE_FALLBACK_MESSAGE,
-            'status' => 'sent',
-            'whatsapp_message_id' => data_get($sent, 'messages.0.id'),
-            'metadata' => [
-                'escalated' => true,
-                'voice_fallback' => $voice->status,
-            ] + $this->withTranscriptionUsage([], $voice->usage),
-        ]);
-
         $this->notifications->emailVoiceEscalation($escalation);
 
-        $business->increment('monthly_message_count');
-        $this->usage->afterReply($business);
+        $replied = $business->voice_fallback_reply;
+
+        if ($replied) {
+            $text = trim((string) $business->voice_fallback_message) ?: self::VOICE_FALLBACK_MESSAGE;
+            $sent = $whatsApp->sendMessage($to, $text);
+
+            $conversation->messages()->create([
+                'direction' => 'outbound',
+                'sender_type' => 'ai',
+                'content' => $text,
+                'status' => 'sent',
+                'whatsapp_message_id' => data_get($sent, 'messages.0.id'),
+                'metadata' => [
+                    'escalated' => true,
+                    'voice_fallback' => $voice->status,
+                ],
+            ]);
+
+            $business->increment('monthly_message_count');
+            $this->usage->afterReply($business);
+        }
 
         Log::info('WebhookController: message vocal transmis au gérant.', [
             'business_id' => $business->id,
             'voice_status' => $voice->status,
             'language' => $voice->language,
             'duration_seconds' => $voice->durationSeconds,
+            'replied_to_customer' => $replied,
         ]);
     }
 
@@ -681,22 +688,6 @@ class WebhookController extends Controller
             'mime_type' => $incoming['mime_type'] ?? null,
             'voice' => $incoming['voice'] ?? false,
         ];
-    }
-
-    /**
-     * Ajouter le coût de la transcription à ai_usage (ai_usage.transcription).
-     *
-     * @param  array<string, mixed>  $trace
-     * @param  array<string, int|string>|null  $transcriptionUsage
-     * @return array<string, mixed>
-     */
-    private function withTranscriptionUsage(array $trace, ?array $transcriptionUsage): array
-    {
-        if ($transcriptionUsage !== null) {
-            $trace['ai_usage'] = ($trace['ai_usage'] ?? []) + ['transcription' => $transcriptionUsage];
-        }
-
-        return $trace;
     }
 
     /**

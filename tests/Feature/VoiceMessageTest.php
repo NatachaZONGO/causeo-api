@@ -175,11 +175,13 @@ class VoiceMessageTest extends TestCase
         $this->assertSame([
             'type' => 'audio', 'media_id' => 'MEDIA-1', 'mime_type' => 'audio/ogg; codecs=opus', 'voice' => true,
             'voice_status' => 'transcribed', 'transcript' => 'Vous avez le pagne wax bleu ?', 'language' => 'fr', 'duration_seconds' => 12,
+            // Coût de la transcription, sur le vocal lui-même.
+            'ai_usage' => ['transcription' => ['model' => 'gemini-2.5-flash', 'input_audio_tokens' => 384, 'input_text_tokens' => 100, 'output_tokens' => 50]],
         ], $inbound->metadata);
 
         $reply = Message::where('direction', 'outbound')->sole();
         $this->assertSame('claude-test', $reply->metadata['ai_usage']['model']);
-        $this->assertSame(['model' => 'gemini-2.5-flash', 'input_audio_tokens' => 384, 'input_text_tokens' => 100, 'output_tokens' => 50], $reply->metadata['ai_usage']['transcription']);
+        $this->assertArrayNotHasKey('transcription', $reply->metadata['ai_usage']);
         $this->assertSame(0, Escalation::count());
         $this->assertSame(1, $this->unitsUsed());
         $this->assertSame($tempFiles, $this->tempVoiceFiles(), 'Le fichier temporaire est supprimé.');
@@ -212,11 +214,70 @@ class VoiceMessageTest extends TestCase
         $this->assertSame('Do you have the blue wax?', $inbound->metadata['transcript']);
         $this->assertSame('en', $inbound->metadata['language']);
         $this->assertSame('other_language', $inbound->metadata['voice_status']);
+        $this->assertSame(384, $inbound->metadata['ai_usage']['transcription']['input_audio_tokens']);
 
+        // Par défaut, le bot ne répond pas : aucune unité.
+        $this->assertSame(0, $this->unitsUsed());
+        $this->assertSame(0, $this->business->fresh()->monthly_message_count);
+    }
+
+    public function test_when_enabled_the_bot_sends_the_default_text_and_counts_one_unit(): void
+    {
+        $this->business->update(['voice_fallback_reply' => true]);
+        $this->transcription = ['transcript' => 'Do you have the blue wax?', 'language' => 'en', 'understood' => true];
+
+        $this->postJson('/api/webhook/whatsapp', $this->audioPayload())->assertOk();
+
+        $this->assertSame([WebhookController::VOICE_FALLBACK_MESSAGE], FakeWhatsAppService::$sent);
         $reply = Message::where('direction', 'outbound')->sole();
+        $this->assertSame(WebhookController::VOICE_FALLBACK_MESSAGE, $reply->content);
         $this->assertSame('other_language', $reply->metadata['voice_fallback']);
-        $this->assertSame(384, $reply->metadata['ai_usage']['transcription']['input_audio_tokens']);
+        $this->assertSame(1, Escalation::count());
         $this->assertSame(1, $this->unitsUsed());
+    }
+
+    public function test_when_enabled_the_bot_sends_the_owner_message(): void
+    {
+        $this->business->update(['voice_fallback_reply' => true, 'voice_fallback_message' => '  Merci ! Joyce vous rappelle dans la journée.  ']);
+        $this->audioSeconds = 200;
+
+        $this->postJson('/api/webhook/whatsapp', $this->audioPayload())->assertOk();
+
+        $this->assertSame(['Merci ! Joyce vous rappelle dans la journée.'], FakeWhatsAppService::$sent);
+        $this->assertSame(1, $this->unitsUsed());
+    }
+
+    public function test_the_default_text_ends_with_a_single_period(): void
+    {
+        $this->assertSame(
+            'Merci pour votre message vocal ! Je le transmets tout de suite au responsable, qui vous répondra rapidement.',
+            WebhookController::VOICE_FALLBACK_MESSAGE,
+        );
+        $this->assertDoesNotMatchRegularExpression('/\.\.$/', WebhookController::VOICE_FALLBACK_MESSAGE);
+    }
+
+    public function test_owner_reads_and_updates_the_voice_fallback_settings(): void
+    {
+        Sanctum::actingAs($this->owner);
+
+        $this->assertFalse($this->business->fresh()->voice_fallback_reply);
+
+        $this->putJson("/api/v1/businesses/{$this->business->id}", ['voice_fallback_reply' => true, 'voice_fallback_message' => 'On vous rappelle très vite.'])
+            ->assertOk()
+            ->assertJsonPath('business.voice_fallback_reply', true)
+            ->assertJsonPath('business.voice_fallback_message', 'On vous rappelle très vite.');
+
+        $this->putJson("/api/v1/businesses/{$this->business->id}", ['voice_fallback_message' => ''])
+            ->assertOk()
+            ->assertJsonPath('business.voice_fallback_reply', true)
+            ->assertJsonPath('business.voice_fallback_message', null);
+
+        $this->putJson("/api/v1/businesses/{$this->business->id}", ['voice_fallback_reply' => 'peut-être', 'voice_fallback_message' => str_repeat('x', 301)])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(['voice_fallback_reply', 'voice_fallback_message'])
+            ->assertJsonPath('errors.voice_fallback_message.0', 'Le message de réponse aux vocaux ne doit pas dépasser 300 caractères.');
+
+        $this->putJson("/api/v1/businesses/{$this->business->id}", ['voice_fallback_message' => str_repeat('x', 300)])->assertOk();
     }
 
     public function test_an_unintelligible_voice_message_goes_to_the_owner(): void
@@ -241,7 +302,7 @@ class VoiceMessageTest extends TestCase
         $this->assertOwnerWasAlerted('Message vocal trop long (3 min 20 s)', 'voice_too_long');
         Http::assertNotSent(fn (Request $r) => str_contains($r->url(), 'generativelanguage'));
         $this->assertSame(200, Message::where('direction', 'inbound')->sole()->metadata['duration_seconds']);
-        $this->assertArrayNotHasKey('ai_usage', Message::where('direction', 'outbound')->sole()->metadata);
+        $this->assertArrayNotHasKey('ai_usage', Message::where('direction', 'inbound')->sole()->metadata);
     }
 
     public function test_a_voice_file_over_10_mb_is_not_downloaded(): void
@@ -394,7 +455,9 @@ class VoiceMessageTest extends TestCase
 
     private function assertOwnerWasAlerted(string $text, string $reason): void
     {
-        $this->assertSame([WebhookController::VOICE_FALLBACK_MESSAGE], FakeWhatsAppService::$sent);
+        // Par défaut, rien n'est envoyé au client.
+        $this->assertSame([], FakeWhatsAppService::$sent);
+        $this->assertSame(0, Message::where('direction', 'outbound')->count());
 
         $escalation = Escalation::sole();
         $this->assertSame($text, $escalation->customer_question);

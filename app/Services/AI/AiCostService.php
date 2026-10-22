@@ -268,23 +268,24 @@ class AiCostService
      */
     private function replies(CarbonImmutable $from, CarbonImmutable $to): Builder
     {
-        return $this->aiMessages($from, $to)->whereNotNull('messages.metadata->ai_usage->model');
-    }
-
-    /**
-     * Réponses à un message vocal, avec les tokens de sa transcription.
-     */
-    private function transcriptions(CarbonImmutable $from, CarbonImmutable $to): Builder
-    {
-        return $this->aiMessages($from, $to)->whereNotNull('messages.metadata->ai_usage->transcription');
-    }
-
-    private function aiMessages(CarbonImmutable $from, CarbonImmutable $to): Builder
-    {
         return DB::table('messages')
             ->join('conversations', 'conversations.id', '=', 'messages.conversation_id')
             ->where('messages.direction', 'outbound')
             ->where('messages.sender_type', 'ai')
+            ->whereNotNull('messages.metadata->ai_usage->model')
+            ->where('messages.created_at', '>=', $from->utc())
+            ->where('messages.created_at', '<', $to->utc());
+    }
+
+    /**
+     * Messages portant les tokens d'une transcription : le vocal du client (et, pour les
+     * vocaux reçus avant le 23/10/2026, la réponse du bot), qu'il ait reçu une réponse ou non.
+     */
+    private function transcriptions(CarbonImmutable $from, CarbonImmutable $to): Builder
+    {
+        return DB::table('messages')
+            ->join('conversations', 'conversations.id', '=', 'messages.conversation_id')
+            ->whereNotNull('messages.metadata->ai_usage->transcription')
             ->where('messages.created_at', '>=', $from->utc())
             ->where('messages.created_at', '<', $to->utc());
     }

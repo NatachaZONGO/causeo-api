@@ -71,6 +71,8 @@ class Business extends Model
         'shipping_enabled',
         'modules',
         'reply_style',
+        'voice_fallback_reply',
+        'voice_fallback_message',
     ];
 
     /**
@@ -104,6 +106,7 @@ class Business extends Model
             'modules' => 'array',
             'style_profile' => 'array',
             'style_profile_updated_at' => 'datetime',
+            'voice_fallback_reply' => 'boolean',
         ];
     }
 
