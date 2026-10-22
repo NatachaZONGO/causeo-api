@@ -2,6 +2,7 @@
 
 namespace Tests\Feature;
 
+use App\Console\Commands\RegisterNotifyNumber;
 use App\Jobs\SendOwnerWhatsAppAlert;
 use App\Models\Appointment;
 use App\Models\Business;
@@ -10,6 +11,7 @@ use App\Models\Notification;
 use App\Models\Order;
 use App\Models\User;
 use App\Services\NotificationService;
+use App\Services\WhatsApp\CauseoNotifyClient;
 use App\Services\WhatsApp\OwnerAlertService;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Http\Client\Request;
@@ -342,15 +344,116 @@ class WhatsAppAlertTest extends TestCase
 
     public function test_register_command_calls_the_register_endpoint(): void
     {
-        $this->metaResponse = [['success' => true], 200];
+        $this->metaResponse = [['success' => true, 'data' => [['whatsapp_business_api_data' => ['id' => 'APP-ID', 'name' => 'Causeo']]]], 200];
 
-        $this->artisan('whatsapp:register-notify-number', ['--pin' => '123456'])->assertSuccessful();
+        $this->artisan('whatsapp:register-notify-number', ['--pin' => '123456'])
+            ->expectsOutputToContain('Apps abonnées : Causeo')
+            ->assertSuccessful();
 
         Http::assertSent(fn (Request $request) => $request->url() === self::GRAPH.'CAUSEO-PHONE-ID/register'
             && $request->data() === ['messaging_product' => 'whatsapp', 'pin' => '123456']);
+        Http::assertSent(fn (Request $request) => $request->method() === 'POST' && $request->url() === self::GRAPH.'CAUSEO-WABA-ID/subscribed_apps');
+        Http::assertSent(fn (Request $request) => $request->method() === 'GET' && $request->url() === self::GRAPH.'CAUSEO-WABA-ID/subscribed_apps');
+        Http::assertSentCount(3);
 
         $this->artisan('whatsapp:register-notify-number', ['--pin' => '12345'])->assertFailed();
-        Http::assertSentCount(1);
+        Http::assertSentCount(3);
+    }
+
+    public function test_register_command_without_pin_only_subscribes_the_waba(): void
+    {
+        $this->metaResponse = [['success' => true, 'data' => [['whatsapp_business_api_data' => ['id' => 'APP-ID', 'name' => 'Causeo']]]], 200];
+
+        $this->artisan('whatsapp:register-notify-number')->assertSuccessful();
+
+        Http::assertSentCount(2);
+        Http::assertNotSent(fn (Request $request) => str_ends_with($request->url(), '/register'));
+    }
+
+    public function test_register_command_fails_when_no_app_is_subscribed(): void
+    {
+        $this->metaResponse = [['success' => true, 'data' => []], 200];
+
+        $this->artisan('whatsapp:register-notify-number')
+            ->expectsOutputToContain('aucune app abonnée')
+            ->assertFailed();
+    }
+
+    public function test_register_command_requires_the_waba_id(): void
+    {
+        config(['services.causeo_notify.waba_id' => '']);
+
+        $this->artisan('whatsapp:register-notify-number')
+            ->expectsOutputToContain('CAUSEO_NOTIFY_WABA_ID')
+            ->assertFailed();
+        Http::assertNothingSent();
+    }
+
+    public function test_register_command_waits_sixty_seconds_for_meta(): void
+    {
+        $this->assertSame(60, RegisterNotifyNumber::TIMEOUT);
+
+        $client = (new CauseoNotifyClient)->withTimeout(RegisterNotifyNumber::TIMEOUT);
+        $timeout = (new \ReflectionProperty(CauseoNotifyClient::class, 'timeout'))->getValue($client);
+
+        $this->assertSame(60, $timeout);
+        $this->assertSame(15, (new \ReflectionProperty(CauseoNotifyClient::class, 'timeout'))->getValue(new CauseoNotifyClient));
+    }
+
+    // --- Statuts des alertes (webhook) ---------------------------------------------------------
+
+    public function test_failed_alert_status_is_logged_and_notifies_the_admins(): void
+    {
+        $this->escalate('Livrez-vous à Koudougou ?');
+        $this->logged = [];
+
+        $payload = $this->statusPayload('failed', [[
+            'code' => 131026,
+            'title' => 'Message undeliverable',
+            'message' => 'Message undeliverable',
+            'error_data' => ['details' => 'Le destinataire +226 70 11 22 33 n\'utilise pas WhatsApp.'],
+        ]]);
+
+        $this->postJson('/api/webhook/whatsapp', $payload)->assertOk();
+        $this->postJson('/api/webhook/whatsapp', $payload)->assertOk();
+
+        $notification = Notification::where('audience', Notification::ADMIN)->sole();
+        $this->assertSame('whatsapp', $notification->type);
+        $this->assertSame($this->business->id, $notification->business_id);
+        $this->assertSame('Alerte WhatsApp non livrée (131026)', $notification->title);
+        $this->assertStringContainsString('escalade_client', $notification->body);
+        $this->assertStringContainsString('[numéro masqué]', $notification->body);
+        $this->assertSame('whatsapp_alert_failed', $notification->data['kind']);
+        $this->assertSame(131026, $notification->data['error_code']);
+        $this->assertSame('Message undeliverable', $notification->data['error_message']);
+
+        $logs = implode("\n", $this->logged);
+        $this->assertStringContainsString('non livrée par Meta', $logs);
+        $this->assertStringContainsString('131026', $logs);
+        $this->assertLogsHideCustomerData();
+    }
+
+    public function test_other_alert_statuses_are_only_logged(): void
+    {
+        $this->escalate('Livrez-vous à Koudougou ?');
+        $this->logged = [];
+
+        foreach (['sent', 'delivered', 'read'] as $state) {
+            $this->postJson('/api/webhook/whatsapp', $this->statusPayload($state))->assertOk();
+            $this->assertStringContainsString("statut {$state}", implode("\n", $this->logged));
+        }
+
+        $this->assertSame(0, Notification::where('audience', Notification::ADMIN)->count());
+        $this->assertLogsHideCustomerData();
+    }
+
+    public function test_failed_status_of_an_unknown_message_does_not_notify(): void
+    {
+
+        $this->postJson('/api/webhook/whatsapp', $this->statusPayload('failed', [['code' => 131026, 'message' => 'Message undeliverable']], 'wamid.UNKNOWN'))->assertOk();
+
+        $this->assertSame(0, Notification::where('audience', Notification::ADMIN)->count());
+        $this->assertStringContainsString('non livrée par Meta', implode("\n", $this->logged));
     }
 
     // --- Outils -------------------------------------------------------------------------------
@@ -387,6 +490,33 @@ class WhatsAppAlertTest extends TestCase
             'requested_date' => '2026-10-17',
             'requested_time' => $time,
         ]));
+    }
+
+    /**
+     * Webhook de statut de Meta pour un message envoyé depuis le numéro Causeo.
+     *
+     * @param  list<array<string, mixed>>  $errors
+     * @return array<string, mixed>
+     */
+    private function statusPayload(string $state, array $errors = [], string $messageId = 'wamid.ALERT'): array
+    {
+        return ['object' => 'whatsapp_business_account', 'entry' => [[
+            'id' => 'CAUSEO-WABA-ID',
+            'changes' => [[
+                'field' => 'messages',
+                'value' => [
+                    'messaging_product' => 'whatsapp',
+                    'metadata' => ['display_phone_number' => '22660000000', 'phone_number_id' => 'CAUSEO-PHONE-ID'],
+                    'statuses' => [array_filter([
+                        'id' => $messageId,
+                        'status' => $state,
+                        'timestamp' => '1760259600',
+                        'recipient_id' => '22670112233',
+                        'errors' => $errors ?: null,
+                    ])],
+                ],
+            ]],
+        ]]];
     }
 
     private function newConversation(?string $businessId = null): string

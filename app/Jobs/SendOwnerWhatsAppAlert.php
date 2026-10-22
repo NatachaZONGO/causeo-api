@@ -8,6 +8,7 @@ use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use RuntimeException;
 use Throwable;
@@ -19,6 +20,9 @@ use Throwable;
 class SendOwnerWhatsAppAlert implements ShouldQueue
 {
     use Dispatchable, InteractsWithQueue, Queueable;
+
+    /** Durée (jours) pendant laquelle un message envoyé reste relié à son business, pour les statuts de Meta. */
+    public const SENT_MESSAGE_TTL_DAYS = 7;
 
     public int $tries = 3;
 
@@ -55,7 +59,13 @@ class SendOwnerWhatsAppAlert implements ShouldQueue
         $context = ['business_id' => $this->businessId, 'kind' => $this->kind, 'template' => $template, 'attempt' => $this->attempts()];
 
         if ($result->ok) {
-            Log::info('Alerte WhatsApp envoyée au gérant.', $context + ['message_id' => $result->response['messages'][0]['id'] ?? null]);
+            $messageId = $result->response['messages'][0]['id'] ?? null;
+            Log::info('Alerte WhatsApp envoyée au gérant.', $context + ['message_id' => $messageId]);
+
+            // Le webhook des statuts ne donne que l'identifiant du message : il retrouve ainsi le business.
+            if (is_string($messageId) && $messageId !== '') {
+                Cache::put(self::sentMessageKey($messageId), ['business_id' => $this->businessId, 'kind' => $this->kind, 'template' => $template], now()->addDays(self::SENT_MESSAGE_TTL_DAYS));
+            }
 
             return;
         }
@@ -67,6 +77,11 @@ class SendOwnerWhatsAppAlert implements ShouldQueue
 
         // Modèle pas encore approuvé, numéro invalide… : un nouvel essai n'y changerait rien.
         Log::warning('Alerte WhatsApp au gérant refusée par Meta.', $context + $result->errorForLog());
+    }
+
+    public static function sentMessageKey(string $messageId): string
+    {
+        return "whatsapp-alerts:message:{$messageId}";
     }
 
     public function failed(Throwable $e): void

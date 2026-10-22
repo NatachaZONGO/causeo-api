@@ -13,6 +13,20 @@ use Illuminate\Support\Facades\Http;
  */
 class CauseoNotifyClient
 {
+    /** Délai d'attente (secondes) des appels à Meta. */
+    private int $timeout = 15;
+
+    /**
+     * Copie du client avec un autre délai d'attente (la commande d'enregistrement attend plus longtemps).
+     */
+    public function withTimeout(int $seconds): static
+    {
+        $client = clone $this;
+        $client->timeout = $seconds;
+
+        return $client;
+    }
+
     public function isConfigured(): bool
     {
         return $this->phoneNumberId() !== '' && (string) config('services.whatsapp.token') !== '';
@@ -21,6 +35,11 @@ class CauseoNotifyClient
     public function phoneNumberId(): string
     {
         return trim((string) config('services.causeo_notify.phone_number_id'));
+    }
+
+    public function wabaId(): string
+    {
+        return trim((string) config('services.causeo_notify.waba_id'));
     }
 
     /**
@@ -59,6 +78,29 @@ class CauseoNotifyClient
     }
 
     /**
+     * Abonner l'app aux webhooks du WABA (POST /{waba_id}/subscribed_apps) : sans cet
+     * abonnement, Meta n'envoie pas les statuts (sent, delivered, read, failed) des alertes.
+     */
+    public function subscribeApp(): CauseoNotifyResult
+    {
+        return $this->post("{$this->wabaId()}/subscribed_apps", []);
+    }
+
+    /**
+     * Apps abonnées aux webhooks du WABA (GET /{waba_id}/subscribed_apps).
+     */
+    public function subscribedApps(): CauseoNotifyResult
+    {
+        try {
+            $response = $this->http()->get($this->url("{$this->wabaId()}/subscribed_apps"));
+        } catch (ConnectionException $e) {
+            return new CauseoNotifyResult(false, 0, [], ['message' => 'Connexion à Meta impossible : '.$e->getMessage()]);
+        }
+
+        return $this->result($response);
+    }
+
+    /**
      * @param  array<string, mixed>  $payload
      */
     private function post(string $path, array $payload): CauseoNotifyResult
@@ -88,7 +130,7 @@ class CauseoNotifyClient
         return Http::withToken((string) config('services.whatsapp.token'))
             ->withOptions(['verify' => config('services.curl_ca_bundle', true)])
             ->acceptJson()
-            ->timeout(15);
+            ->timeout($this->timeout);
     }
 
     private function url(string $path): string

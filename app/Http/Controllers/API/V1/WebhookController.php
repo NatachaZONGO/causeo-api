@@ -3,11 +3,13 @@
 namespace App\Http\Controllers\API\V1;
 
 use App\Http\Controllers\Controller;
+use App\Jobs\SendOwnerWhatsAppAlert;
 use App\Models\Business;
 use App\Models\BusinessMedia;
 use App\Models\Conversation;
 use App\Models\Escalation;
 use App\Models\Message;
+use App\Models\Notification;
 use App\Services\AI\AIResponseService;
 use App\Services\AI\LearningService;
 use App\Services\Billing\UsageService;
@@ -17,6 +19,7 @@ use Illuminate\Database\QueryException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Response;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use Throwable;
 
@@ -38,8 +41,7 @@ class WebhookController extends Controller
         private readonly LearningService $learningService,
         private readonly WhatsAppAccountService $accounts,
         private readonly UsageService $usage,
-    ) {
-    }
+    ) {}
 
     /**
      * Vérification du webhook WhatsApp (handshake Meta).
@@ -77,6 +79,14 @@ class WebhookController extends Controller
             $value = data_get($payload, 'entry.0.changes.0.value');
 
             $this->handleNonMessageEvent(is_string($field) ? $field : null, is_array($value) ? $value : []);
+
+            return $this->acknowledge();
+        }
+
+        $value = data_get($payload, 'entry.0.changes.0.value');
+
+        if (is_array($value) && $this->isNotifyNumber($value) && ! empty($value['statuses'])) {
+            $this->recordNotifyStatuses((array) $value['statuses']);
 
             return $this->acknowledge();
         }
@@ -201,6 +211,98 @@ class WebhookController extends Controller
                 'disconnection_reason' => $reason,
             ]);
         }
+    }
+
+    /**
+     * @param  array<string, mixed>  $value
+     */
+    private function isNotifyNumber(array $value): bool
+    {
+        $notifyNumber = trim((string) config('services.causeo_notify.phone_number_id'));
+
+        return $notifyNumber !== '' && (string) data_get($value, 'metadata.phone_number_id') === $notifyNumber;
+    }
+
+    /**
+     * Statuts (sent, delivered, read, failed) des alertes envoyées aux gérants depuis le
+     * numéro Causeo. Un échec est signalé aux admins dans la cloche, avec l'erreur de Meta.
+     * Le numéro du gérant (recipient_id) n'est jamais journalisé.
+     *
+     * @param  array<int, mixed>  $statuses
+     */
+    private function recordNotifyStatuses(array $statuses): void
+    {
+        foreach ($statuses as $status) {
+            if (! is_array($status)) {
+                continue;
+            }
+
+            $messageId = (string) ($status['id'] ?? '');
+            $state = (string) ($status['status'] ?? '');
+            $sent = $messageId !== '' ? Cache::get(SendOwnerWhatsAppAlert::sentMessageKey($messageId)) : null;
+            $error = (array) data_get($status, 'errors.0', []);
+            $details = data_get($error, 'error_data.details');
+
+            $context = array_filter([
+                'message_id' => $messageId,
+                'status' => $state,
+                'business_id' => $sent['business_id'] ?? null,
+                'kind' => $sent['kind'] ?? null,
+                'template' => $sent['template'] ?? null,
+                'pricing_category' => data_get($status, 'pricing.category'),
+                'error_code' => $error['code'] ?? null,
+                'error_title' => isset($error['title']) ? self::maskPhoneNumbers((string) $error['title']) : null,
+                'error_message' => isset($error['message']) ? self::maskPhoneNumbers((string) $error['message']) : null,
+                'error_details' => $details !== null ? self::maskPhoneNumbers((string) $details) : null,
+            ], fn ($item) => $item !== null && $item !== '');
+
+            if ($state !== 'failed') {
+                Log::info("WebhookController: alerte WhatsApp au gérant, statut {$state}.", $context);
+
+                continue;
+            }
+
+            Log::error('WebhookController: alerte WhatsApp au gérant non livrée par Meta.', $context);
+
+            // Sans message envoyé par Causeo, pas de business à rattacher : un faux statut ne remplit pas la cloche.
+            if ($sent === null || ! Cache::add("whatsapp-alerts:failed:{$messageId}", true, now()->addDays(SendOwnerWhatsAppAlert::SENT_MESSAGE_TTL_DAYS))) {
+                continue;
+            }
+
+            $this->notifyAdminsOfFailedAlert((string) $sent['business_id'], $context);
+        }
+    }
+
+    /**
+     * @param  array<string, mixed>  $context
+     */
+    private function notifyAdminsOfFailedAlert(string $businessId, array $context): void
+    {
+        $code = isset($context['error_code']) ? " ({$context['error_code']})" : '';
+        $reason = $context['error_details'] ?? $context['error_message'] ?? $context['error_title'] ?? 'raison non précisée';
+        $template = $context['template'] ?? 'alerte';
+
+        try {
+            Notification::create([
+                'business_id' => $businessId,
+                'audience' => Notification::ADMIN,
+                'type' => 'whatsapp',
+                'title' => "Alerte WhatsApp non livrée{$code}",
+                'body' => "Modèle {$template} : {$reason}",
+                'data' => ['kind' => 'whatsapp_alert_failed'] + $context,
+            ]);
+        } catch (Throwable $e) {
+            Log::error('WebhookController: notification admin impossible pour une alerte non livrée.', [
+                'business_id' => $businessId,
+                'message' => $e->getMessage(),
+            ]);
+        }
+    }
+
+    /** Masquer les numéros de téléphone d'un texte de Meta, limité à 300 caractères. */
+    private static function maskPhoneNumbers(string $text): string
+    {
+        return mb_substr((string) preg_replace('/\+?\d[\d\s.-]{6,}\d/', '[numéro masqué]', $text), 0, 300);
     }
 
     /**
