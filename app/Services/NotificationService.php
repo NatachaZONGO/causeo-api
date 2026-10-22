@@ -2,12 +2,14 @@
 
 namespace App\Services;
 
+use App\Mail\OwnerNotificationMail;
 use App\Models\Appointment;
 use App\Models\Escalation;
 use App\Models\Notification;
 use App\Models\Order;
 use App\Services\WhatsApp\OwnerAlertService;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Mail;
 use Throwable;
 
 class NotificationService
@@ -70,6 +72,40 @@ class NotificationService
 
         // En plus de la cloche, sans jamais la remplacer (au plus une alerte par période).
         $this->whatsAppAlerts->escalation($escalation);
+    }
+
+    /**
+     * E-mail au gérant pour un message vocal que le bot n'a pas traité, en plus de la
+     * cloche et de l'alerte WhatsApp de l'escalade : il faut l'écouter pour répondre.
+     */
+    public function emailVoiceEscalation(Escalation $escalation): void
+    {
+        try {
+            $conversation = $escalation->conversation;
+            $email = $escalation->business?->user?->email;
+
+            if ($conversation === null || empty($email)) {
+                return;
+            }
+
+            $customer = $conversation->customer_name ?: $conversation->customer_phone;
+
+            Mail::to($email)->queue(new OwnerNotificationMail(
+                "Message vocal de {$customer} à écouter",
+                [
+                    "{$escalation->customer_question}, reçu de {$customer}.",
+                    "L'assistant a répondu au client que vous le recontacteriez. Écoutez le message dans la conversation, puis répondez depuis Causeo ou WhatsApp.",
+                ],
+                'Écouter le message',
+                rtrim((string) config('app.frontend_url'), '/').'/dashboard/conversations?conversation='.$conversation->id,
+            ));
+        } catch (Throwable $e) {
+            // Le message d'une erreur d'envoi peut contenir l'adresse : on ne garde que sa classe.
+            Log::error('NotificationService::emailVoiceEscalation a échoué', [
+                'escalation_id' => $escalation->id,
+                'exception' => $e::class,
+            ]);
+        }
     }
 
     /**

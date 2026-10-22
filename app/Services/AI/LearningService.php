@@ -19,10 +19,11 @@ class LearningService
 
     /**
      * Rattacher une réponse humaine à la dernière escalade en attente de la
-     * conversation (créée dans les dernières 24 h), puis en apprendre.
+     * conversation (créée dans les dernières 24 h), puis en apprendre ($learn :
+     * faux pour une réponse vocale du gérant, sans texte).
      * Ne fait rien s'il n'y en a pas.
      */
-    public function answerPendingEscalation(Conversation $conversation, string $response): void
+    public function answerPendingEscalation(Conversation $conversation, string $response, bool $learn = true): void
     {
         $escalation = $conversation->escalations()
             ->where('status', 'pending')
@@ -40,7 +41,9 @@ class LearningService
             'answered_at' => now(),
         ]);
 
-        $this->learnFromEscalation($escalation);
+        if ($learn) {
+            $this->learnFromEscalation($escalation);
+        }
     }
 
     /**
@@ -48,6 +51,11 @@ class LearningService
      */
     public function learnFromEscalation(Escalation $escalation): void
     {
+        // Vocal non transcrit : la « question » n'est que le motif (« Message vocal en mooré »).
+        if ($escalation->isUntranscribedVoice()) {
+            return;
+        }
+
         // En Gratuit, les réponses du gérant ne sont pas apprises (celles déjà apprises restent utilisées).
         $business = $escalation->business;
         if ($business !== null && ! $business->billingState()->plan->learning) {

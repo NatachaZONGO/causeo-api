@@ -14,9 +14,13 @@ use App\Models\Notification;
 use App\Services\AI\AIResponseService;
 use App\Services\AI\LearningService;
 use App\Services\AI\ManagerReplyService;
+use App\Services\AI\VoiceMessageResult;
+use App\Services\AI\VoiceMessageService;
 use App\Services\Billing\UsageService;
+use App\Services\NotificationService;
 use App\Services\WhatsApp\WhatsAppAccountService;
 use App\Services\WhatsApp\WhatsAppService;
+use App\Services\WhatsApp\WhatsAppServiceFactory;
 use Illuminate\Database\QueryException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -37,6 +41,12 @@ class WebhookController extends Controller
      */
     private const DISCONNECTING_ACCOUNT_EVENTS = ['PARTNER_REMOVED', 'PARTNER_APP_UNINSTALLED', 'ACCOUNT_DELETED', 'ACCOUNT_OFFBOARDED'];
 
+    /** Contenu d'un message vocal sans transcription (dashboard). */
+    public const VOICE_PLACEHOLDER = '🎤 Message vocal';
+
+    /** Réponse au client quand son vocal va au gérant (autre langue, incompréhensible, trop long). */
+    public const VOICE_FALLBACK_MESSAGE = 'Merci pour votre message vocal ! Je le transmets tout de suite au responsable, qui vous répondra rapidement.';
+
     public function __construct(
         private readonly WhatsAppService $whatsApp,
         private readonly AIResponseService $ai,
@@ -44,6 +54,9 @@ class WebhookController extends Controller
         private readonly WhatsAppAccountService $accounts,
         private readonly UsageService $usage,
         private readonly ManagerReplyService $managerReplies,
+        private readonly VoiceMessageService $voiceMessages,
+        private readonly WhatsAppServiceFactory $whatsAppFactory,
+        private readonly NotificationService $notifications,
     ) {}
 
     /**
@@ -365,15 +378,19 @@ class WebhookController extends Controller
 
         try {
             foreach ($value['message_echoes'] ?? [] as $echo) {
-                if (! is_array($echo) || ($echo['type'] ?? null) !== 'text') {
+                $type = is_array($echo) ? ($echo['type'] ?? null) : null;
+
+                if (! in_array($type, ['text', 'audio'], true)) {
                     continue;
                 }
 
+                // Vocal du gérant : gardé (réécoutable), sans transcription ni apprentissage.
+                $isAudio = $type === 'audio';
                 $to = $echo['to'] ?? '';
                 $messageId = $echo['id'] ?? '';
-                $text = $echo['text']['body'] ?? '';
+                $text = $isAudio ? self::VOICE_PLACEHOLDER : ($echo['text']['body'] ?? '');
 
-                if ($to === '' || $messageId === '' || $text === '') {
+                if ($to === '' || $messageId === '' || $text === '' || ($isAudio && empty($echo['audio']['id']))) {
                     continue;
                 }
 
@@ -393,13 +410,20 @@ class WebhookController extends Controller
                     'content' => $text,
                     'status' => 'answered_by_human',
                     'whatsapp_message_id' => $messageId,
+                    'metadata' => $isAudio ? $this->audioMetadata([
+                        'media_id' => (string) $echo['audio']['id'],
+                        'mime_type' => (string) ($echo['audio']['mime_type'] ?? 'audio/ogg'),
+                        'voice' => (bool) ($echo['audio']['voice'] ?? false),
+                    ]) : null,
                 ]);
 
-                $this->managerReplies->record($business, $message, ManagerReply::SOURCE_ECHO);
+                if (! $isAudio) {
+                    $this->managerReplies->record($business, $message, ManagerReply::SOURCE_ECHO);
+                }
 
                 // Une erreur d'apprentissage ne doit pas bloquer les échos suivants.
                 try {
-                    $this->learningService->answerPendingEscalation($conversation, $text);
+                    $this->learningService->answerPendingEscalation($conversation, $text, learn: ! $isAudio);
                 } catch (Throwable $e) {
                     Log::error('WebhookController: apprentissage depuis un écho échoué', [
                         'business_id' => $business->id,
@@ -450,7 +474,7 @@ class WebhookController extends Controller
      * Traiter effectivement un message entrant : génération de la réponse IA,
      * envoi WhatsApp, escalade éventuelle.
      *
-     * @param  array{from: string, message_id: string, text: string, customer_name: ?string}  $incoming
+     * @param  array{type?: string, from: string, message_id: string, text: string, customer_name: ?string, media_id?: string, mime_type?: string, voice?: bool}  $incoming
      */
     private function process(array $incoming, ?string $phoneNumberId): void
     {
@@ -461,7 +485,8 @@ class WebhookController extends Controller
                 return;
             }
 
-            $whatsApp = WhatsAppService::forBusiness($business);
+            $whatsApp = $this->whatsAppFactory->forBusiness($business);
+            $isVoice = ($incoming['type'] ?? 'text') === 'audio';
 
             $conversation = Conversation::firstOrCreate(
                 [
@@ -483,9 +508,10 @@ class WebhookController extends Controller
                 $inboundMessage = $conversation->messages()->create([
                     'direction' => 'inbound',
                     'sender_type' => 'customer',
-                    'content' => $incoming['text'],
+                    'content' => $isVoice ? self::VOICE_PLACEHOLDER : $incoming['text'],
                     'status' => 'pending',
                     'whatsapp_message_id' => $incoming['message_id'],
+                    'metadata' => $isVoice ? $this->audioMetadata($incoming) : null,
                 ]);
             } catch (QueryException $e) {
                 // Violation de l'index unique : un autre traitement du même
@@ -506,6 +532,27 @@ class WebhookController extends Controller
             }
 
             $whatsApp->markAsRead($incoming['message_id']);
+
+            $transcriptionUsage = null;
+
+            if ($isVoice) {
+                $voice = $this->voiceMessages->handle($business, $incoming['media_id'], $incoming['mime_type']);
+                $transcriptionUsage = $voice->usage;
+
+                $inboundMessage->update([
+                    'content' => $voice->transcript ?? self::VOICE_PLACEHOLDER,
+                    'metadata' => $this->audioMetadata($incoming) + $voice->metadata(),
+                ]);
+
+                if (! $voice->isUsable()) {
+                    $this->escalateVoice($business, $conversation, $inboundMessage, $whatsApp, $incoming['from'], $voice);
+
+                    return;
+                }
+
+                // Vocal en français et compris : exactement comme un message écrit.
+                $incoming['text'] = $voice->transcript;
+            }
 
             $result = $this->ai->answer($business, $incoming['text'], $conversation->id);
 
@@ -535,7 +582,7 @@ class WebhookController extends Controller
                     'metadata' => [
                         'context_used' => $result['context_used'],
                         'escalated' => true,
-                    ] + ($result['tool_trace'] ?? []),
+                    ] + $this->withTranscriptionUsage($result['tool_trace'] ?? [], $transcriptionUsage),
                 ]);
             } else {
                 $sent = $whatsApp->sendMessage($incoming['from'], $result['answer']);
@@ -549,7 +596,9 @@ class WebhookController extends Controller
                     'whatsapp_message_id' => data_get($sent, 'messages.0.id'),
                     'metadata' => [
                         'context_used' => $result['context_used'],
-                    ] + ($result['tool_trace'] ?? []) + (! empty($result['canned']) ? ['canned' => true] : []),
+                    ] + $this->withTranscriptionUsage($result['tool_trace'] ?? [], $transcriptionUsage)
+                        // Un vocal compte toujours comme une unité, même avec une réponse toute faite.
+                        + (! empty($result['canned']) && ! $isVoice ? ['canned' => true] : []),
                 ]);
 
                 $inboundMessage->update(['status' => 'answered_by_ai']);
@@ -562,7 +611,7 @@ class WebhookController extends Controller
             $business->increment('monthly_message_count');
 
             // Alertes à 80 % et 100 % de la limite mensuelle (une réponse toute faite ne compte pas).
-            if (empty($result['canned'])) {
+            if (empty($result['canned']) || $isVoice) {
                 $this->usage->afterReply($business);
             }
         } catch (Throwable $e) {
@@ -571,6 +620,83 @@ class WebhookController extends Controller
                 'message' => $e->getMessage(),
             ]);
         }
+    }
+
+    /**
+     * Vocal que le bot ne traite pas (autre langue, incompréhensible, trop long, non
+     * transcrit) : réponse d'attente au client, escalade avec le motif (cloche et alerte
+     * WhatsApp à sa création), e-mail au gérant. Compte comme une unité.
+     */
+    private function escalateVoice(Business $business, Conversation $conversation, Message $inboundMessage, WhatsAppService $whatsApp, string $to, VoiceMessageResult $voice): void
+    {
+        $escalation = Escalation::create([
+            'conversation_id' => $conversation->id,
+            'message_id' => $inboundMessage->id,
+            'business_id' => $business->id,
+            'customer_question' => $voice->escalationText(),
+            'reason' => $voice->escalationReason(),
+            'status' => 'pending',
+        ]);
+
+        $inboundMessage->update(['status' => 'escalated']);
+
+        $sent = $whatsApp->sendMessage($to, self::VOICE_FALLBACK_MESSAGE);
+
+        $conversation->messages()->create([
+            'direction' => 'outbound',
+            'sender_type' => 'ai',
+            'content' => self::VOICE_FALLBACK_MESSAGE,
+            'status' => 'sent',
+            'whatsapp_message_id' => data_get($sent, 'messages.0.id'),
+            'metadata' => [
+                'escalated' => true,
+                'voice_fallback' => $voice->status,
+            ] + $this->withTranscriptionUsage([], $voice->usage),
+        ]);
+
+        $this->notifications->emailVoiceEscalation($escalation);
+
+        $business->increment('monthly_message_count');
+        $this->usage->afterReply($business);
+
+        Log::info('WebhookController: message vocal transmis au gérant.', [
+            'business_id' => $business->id,
+            'voice_status' => $voice->status,
+            'language' => $voice->language,
+            'duration_seconds' => $voice->durationSeconds,
+        ]);
+    }
+
+    /**
+     * Ce qu'il faut garder d'un message audio pour le réécouter depuis le dashboard.
+     *
+     * @param  array<string, mixed>  $incoming
+     * @return array<string, mixed>
+     */
+    private function audioMetadata(array $incoming): array
+    {
+        return [
+            'type' => 'audio',
+            'media_id' => $incoming['media_id'] ?? null,
+            'mime_type' => $incoming['mime_type'] ?? null,
+            'voice' => $incoming['voice'] ?? false,
+        ];
+    }
+
+    /**
+     * Ajouter le coût de la transcription à ai_usage (ai_usage.transcription).
+     *
+     * @param  array<string, mixed>  $trace
+     * @param  array<string, int|string>|null  $transcriptionUsage
+     * @return array<string, mixed>
+     */
+    private function withTranscriptionUsage(array $trace, ?array $transcriptionUsage): array
+    {
+        if ($transcriptionUsage !== null) {
+            $trace['ai_usage'] = ($trace['ai_usage'] ?? []) + ['transcription' => $transcriptionUsage];
+        }
+
+        return $trace;
     }
 
     /**

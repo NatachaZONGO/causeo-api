@@ -25,7 +25,14 @@ class Escalation extends Model
         'human_response',
         'status',
         'answered_at',
+        'reason',
     ];
+
+    /** Escalade d'un message vocal non transcrit : la question n'est pas le texte du client. */
+    public function isUntranscribedVoice(): bool
+    {
+        return is_string($this->reason) && str_starts_with($this->reason, 'voice_');
+    }
 
     /**
      * Notifier le gérant à chaque nouvelle escalade.

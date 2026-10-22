@@ -187,26 +187,42 @@ class WhatsAppService
      * Parser un webhook WhatsApp entrant.
      *
      * @param  array<string, mixed>  $payload
-     * @return array{from: string, message_id: string, text: string, customer_name: ?string}|null
+     * Messages texte et audio (notes vocales comprises) ; les autres types sont ignorés.
+     *
+     * @return array{type: string, from: string, message_id: string, text: string, customer_name: ?string, media_id?: string, mime_type?: string, voice?: bool}|null
      */
     public function parseIncomingMessage(array $payload): ?array
     {
         $value = $payload['entry'][0]['changes'][0]['value'] ?? [];
 
         $message = $value['messages'][0] ?? null;
+        $type = $message['type'] ?? null;
 
-        if ($message === null || ($message['type'] ?? null) !== 'text') {
+        if ($message === null || ! in_array($type, ['text', 'audio'], true)) {
             return null;
         }
 
-        $contactName = $value['contacts'][0]['profile']['name'] ?? null;
-
-        return [
+        $incoming = [
+            'type' => $type,
             'from' => $message['from'] ?? '',
             'message_id' => $message['id'] ?? '',
             'text' => $message['text']['body'] ?? '',
-            'customer_name' => $contactName,
+            'customer_name' => $value['contacts'][0]['profile']['name'] ?? null,
         ];
+
+        if ($type === 'audio') {
+            if (empty($message['audio']['id'])) {
+                return null;
+            }
+
+            $incoming += [
+                'media_id' => (string) $message['audio']['id'],
+                'mime_type' => (string) ($message['audio']['mime_type'] ?? 'audio/ogg'),
+                'voice' => (bool) ($message['audio']['voice'] ?? false),
+            ];
+        }
+
+        return $incoming;
     }
 
     /**

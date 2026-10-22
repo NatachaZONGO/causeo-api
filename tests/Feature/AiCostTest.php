@@ -229,7 +229,7 @@ class AiCostTest extends TestCase
         $models = collect($response->json('totals.models'))->keyBy('model');
         $this->assertEqualsWithDelta(0.015, $models['claude-haiku-4-5-20251001']['cost_usd'], 0.00001);
         $this->assertEqualsWithDelta(0.045, $models['claude-sonnet-4-5-20250929']['cost_usd'], 0.00001);
-        $this->assertSame(['model' => 'claude-mystere-9', 'replies' => 1, 'cost_usd' => null, 'cost_xof' => null, 'price_status' => 'prix inconnu'], $models['claude-mystere-9']);
+        $this->assertSame(['kind' => 'reply', 'model' => 'claude-mystere-9', 'replies' => 1, 'cost_usd' => null, 'cost_xof' => null, 'price_status' => 'prix inconnu'], $models['claude-mystere-9']);
 
         $history = collect($response->json('history'))->keyBy('month');
         $this->assertSame(1, $history['2026-10']['unpriced_replies']);

@@ -75,6 +75,16 @@ return [
         'api_key' => env('GEMINI_API_KEY'),
         'model' => env('GEMINI_MODEL', 'gemini-2.0-flash'),
         'embedding_model' => env('GEMINI_EMBEDDING_MODEL', 'gemini-embedding-001'),
+        // Transcription des messages vocaux (modèle flash qui accepte l'audio OGG/Opus).
+        'transcription_model' => env('GEMINI_TRANSCRIPTION_MODEL', 'gemini-2.5-flash'),
+        // Coûts IA : prix publics en dollars par million de tokens (ai.google.dev/gemini-api/docs/pricing),
+        // à vérifier à chaque changement de modèle. audio_input : tokens audio (32 par seconde).
+        'pricing' => [
+            'models' => [
+                'gemini-2.5-flash' => ['input' => 0.30, 'audio_input' => 1.00, 'output' => 2.50],
+                'gemini-2.0-flash' => ['input' => 0.10, 'audio_input' => 0.70, 'output' => 0.40],
+            ],
+        ],
     ],
 
     'whatsapp' => [
