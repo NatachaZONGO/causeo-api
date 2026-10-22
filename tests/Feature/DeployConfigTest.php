@@ -8,37 +8,34 @@ use Illuminate\Support\Facades\Route;
 use Tests\TestCase;
 
 /**
- * Le VPS (deploy/) doit se comporter comme Render (docker-entrypoint.sh), et ses
- * réglages nginx / php-fpm doivent laisser passer ce que l'application accepte.
+ * Les réglages du VPS (deploy/) : worker, déploiement, et nginx / php-fpm qui doivent
+ * laisser passer ce que l'application accepte.
  */
 class DeployConfigTest extends TestCase
 {
-    public function test_vps_worker_uses_the_same_options_as_render(): void
+    public function test_vps_worker_retries_and_finishes_the_current_job(): void
     {
-        preg_match('/php artisan (queue:work [^|\n]+?)\s*(\|\||$)/m', $this->file('docker-entrypoint.sh'), $render);
-        preg_match('/artisan (queue:work .+)$/m', $this->file('deploy/supervisor/causeo-worker.conf'), $vps);
+        $conf = $this->file('deploy/supervisor/causeo-worker.conf');
 
-        $this->assertSame(trim($render[1]), trim($vps[1]));
+        preg_match('/artisan (queue:work .+)$/m', $conf, $worker);
+        $this->assertStringContainsString('--tries=3', $worker[1]);
 
         // Supervisor laisse le job en cours finir avant d'arrêter le worker.
-        preg_match('/--timeout=(\d+)/', $vps[1], $timeout);
-        preg_match('/^stopwaitsecs=(\d+)$/m', $this->file('deploy/supervisor/causeo-worker.conf'), $stopWait);
+        preg_match('/--timeout=(\d+)/', $worker[1], $timeout);
+        preg_match('/^stopwaitsecs=(\d+)$/m', $conf, $stopWait);
         $this->assertGreaterThan((int) $timeout[1], (int) $stopWait[1]);
     }
 
-    public function test_deploy_runs_the_same_steps_as_the_render_entrypoint(): void
+    public function test_deploy_migrates_seeds_and_rebuilds_the_caches(): void
     {
-        $entrypoint = $this->file('docker-entrypoint.sh');
         $deploy = $this->file('deploy/deploy.sh');
 
-        preg_match_all('/artisan (migrate --force|db:seed --class=\w+ --force)/', $entrypoint, $render);
-        $this->assertNotEmpty($render[1]);
-
-        foreach ($render[1] as $step) {
-            $this->assertStringContainsString("artisan {$step}", $deploy);
-        }
-
-        foreach (['config:cache', 'route:cache', 'queue:restart', 'composer install --no-dev'] as $step) {
+        foreach ([
+            'artisan migrate --force',
+            'artisan db:seed --class=BusinessTemplateSeeder --force',
+            'artisan db:seed --class=PlanSeeder --force',
+            'config:cache', 'route:cache', 'queue:restart', 'composer install --no-dev',
+        ] as $step) {
             $this->assertStringContainsString($step, $deploy);
         }
     }
@@ -89,10 +86,10 @@ class DeployConfigTest extends TestCase
     {
         $setup = $this->file('deploy/setup.sh');
 
-        // Activé seulement à la bascule (causeo-scheduler on), pour ne pas tourner en double avec Render.
+        // Activé explicitement (causeo-scheduler on) : un second serveur sur la même base
+        // ne doit pas envoyer les rappels et le rapport hebdomadaire en double.
         $this->assertStringNotContainsString('/etc/cron.d/causeo-scheduler', $setup);
         $this->assertStringContainsString('/etc/cron.d/causeo-scheduler', $this->file('deploy/scheduler.sh'));
-        $this->assertStringContainsString('${RUN_SCHEDULER:-true}', $this->file('docker-entrypoint.sh'));
     }
 
     public function test_github_deploys_the_tested_commit_one_at_a_time(): void
@@ -105,10 +102,11 @@ class DeployConfigTest extends TestCase
         $this->assertStringContainsString('"$TARGET $GITHUB_SHA"', $workflow);
         $this->assertStringContainsString('StrictHostKeyChecking=yes', $workflow);
 
-        // Même PHP que l'image de Render.
+        // Les tests tournent avec le PHP installé sur le VPS.
         preg_match("/php-version: '([\\d.]+)'/", $workflow, $ci);
-        preg_match('/^FROM php:([\d.]+)-/m', $this->file('Dockerfile'), $render);
-        $this->assertSame($render[1], $ci[1]);
+        preg_match('/^PHP_VERSION=([\d.]+)$/m', $this->file('deploy/setup.sh'), $vps);
+        $this->assertSame($vps[1], $ci[1]);
+        $this->assertStringContainsString("/usr/bin/php{$vps[1]} ", $this->file('deploy/supervisor/causeo-worker.conf'));
 
         // Aucun secret en clair : seulement des références aux secrets GitHub.
         $this->assertDoesNotMatchRegularExpression('/BEGIN [A-Z ]*PRIVATE KEY|ssh-ed25519 AAAA/', $workflow);

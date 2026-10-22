@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Activer ou couper le planificateur Laravel sur le VPS (cron, chaque minute).
-# Un seul environnement doit le faire tourner : l'activer ici au moment de la bascule,
-# en même temps qu'on le coupe sur Render (RUN_SCHEDULER=false).
+# Il doit être actif sur le serveur de production (sinon ni billing:sync ni le rapport
+# hebdomadaire ne partent) et sur un seul serveur à la fois, la base étant partagée.
 #
 #   sudo causeo-scheduler on|off|status     (installé par setup.sh)
 

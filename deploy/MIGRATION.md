@@ -1,7 +1,14 @@
 # Migration de Render et Vercel vers le VPS Hostinger
 
-Procédure pas à pas, de l'achat à la bascule, avec le retour arrière. Elle complète
-`DOMAINE.md` (à la racine), qui liste tout ce qui dépend du domaine.
+> **Migration terminée.** Bascule faite le 15 octobre 2026 (`deploy/BASCULE.md`) ;
+> `DOMAINE` est `getcauseo.com`. Render est supprimé, Vercel ne fait plus que rediriger
+> `causeo-dashboard.vercel.app` vers `https://getcauseo.com`. Les étapes 1 à 10 sont
+> gardées comme archive (et pour réinstaller un serveur : étapes 2 à 6 bis) ; le retour
+> vers Render n'est plus possible. Ce qui reste utile au quotidien est dans
+> **Exploitation courante**, à la fin.
+
+Procédure pas à pas, de l'achat à la bascule. Elle complète `DOMAINE.md` (à la racine),
+qui liste tout ce qui dépend du domaine.
 
 Dans ce document, `DOMAINE` est le nouveau domaine (par exemple `causeo.bf`) et `IP`
 l'adresse IPv4 du VPS.
@@ -281,8 +288,6 @@ Pour couper le déploiement automatique, passer la variable à `false`.
 - GitHub > `causeo-api` > **Actions** > **Tests et déploiement** > **Run workflow** (cible
   `api`). Le job « Déploiement sur le VPS » affiche la sortie de `deploy.sh`.
 - Un push sur `main` dont les tests échouent : le job de déploiement est **sauté**.
-- Pendant la transition, Render se redéploie toujours de son côté depuis `main`. Les deux
-  versions restent identiques.
 
 **Dashboard.** Un push sur `causeo-dashboard` ne déclenche pas ce workflow. On peut :
 
@@ -400,31 +405,34 @@ Le worker de file peut rester actif sur Render : les deux workers se partagent l
 file sans traiter deux fois un job. À couper avec `RUN_QUEUE_WORKER=false` avant
 l'arrêt de Render.
 
-## 11. Après la bascule
+## 11. Après la bascule (terminé)
 
-- **48 heures de surveillance** : logs Laravel, `sudo supervisorctl status`, réponses du
-  bot, e-mails reçus.
-- **Après une à deux semaines sans trafic sur les anciennes adresses** (DOMAINE.md,
-  étape 10) :
-  - retirer les anciennes adresses chez Google et Meta ;
-  - vider `CORS_ALLOWED_ORIGINS` dans le `.env` du VPS, puis lancer `deploy.sh api` ;
-  - suspendre puis supprimer le service Render et le projet Vercel ;
-  - remonter le TTL DNS à 3600.
+- [x] Surveillance après la bascule : logs Laravel, `sudo supervisorctl status`, réponses
+  du bot, e-mails reçus.
+- [x] Service Render supprimé ; Vercel garde seulement la redirection vers
+  `https://getcauseo.com`.
+- [x] Dockerfile, `docker-entrypoint.sh` et `.dockerignore` (propres à Render) retirés du
+  dépôt.
+- [ ] `.env` du VPS : retirer `https://causeo-dashboard.vercel.app` de
+  `CORS_ALLOWED_ORIGINS` (l'ancien dashboard redirige et n'appelle plus l'API), puis
+  `deploy.sh api` :
+  ```bash
+  sudo -u deploy sed -i '/^CORS_ALLOWED_ORIGINS=/{s#https://causeo-dashboard\.vercel\.app##;s#,,#,#;s#=,#=#;s#,$##}' /var/www/causeo-api/.env
+  grep '^CORS_ALLOWED_ORIGINS' /var/www/causeo-api/.env
+  sudo -u deploy -H bash /var/www/causeo-api/deploy/deploy.sh api
+  ```
+- [ ] Google Cloud : retirer l'URI de redirection `https://causeo-api.onrender.com/auth/google/callback`
+  et les origines de Render et de Vercel, s'ils y sont encore.
+- [ ] Meta : retirer `causeo-dashboard.vercel.app` (et `natachazongo.github.io`) des domaines
+  de l'app, des URI de redirection et des domaines du SDK JavaScript, s'ils y sont encore.
+- [ ] DNS : TTL des enregistrements `@`, `www` et `api` remonté à 3600 s.
 
 ## 12. Retour arrière
 
-Possible à tout moment tant que Render n'est pas supprimé : les données sont sur
-Supabase, rien n'est perdu. Revenir dans l'ordre inverse :
+Render étant supprimé, il n'y a plus d'ancienne infrastructure vers laquelle revenir. Les
+données restent sur Supabase.
 
-1. **Webhook Meta** : remettre `https://causeo-api.onrender.com/api/webhook/whatsapp`.
-2. **Planificateur** : VPS `sudo causeo-scheduler off`, puis Render `RUN_SCHEDULER=true`.
-3. **Render** : `FRONTEND_URL=https://causeo-dashboard.vercel.app`.
-4. **Dashboard** : remettre l'ancien `apiUrl` dans `environment.prod.ts` et retirer la
-   redirection `vercel.json`, puis pousser. Vercel redevient le dashboard principal.
-5. Laisser le VPS allumé pour comprendre le problème. Les nouvelles adresses déclarées
-   chez Google et Meta peuvent rester.
-
-**Version de code défectueuse** (sur le VPS seulement) : corriger ou annuler le commit
+**Version de code défectueuse** : corriger ou annuler le commit
 sur `main` (`git revert`), puis relancer `deploy.sh`. Pour une urgence, redéployer un
 commit précis :
 

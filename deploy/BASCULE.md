@@ -1,5 +1,10 @@
 # Bascule de la production vers le VPS (15 octobre 2026)
 
+> **Archive : bascule faite, migration terminée.** Render est supprimé et Vercel ne fait
+> plus que rediriger vers `https://getcauseo.com` : les étapes ci-dessous qui touchent
+> Render, ainsi que le retour arrière, ne s'appliquent plus. État actuel : `DOMAINE.md` ;
+> dernières vérifications : `deploy/MIGRATION.md`, étape 11.
+
 Feuille de route du jour J, dans l'ordre d'exécution. Elle prend la suite de
 `deploy/MIGRATION.md` (étapes 1 à 9 déjà faites : VPS installé, `.env` en place, API et
 dashboard déployés, HTTPS actif).

@@ -47,18 +47,6 @@ class WebServerConfigTest extends TestCase
         }
     }
 
-    public function test_docker_image_runs_several_php_server_workers(): void
-    {
-        $dockerfile = file_get_contents(base_path('Dockerfile'));
-
-        $this->assertMatchesRegularExpression('/^ENV PHP_CLI_SERVER_WORKERS=(\d+)$/m', $dockerfile);
-        preg_match('/^ENV PHP_CLI_SERVER_WORKERS=(\d+)$/m', $dockerfile, $workers);
-        $this->assertGreaterThanOrEqual(2, (int) $workers[1]);
-
-        // Laravel ignore PHP_CLI_SERVER_WORKERS sans --no-reload.
-        $this->assertMatchesRegularExpression('/^CMD .*php artisan serve .*--no-reload/m', $dockerfile);
-    }
-
     /**
      * @param  array<string, mixed>  $value
      * @return array<string, mixed>

@@ -9,8 +9,7 @@
 # GitHub Actions passe par une clé SSH dont la seule commande permise est ce script
 # (commande forcée) : la cible et le commit arrivent alors dans SSH_ORIGINAL_COMMAND.
 #
-# API : mêmes étapes que docker-entrypoint.sh sur Render (migrations, seeders, caches),
-# puis rechargement de php-fpm et redémarrage du worker.
+# API : dépendances, migrations, seeders et caches, puis rechargement de php-fpm et redémarrage du worker.
 
 set -euo pipefail
 
@@ -104,8 +103,8 @@ deploy_dashboard() {
     log "Dashboard : code"
     pull "$DASHBOARD_SRC"
 
-    # Build « vps » (environment.vps.ts) : environment.prod.ts reste celui de Vercel jusqu'à
-    # la bascule. npm run build:vps échoue tant que __DOMAINE__ n'y est pas remplacé.
+    # Build « vps » (environment.vps.ts), à défaut le build de production.
+    # npm run build:vps échoue tant que __DOMAINE__ n'y est pas remplacé.
     local env_file="$DASHBOARD_SRC/src/environments/environment.vps.ts"
     local build_cmd=(npm run build:vps)
     if [[ ! -f "$env_file" ]]; then

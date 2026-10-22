@@ -25,7 +25,7 @@ class PlanSeeder extends Seeder
     ];
 
     /**
-     * Formules Causeo. Relancé à chaque déploiement (docker-entrypoint.sh) :
+     * Formules Causeo. Relancé à chaque déploiement (deploy/deploy.sh) :
      * modifier une formule ici la met à jour en base.
      */
     public function run(): void

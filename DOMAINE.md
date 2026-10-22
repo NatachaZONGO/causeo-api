@@ -1,74 +1,77 @@
-# Passage sur notre propre nom de domaine (VPS Hostinger)
+# Domaine getcauseo.com (VPS Hostinger)
 
-Tout ce qui dépend du domaine, et l'ordre pour basculer sans coupure.
+Tout ce qui dépend du domaine, et où le modifier.
 
-Dans ce document :
+> **Migration terminée.** Depuis la bascule du 15 octobre 2026, l'API et le dashboard
+> tournent sur le VPS Hostinger. Render est supprimé ; Vercel ne fait plus que rediriger
+> `causeo-dashboard.vercel.app` vers `https://getcauseo.com` (chemin et paramètres
+> conservés). Le déroulé de la migration est archivé dans `deploy/MIGRATION.md` et
+> `deploy/BASCULE.md`.
 
-| | Aujourd'hui | Demain (exemple) |
-|---|---|---|
-| API | `https://causeo-api.onrender.com` | `https://api.<domaine>` |
-| Dashboard | `https://causeo-dashboard.vercel.app` | `https://<domaine>` |
+| | Adresse |
+|---|---|
+| API | `https://api.getcauseo.com` |
+| Dashboard | `https://getcauseo.com` (`www` y renvoie) |
+| Pages légales (HTML statique) | `https://getcauseo.com/privacy/` |
+| Base de données, fichiers | Supabase |
 
 > **À ne jamais oublier : garder la même `APP_KEY`.**
 > Les tokens WhatsApp des businesses (`businesses.whatsapp_token`) sont chiffrés avec
 > `APP_KEY`. Avec une nouvelle clé, ils deviennent illisibles et plus aucun business ne
-> peut envoyer de message. Copier la valeur exacte depuis Render vers le `.env` du VPS.
+> peut envoyer de message. Le `.env` du VPS en est la seule copie : la sauvegarder.
 > S'il faut un jour changer de clé, mettre l'ancienne dans `APP_PREVIOUS_KEYS`.
 
 ## 1. Variables d'environnement
 
-### API (Render aujourd'hui, `.env` du VPS demain)
+### API (`/var/www/causeo-api/.env` sur le VPS)
 
-| Variable | Nouvelle valeur | Rôle |
+Modèle : `deploy/.env.production.example`.
+
+| Variable | Valeur | Rôle |
 |---|---|---|
 | `APP_KEY` | **inchangée** | Déchiffre les tokens WhatsApp (voir plus haut) |
-| `APP_URL` | `https://api.<domaine>` | Adresse publique de l'API |
-| `FRONTEND_URL` | `https://<domaine>` | Liens des e-mails (réinitialisation, rappels, connexion), retour de la connexion Google, CORS par défaut |
-| `CORS_ALLOWED_ORIGINS` | `https://causeo-dashboard.vercel.app,https://<domaine>` pendant la transition, puis vide | Origines autorisées à appeler l'API depuis un navigateur |
-| `GOOGLE_REDIRECT_URI` | `https://api.<domaine>/auth/google/callback` | Doit être identique à l'URL déclarée chez Google |
-| `MAIL_FROM_ADDRESS` | `contact@<domaine>` (par exemple) | Expéditeur des e-mails, sur le domaine vérifié chez Brevo |
+| `APP_URL` | `https://api.getcauseo.com` | Adresse publique de l'API |
+| `FRONTEND_URL` | `https://getcauseo.com` | Liens des e-mails (réinitialisation, rappels, connexion), retour de la connexion Google, CORS par défaut |
+| `CORS_ALLOWED_ORIGINS` | vide | Origines supplémentaires autorisées à appeler l'API depuis un navigateur ; vide, seul `FRONTEND_URL` l'est |
+| `GOOGLE_REDIRECT_URI` | `https://api.getcauseo.com/auth/google/callback` | Doit être identique à l'URL déclarée chez Google |
+| `MAIL_FROM_ADDRESS` | une adresse `@getcauseo.com` | Expéditeur des e-mails, sur le domaine vérifié chez Brevo |
 | `MAIL_FROM_NAME` | `Causeo` | Nom affiché de l'expéditeur |
 | `APP_NAME` | `Causeo` | Affiché dans le pied de page des e-mails |
-| `WHATSAPP_BRIDGE_URL` | adresse du bridge s'il déménage aussi | Bridge WhatsApp Express (désactivé par défaut, voir `WHATSAPP_EXPRESS_ENABLED`) |
+| `WHATSAPP_BRIDGE_URL` | adresse du bridge | Bridge WhatsApp Express (désactivé par défaut, voir `WHATSAPP_EXPRESS_ENABLED`) |
 | `WHATSAPP_BRIDGE_TOKEN` | un vrai secret, seulement si le mode Express est activé | Authentifie le bridge auprès de l'API |
 
-Inchangées (ne dépendent pas du domaine) : base de données et stockage Supabase,
+Ne dépendent pas du domaine : base de données et stockage Supabase,
 `WHATSAPP_TOKEN`, `WHATSAPP_VERIFY_TOKEN`, `WHATSAPP_APP_SECRET`, `FACEBOOK_APP_ID`,
 `FACEBOOK_APP_SECRET`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `ANTHROPIC_API_KEY`,
 `GEMINI_API_KEY`, `OPENAI_API_KEY`, `MAIL_HOST`, `MAIL_USERNAME`, `MAIL_PASSWORD`,
 `PAYMENT_*`.
 
-Port SMTP : Render bloque le 587, d'où le 2525 avec Brevo. Le 2525 fonctionne aussi
-depuis un VPS ; vérifier simplement que Hostinger ne le bloque pas (`MAIL_PORT`).
+Port SMTP : 2525 avec Brevo (`MAIL_PORT`).
 
-La configuration est mise en cache au démarrage (`php artisan config:cache` dans
-`docker-entrypoint.sh`). Après toute modification du `.env`, relancer le conteneur, ou
-à défaut cette commande.
+La configuration est mise en cache par `deploy/deploy.sh` (`php artisan config:cache`).
+Après toute modification du `.env`, lancer
+`sudo -u deploy -H bash /var/www/causeo-api/deploy/deploy.sh api`.
 
-### Dashboard (dépôt `causeo-dashboard`, Vercel aujourd'hui)
+### Dashboard (dépôt `causeo-dashboard`)
 
-Vérifié dans le code du dashboard (Angular) : la seule adresse de nos services est celle
-de l'API, dans les fichiers d'environnement. Aucun lien vers `causeo-dashboard.vercel.app`,
-`causeo-api.onrender.com` ou `natachazongo.github.io` n'est écrit ailleurs.
+La seule adresse de nos services écrite dans le dashboard (Angular) est celle de l'API,
+dans les fichiers d'environnement.
 
-| Fichier | Clé | Valeur aujourd'hui | Demain |
-|---|---|---|---|
-| `src/environments/environment.vps.ts` (build du VPS) | `apiUrl` | `https://api.__DOMAINE__/api/v1` (marqueur) | `https://api.<domaine>/api/v1` |
-| `src/environments/environment.prod.ts` (build Vercel) | `apiUrl` | `https://causeo-api.onrender.com/api/v1` | inchangé : Vercel est redirigé à la bascule |
-| `src/environments/environment.ts` (dev) | `apiUrl` | `http://localhost:8000/api/v1` | inchangé |
-| les deux | `facebookAppId`, `facebookConfigId` | App Meta et configuration de l'Embedded Signup | inchangés |
-| les deux | `supportWhatsapp` | vide (pas de bouton « connexion assistée ») | numéro du support, si besoin |
+| Fichier | Clé | Valeur |
+|---|---|---|
+| `src/environments/environment.vps.ts` (build du VPS) | `apiUrl` | `https://api.getcauseo.com/api/v1` |
+| `src/environments/environment.ts` (dev) | `apiUrl` | `http://localhost:8000/api/v1` |
+| les deux | `facebookAppId`, `facebookConfigId` | App Meta et configuration de l'Embedded Signup |
+| les deux | `supportWhatsapp` | vide (pas de bouton « connexion assistée »), ou numéro du support |
 
-- Deux builds : `ng build` (Vercel) prend `environment.prod.ts`, `npm run build:vps` (VPS,
-  lancé par `deploy/deploy.sh`) prend `environment.vps.ts` (`fileReplacements` dans
-  `angular.json`). `build:vps` refuse de construire tant que `__DOMAINE__` n'est pas remplacé.
-- Ces valeurs sont **compilées** dans le dashboard. Ce ne sont pas des
-  variables d'environnement Vercel : il faut modifier le fichier, committer et redéployer.
+- Le VPS construit le dashboard avec `npm run build:vps` (lancé par `deploy/deploy.sh` ou
+  par le workflow du dépôt `causeo-dashboard`), qui prend `environment.vps.ts`
+  (`fileReplacements` dans `angular.json`).
+- Ces valeurs sont **compilées** dans le dashboard : il faut modifier le fichier, committer
+  et redéployer.
 - La connexion Google part de l'API : le dashboard redirige vers
-  `<apiUrl sans /api/v1>/auth/google/redirect`, donc vers `https://api.<domaine>/auth/google/redirect`
-  dès que `apiUrl` change. Rien d'autre à modifier côté dashboard.
-- Pages du dashboard vers lesquelles l'API renvoie (avec `FRONTEND_URL`) : elles doivent
-  exister sur le nouveau domaine, au même chemin.
+  `https://api.getcauseo.com/auth/google/redirect`.
+- Pages du dashboard vers lesquelles l'API renvoie (avec `FRONTEND_URL`) :
 
   | Chemin | Utilisé par |
   |---|---|
@@ -81,141 +84,103 @@ de l'API, dans les fichiers d'environnement. Aucun lien vers `causeo-dashboard.v
   | `/dashboard/admin/feedback?feedback=…` | e-mail aux admins : nouveau retour d'un gérant (`/admin/feedback` y redirige) |
   | `/conditions-utilisation`, `/confidentialite`, `/suppression-des-donnees` | pages légales du dashboard (liées en bas de la page d'accueil) |
 
-  Le dashboard est une application à page unique : l'hébergement doit servir `index.html`
-  pour ces chemins (réglage par défaut de Vercel pour Angular ; sur le VPS, une règle
-  `try_files $uri /index.html` dans Nginx).
+  Le dashboard est une application à page unique : nginx sert `index.html` pour ces
+  chemins (`try_files $uri /index.html`, `deploy/nginx/dashboard.conf`).
 - Les adresses de Meta (`connect.facebook.net`, origines `www.facebook.com` et
   `web.facebook.com` de l'Embedded Signup) et `wa.me` ne dépendent pas de notre domaine.
-
-Les utilisateurs devront se reconnecter une fois : le token de connexion est stocké
-dans le navigateur, par domaine.
 
 ## 2. CORS et Sanctum
 
 - **CORS** (`config/cors.php`) : l'API accepte les origines de `CORS_ALLOWED_ORIGINS`
-  (liste séparée par des virgules), ou à défaut `FRONTEND_URL`. Pendant la transition,
-  y mettre l'ancien et le nouveau dashboard.
+  (liste séparée par des virgules), ou à défaut `FRONTEND_URL`. L'ancien dashboard de
+  Vercel ne fait plus que rediriger : il n'appelle plus l'API et n'a pas à y figurer.
 - **Sanctum** : le dashboard s'authentifie par token (`Authorization: Bearer …`), sans
-  cookie de session. `SANCTUM_STATEFUL_DOMAINS` et `SESSION_DOMAIN` n'ont donc pas à
-  changer.
+  cookie de session. `SANCTUM_STATEFUL_DOMAINS` et `SESSION_DOMAIN` ne servent pas.
 
 ## 3. Meta (developers.facebook.com, app Causeo)
 
-Ajouter les nouvelles adresses **à côté** des anciennes, et ne retirer les anciennes
-qu'à la fin.
-
 | Où | Valeur |
 |---|---|
-| WhatsApp > Configuration > URL de rappel du webhook | `https://api.<domaine>/api/webhook/whatsapp` (même jeton de vérification : `WHATSAPP_VERIFY_TOKEN`) |
-| Paramètres > Général > Domaines de l'app | `<domaine>` (en plus des domaines actuels pendant la transition) |
-| Facebook Login for Business > Paramètres > URI de redirection OAuth valides | `https://<domaine>/` |
-| Facebook Login for Business > Paramètres > Domaines autorisés pour le SDK JavaScript (Embedded Signup) | `https://<domaine>` |
-| Paramètres > Général > URL de la politique de confidentialité | `https://<domaine>/privacy/` |
-| Paramètres > Général > URL des instructions de suppression des données | `https://<domaine>/privacy/data-deletion.html` |
-| Paramètres > Général > URL du site | `https://<domaine>` |
+| WhatsApp > Configuration > URL de rappel du webhook | `https://api.getcauseo.com/api/webhook/whatsapp` (jeton de vérification : `WHATSAPP_VERIFY_TOKEN`) |
+| Paramètres > Général > Domaines de l'app | `getcauseo.com` |
+| Facebook Login for Business > Paramètres > URI de redirection OAuth valides | `https://getcauseo.com/` |
+| Facebook Login for Business > Paramètres > Domaines autorisés pour le SDK JavaScript (Embedded Signup) | `https://getcauseo.com` |
+| Paramètres > Général > URL de la politique de confidentialité | `https://getcauseo.com/privacy/` |
+| Paramètres > Général > URL des instructions de suppression des données | `https://getcauseo.com/privacy/data-deletion.html` |
+| Paramètres > Général > URL du site | `https://getcauseo.com` |
 
 La politique de confidentialité et la page de suppression des données viennent du dépôt
-`causeo-privacy` (aujourd'hui sur `natachazongo.github.io`). Le dashboard a aussi ses
-pages (`/confidentialite`, `/suppression-des-donnees`, `/conditions-utilisation`), mais
-leur texte est affiché par JavaScript : un robot qui ne l'exécute pas, comme celui de
-Meta, ne voit qu'une page vide. Garder les URL `/privacy/` (HTML statique) chez Meta, et
-aligner leur contenu sur celui du dashboard. Sur le VPS, nginx les sert
-sous `https://<domaine>/privacy/` (`deploy/nginx/dashboard.conf`). Mettre à jour les deux
-URL ci-dessus une fois qu'elles répondent : Meta les vérifie.
+`causeo-privacy`. Le dashboard a aussi ses pages (`/confidentialite`,
+`/suppression-des-donnees`, `/conditions-utilisation`), mais leur texte est affiché par
+JavaScript : un robot qui ne l'exécute pas, comme celui de Meta, ne voit qu'une page vide.
+Garder les URL `/privacy/` (HTML statique, servies par nginx, `deploy/nginx/dashboard.conf`)
+chez Meta, et aligner leur contenu sur celui du dashboard.
 
-Il n'y a qu'**une** URL de webhook par app. On la change en dernier, quand la nouvelle
-API répond (voir l'ordre de bascule). Meta l'appelle aussitôt en GET pour la vérifier.
+Il n'y a qu'**une** URL de webhook par app. Meta l'appelle en GET pour la vérifier dès
+qu'on la change.
 
 ## 4. Google (console.cloud.google.com > API et services > Identifiants)
 
 Dans le client OAuth utilisé par `GOOGLE_CLIENT_ID` :
 
-- **URI de redirection autorisés** : ajouter `https://api.<domaine>/auth/google/callback`
-  (garder `https://causeo-api.onrender.com/auth/google/callback` pendant la transition) ;
-- **Origines JavaScript autorisées** : ajouter `https://<domaine>` et
-  `https://api.<domaine>` ;
-- **Écran de consentement OAuth** : domaines autorisés (`<domaine>`), page d'accueil,
-  politique de confidentialité et conditions d'utilisation sur le nouveau domaine.
+- **URI de redirection autorisés** : `https://api.getcauseo.com/auth/google/callback` ;
+- **Origines JavaScript autorisées** : `https://getcauseo.com` et `https://api.getcauseo.com` ;
+- **Écran de consentement OAuth** : domaine autorisé `getcauseo.com`, page d'accueil,
+  politique de confidentialité et conditions d'utilisation sur ce domaine.
 
 Après la connexion, l'API renvoie vers `FRONTEND_URL/auth/callback`.
 
 ## 5. Brevo (e-mails)
 
-1. **Expéditeurs, domaines et IP dédiées > Domaines** : ajouter `<domaine>`.
-2. Créer chez l'hébergeur DNS les enregistrements que Brevo donne :
-   - **code Brevo** (TXT `brevo-code:…`) pour prouver la propriété ;
-   - **DKIM** (enregistrements fournis par Brevo) ;
-   - **SPF** : un seul enregistrement TXT `v=spf1 … include:spf.brevo.com ~all` sur
-     `<domaine>`. S'il en existe déjà un (pour la messagerie Hostinger par exemple),
-     **fusionner** les `include:` dans le même enregistrement : deux SPF invalident les deux ;
-   - **DMARC** : TXT sur `_dmarc.<domaine>`, pour commencer
-     `v=DMARC1; p=none; rua=mailto:dmarc@<domaine>`, puis `p=quarantine` une fois les
-     rapports propres.
-3. Attendre que Brevo affiche le domaine comme authentifié.
-4. Créer l'expéditeur `contact@<domaine>` et mettre `MAIL_FROM_ADDRESS` à jour.
-5. Envoyer un « mot de passe oublié » vers une adresse Gmail et vérifier, dans
-   « Afficher l'original », que SPF, DKIM et DMARC sont à `PASS`.
+Le domaine `getcauseo.com` est authentifié chez Brevo (Expéditeurs, domaines et IP
+dédiées > Domaines), avec chez l'hébergeur DNS :
+
+- le **code Brevo** (TXT `brevo-code:…`) ;
+- les enregistrements **DKIM** fournis par Brevo ;
+- un seul **SPF** : TXT `v=spf1 … include:spf.brevo.com ~all`. Pour ajouter un autre
+  service d'envoi, **fusionner** les `include:` dans ce même enregistrement : deux SPF
+  invalident les deux ;
+- **DMARC** : TXT sur `_dmarc.getcauseo.com`.
+
+Pour vérifier : envoyer un « mot de passe oublié » vers une adresse Gmail et contrôler,
+dans « Afficher l'original », que SPF, DKIM et DMARC sont à `PASS`.
 
 ## 6. Autres services trouvés dans le code
 
-| Service | Dépend du domaine ? | À faire |
+| Service | Dépend du domaine ? | À savoir |
 |---|---|---|
-| Supabase (base de données, stockage `documents` et `media`) | Non | Si Supabase limite l'accès par adresse IP, autoriser l'IP du VPS. Les URL des médias restent sur `supabase.co`. |
-| Bridge WhatsApp Express (`WHATSAPP_BRIDGE_URL`) | Oui, s'il est activé | Désactivé par défaut (404). S'il est réactivé, le bridge appelle `https://api.<domaine>/api/webhook/whatsapp-express` et `/whatsapp-express/status` : mettre à jour l'adresse de l'API dans **sa** configuration. |
-| Webhook de paiement (`/api/webhook/payment`) | Oui, s'il sert | Il se contente de journaliser. Si un prestataire l'appelle, lui donner la nouvelle URL. |
-| Anthropic, Gemini, OpenAI, Graph API Meta | Non | Rien (appels sortants avec clé d'API). |
+| Supabase (base de données, stockage `documents` et `media`) | Non | Si Supabase limite l'accès par adresse IP, l'IP du VPS doit être autorisée. Les URL des médias restent sur `supabase.co`. |
+| Bridge WhatsApp Express (`WHATSAPP_BRIDGE_URL`) | Oui, s'il est activé | Désactivé par défaut (404). S'il est réactivé, le bridge appelle `https://api.getcauseo.com/api/webhook/whatsapp-express` et `/whatsapp-express/status`. |
+| Webhook de paiement (`/api/webhook/payment`) | Oui, s'il sert | Il se contente de journaliser. Un prestataire qui l'appelle doit avoir l'URL `https://api.getcauseo.com/api/webhook/payment`. |
+| Anthropic, Gemini, OpenAI, Graph API Meta | Non | Appels sortants avec clé d'API. |
 
 ## 7. Hébergement sur le VPS
 
-Tout est prêt dans `deploy/` ; la procédure pas à pas est dans `deploy/MIGRATION.md`.
+Tout est dans `deploy/` ; l'exploitation courante est décrite à la fin de
+`deploy/MIGRATION.md`.
 
-- nginx sert l'API via php-fpm (plus de `php artisan serve`) et le dashboard en fichiers
-  statiques ; HTTPS par Let's Encrypt (`deploy/setup.sh`).
+- nginx sert l'API via php-fpm et le dashboard en fichiers statiques ; HTTPS par
+  Let's Encrypt (`deploy/setup.sh`).
 - nginx transmet directement à php-fpm l'IP du client et HTTPS : aucun en-tête
   `X-Forwarded-*` à croire. `config/trustedproxy.php` fait confiance à la machine elle-même
   par défaut ; `TRUSTED_PROXIES` sert si un autre proxy (Cloudflare…) s'ajoute devant.
-- Worker de file : Supervisor. Planificateur : cron, activé seulement à la bascule
-  (`sudo causeo-scheduler on`). **Un seul environnement doit faire tourner le
-  planificateur** : sinon les rappels d'échéance et le rapport hebdomadaire partent en
-  double, puisque les deux instances partagent la même base. Sur Render, le couper avec
-  `RUN_SCHEDULER=false`.
+- Worker de file : Supervisor (`deploy/supervisor/causeo-worker.conf`).
+- Planificateur : cron, activé par `sudo causeo-scheduler on` (`deploy/scheduler.sh`).
+  `deploy/setup.sh` ne l'active pas : sur un nouveau serveur, l'activer à la main. **Un
+  seul serveur doit le faire tourner** : sinon les rappels d'échéance et le rapport
+  hebdomadaire partent en double, puisque la base est partagée.
+- Déploiement automatique à chaque push sur `main`, une fois les tests passés
+  (`.github/workflows/deploy.yml`).
 
-## 8. Ordre de bascule sans coupure
+## 8. Ancienne infrastructure
 
-Principe : la base (Supabase) est partagée. L'ancienne et la nouvelle API peuvent donc
-tourner en même temps. On ajoute partout les nouvelles adresses, on bascule, puis on
-retire les anciennes.
+- **Render** : service supprimé. `causeo-api.onrender.com` ne répond plus ; plus rien
+  dans ce dépôt ne s'y rapporte (Dockerfile et `docker-entrypoint.sh` retirés).
+- **Vercel** : le projet `causeo-dashboard` ne fait que rediriger
+  `causeo-dashboard.vercel.app/<chemin>?<paramètres>` vers `https://getcauseo.com/<chemin>?<paramètres>`
+  (`vercel.json` du dépôt `causeo-dashboard`), pour les favoris et les anciens e-mails.
+  Il n'appelle plus l'API.
+- **GitHub Pages** (`natachazongo.github.io`) : remplacé par `https://getcauseo.com/privacy/`.
 
-1. **J-2 : DNS.** Baisser le TTL des enregistrements du domaine (300 s). Faire pointer
-   `<domaine>`, `www.<domaine>` et `api.<domaine>` vers le VPS.
-2. **J-2 : Brevo.** Authentifier le domaine (section 5). Cela n'impacte rien tant que
-   `MAIL_FROM_ADDRESS` ne change pas.
-3. **Nouvelle API sur le VPS.** Même `APP_KEY`, même base, `APP_URL` et
-   `GOOGLE_REDIRECT_URI` sur le nouveau domaine,
-   `CORS_ALLOWED_ORIGINS=https://causeo-dashboard.vercel.app,https://<domaine>`.
-   **Planificateur désactivé** sur le VPS pour l'instant. Vérifier
-   `https://api.<domaine>/api/v1/plans`.
-4. **Ancienne API (Render).** Ajouter aussi les deux origines dans
-   `CORS_ALLOWED_ORIGINS`. À l'étape 7, `FRONTEND_URL` change sur Render : sans cette
-   liste, l'ancien dashboard serait refusé par le CORS.
-5. **Google et Meta.** Ajouter les nouvelles adresses à côté des anciennes (sections 3
-   et 4). Ne pas toucher encore au webhook.
-6. **Nouveau dashboard.** Le déployer sur `<domaine>`, pointé sur
-   `https://api.<domaine>`. Tester la connexion (e-mail et Google), l'Embedded Signup
-   et un « mot de passe oublié ».
-7. **Bascule de l'API.**
-   - Sur Render, `FRONTEND_URL=https://<domaine>` : les nouveaux e-mails pointent
-     vers le nouveau dashboard.
-   - Changer l'URL du webhook WhatsApp chez Meta, puis vérifier qu'un message de test
-     reçoit une réponse.
-   - Si le mode Express est activé, mettre à jour l'adresse de l'API dans le bridge.
-   - Activer le planificateur sur le VPS et le désactiver sur Render.
-8. **Expéditeur.** `MAIL_FROM_ADDRESS=contact@<domaine>` sur le VPS, puis test d'envoi.
-9. **Ancien dashboard.** Le rediriger (Vercel) vers `https://<domaine>` en
-   **conservant le chemin et les paramètres**. Les liens de réinitialisation déjà
-   envoyés, valables 60 minutes, restent ainsi utilisables.
-10. **Après une à deux semaines sans trafic sur les anciennes adresses.**
-    - Retirer les anciennes adresses chez Google et Meta.
-    - Vider `CORS_ALLOWED_ORIGINS`, ce qui revient à `FRONTEND_URL` seul.
-    - Arrêter le service Render.
-    - Remonter le TTL DNS.
+Les anciennes adresses déclarées chez Google et Meta se retirent une fois inutiles :
+voir la liste de `deploy/MIGRATION.md`, étape 11.

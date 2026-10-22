@@ -393,7 +393,7 @@ fi
 log "Terminé"
 has_cert "api.${DOMAIN}" && echo "    https://api.${DOMAIN} : HTTPS prêt" || echo "    api.${DOMAIN} : en attente du certificat"
 has_cert "${DOMAIN}" && echo "    https://${DOMAIN} : HTTPS prêt" || echo "    ${DOMAIN} : en attente du certificat"
-[[ -f "$API_DIR/.env" ]] || echo "    À faire : créer $API_DIR/.env (modèle : deploy/.env.production.example), même APP_KEY que Render"
+[[ -f "$API_DIR/.env" ]] || echo "    À faire : créer $API_DIR/.env (modèle : deploy/.env.production.example)"
 echo "    Ensuite : sudo -u ${DEPLOY_USER} -H bash ${API_DIR}/deploy/deploy.sh"
 echo
 echo "    Secrets GitHub Actions (MIGRATION.md, étape 6 bis) :"

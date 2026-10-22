@@ -128,10 +128,10 @@ class WebhookController extends Controller
     }
 
     /**
-     * Accusé de réception pour Meta. Le Content-Length est indispensable : sous
-     * php artisan serve (Render), sans longueur annoncée, Meta attendrait la fermeture
-     * de la connexion, donc la fin du traitement lancé avec afterResponse(). Sous
-     * nginx + php-fpm (VPS), fastcgi_finish_request() termine la réponse avant.
+     * Accusé de réception pour Meta. Sous nginx + php-fpm, fastcgi_finish_request()
+     * termine la réponse avant le traitement lancé avec afterResponse() ; le
+     * Content-Length le garantit aussi sous php artisan serve (en local), où Meta
+     * attendrait sinon la fermeture de la connexion.
      */
     private function acknowledge(): Response
     {
