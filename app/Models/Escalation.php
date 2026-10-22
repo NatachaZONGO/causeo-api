@@ -12,6 +12,21 @@ class Escalation extends Model
 {
     use HasFactory, HasUuids;
 
+    public const PENDING = 'pending';
+
+    /** Le gérant a répondu au client (dashboard ou téléphone). */
+    public const ANSWERED = 'answered';
+
+    /** Le gérant l'a marquée comme traitée, sans répondre. */
+    public const RESOLVED = 'resolved';
+
+    /** Restée en attente plus de EXPIRES_AFTER_HOURS heures, ou remplacée par une plus récente. */
+    public const EXPIRED = 'expired';
+
+    public const STATUSES = [self::PENDING, self::ANSWERED, 'ignored', self::RESOLVED, self::EXPIRED];
+
+    public const EXPIRES_AFTER_HOURS = 24;
+
     /**
      * The attributes that are mass assignable.
      *

@@ -12,3 +12,4 @@ Artisan::command('inspire', function () {
 // sont idempotentes : un passage manqué est rattrapé au suivant.
 Schedule::command('billing:sync')->hourly()->withoutOverlapping()->onOneServer();
 Schedule::command('billing:weekly-report')->hourlyAt(5)->withoutOverlapping()->onOneServer();
+Schedule::command('escalations:expire')->hourlyAt(10)->withoutOverlapping()->onOneServer();

@@ -18,31 +18,42 @@ class LearningService
     }
 
     /**
-     * Rattacher une réponse humaine à la dernière escalade en attente de la
-     * conversation (créée dans les dernières 24 h), puis en apprendre ($learn :
-     * faux pour une réponse vocale du gérant, sans texte).
-     * Ne fait rien s'il n'y en a pas.
+     * Une réponse humaine ferme TOUTES les escalades en attente de la conversation
+     * (et $target, l'escalade à laquelle le gérant a répondu depuis le dashboard). Seule
+     * la plus récente est apprise : $target, sinon la dernière en attente créée dans les
+     * dernières 24 h ($learn : faux pour une réponse vocale du gérant, sans texte).
+     * Ne fait rien s'il n'y a aucune escalade à fermer.
      */
-    public function answerPendingEscalation(Conversation $conversation, string $response, bool $learn = true): void
+    public function answerPendingEscalation(Conversation $conversation, string $response, bool $learn = true, ?Escalation $target = null): void
     {
-        $escalation = $conversation->escalations()
-            ->where('status', 'pending')
-            ->where('created_at', '>=', now()->subDay())
+        $pending = $conversation->escalations()
+            ->where('status', Escalation::PENDING)
             ->latest()
-            ->first();
+            ->get();
 
-        if ($escalation === null) {
+        if ($target !== null && ! $pending->contains('id', $target->id)) {
+            $pending->prepend($target);
+        }
+
+        if ($pending->isEmpty()) {
             return;
         }
 
-        $escalation->update([
-            'human_response' => $response,
-            'status' => 'answered',
-            'answered_at' => now(),
-        ]);
+        foreach ($pending as $escalation) {
+            $escalation->update([
+                'human_response' => $response,
+                'status' => Escalation::ANSWERED,
+                'answered_at' => now(),
+            ]);
+        }
 
-        if ($learn) {
-            $this->learnFromEscalation($escalation);
+        // Instance mise à jour ci-dessus (avec human_response), pas $target tel que reçu.
+        $learned = $target !== null
+            ? $pending->firstWhere('id', $target->id)
+            : $pending->first(fn (Escalation $escalation) => $escalation->created_at->gte(now()->subDay()));
+
+        if ($learn && $learned !== null) {
+            $this->learnFromEscalation($learned);
         }
     }
 

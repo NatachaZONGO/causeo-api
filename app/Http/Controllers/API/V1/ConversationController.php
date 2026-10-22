@@ -120,17 +120,9 @@ class ConversationController extends Controller
         // Exemple de ton et matière du profil de style (si le gérant l'accepte).
         $this->managerReplies->record($conversation->business, $message, ManagerReply::SOURCE_DASHBOARD);
 
-        if ($escalation !== null) {
-            $escalation->update([
-                'human_response' => $data['response'],
-                'status' => 'answered',
-                'answered_at' => now(),
-            ]);
-
-            $this->learningService->learnFromEscalation($escalation);
-        } else {
-            $this->learningService->answerPendingEscalation($conversation, $data['response']);
-        }
+        // Ferme toutes les escalades en attente de la conversation ; apprend de celle
+        // à laquelle le gérant a répondu (sinon de la plus récente).
+        $this->learningService->answerPendingEscalation($conversation, $data['response'], target: $escalation);
 
         return response()->json([
             'message' => 'Votre réponse a été envoyée au client.',
