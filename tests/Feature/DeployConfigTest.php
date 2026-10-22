@@ -92,6 +92,31 @@ class DeployConfigTest extends TestCase
         $this->assertStringContainsString('/etc/cron.d/causeo-scheduler', $this->file('deploy/scheduler.sh'));
     }
 
+    public function test_unattended_upgrades_also_update_php_and_restart_it(): void
+    {
+        $setup = $this->file('deploy/setup.sh');
+
+        // Le dépôt ondrej s'ajoute aux mises à jour de sécurité d'Ubuntu (50unattended-upgrades, intact).
+        $upgrades = $this->file('deploy/apt/52causeo-unattended-upgrades');
+        $this->assertMatchesRegularExpression('/Unattended-Upgrade::Origins-Pattern \{\s*"origin=LP-PPA-ondrej-php";\s*\};/', $upgrades);
+        $this->assertStringContainsString('APT::Periodic::Unattended-Upgrade "1";', $upgrades);
+        $this->assertStringContainsString('apt/52causeo-unattended-upgrades" /etc/apt/apt.conf.d/52causeo-unattended-upgrades', $setup);
+        $this->assertMatchesRegularExpression('/apt-get install .*\\\\\n.*unattended-upgrades/', $setup);
+
+        // Après dpkg, le script redémarre php-fpm et le worker si un paquet PHP a changé.
+        $this->assertStringContainsString('DPkg::Post-Invoke', $this->file('deploy/apt/53causeo-php-restart'));
+        $this->assertStringContainsString('/usr/local/sbin/causeo-php-restart', $this->file('deploy/apt/53causeo-php-restart'));
+        $this->assertStringContainsString('apt/php-restart.sh" /usr/local/sbin/causeo-php-restart 755', $setup);
+        $this->assertStringContainsString('apt/53causeo-php-restart" /etc/apt/apt.conf.d/53causeo-php-restart', $setup);
+
+        $script = $this->file('deploy/apt/php-restart.sh');
+        $this->assertStringContainsString('systemctl restart "php${PHP_VERSION}-fpm"', $script);
+        preg_match('/^\[program:(\S+)\]$/m', $this->file('deploy/supervisor/causeo-worker.conf'), $worker);
+        $this->assertStringContainsString("supervisorctl restart '{$worker[1]}:*'", $script);
+        preg_match('/^PHP_VERSION=([\d.]+)$/m', $setup, $vps);
+        $this->assertStringContainsString("PHP_VERSION={$vps[1]}\n", $script);
+    }
+
     public function test_github_deploys_the_tested_commit_one_at_a_time(): void
     {
         $workflow = $this->file('.github/workflows/deploy.yml');

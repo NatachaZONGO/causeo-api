@@ -84,7 +84,7 @@ export DEBIAN_FRONTEND=noninteractive
 log "Paquets de base"
 apt-get update -q
 apt-get install -y -q ca-certificates curl gnupg git unzip rsync acl cron \
-    software-properties-common nginx supervisor certbot ufw
+    software-properties-common nginx supervisor certbot ufw unattended-upgrades
 
 log "PHP ${PHP_VERSION} (dépôt ondrej/php : Ubuntu 24.04 fournit PHP 8.3)"
 if ! grep -rqs "ondrej/php" /etc/apt/sources.list.d/; then
@@ -270,6 +270,16 @@ if $fpm_changed; then
     systemctl restart "php${PHP_VERSION}-fpm"
 fi
 systemctl enable --now "php${PHP_VERSION}-fpm" >/dev/null
+
+# --- Mises à jour automatiques ------------------------------------------------------------
+
+log "Mises à jour automatiques (sécurité Ubuntu + PHP ondrej)"
+install_file "$SOURCE_DIR/apt/52causeo-unattended-upgrades" /etc/apt/apt.conf.d/52causeo-unattended-upgrades || true
+install_file "$SOURCE_DIR/apt/php-restart.sh" /usr/local/sbin/causeo-php-restart 755 || true
+install_file "$SOURCE_DIR/apt/53causeo-php-restart" /etc/apt/apt.conf.d/53causeo-php-restart || true
+# Premier passage : enregistre les versions PHP actuelles, sans rien redémarrer.
+/usr/local/sbin/causeo-php-restart || true
+systemctl enable --now unattended-upgrades >/dev/null
 
 # --- nginx et certificats -----------------------------------------------------------------
 

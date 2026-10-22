@@ -1,0 +1,12 @@
+// Installé par deploy/setup.sh dans /etc/apt/apt.conf.d/52causeo-unattended-upgrades.
+// Lu après 50unattended-upgrades (mises à jour de sécurité d'Ubuntu, inchangées) et
+// 20auto-upgrades : ajoute le dépôt PHP ondrej, d'où vient php8.2.
+
+// Mises à jour automatiques chaque jour (comme 20auto-upgrades, au cas où il manque).
+APT::Periodic::Update-Package-Lists "1";
+APT::Periodic::Unattended-Upgrade "1";
+
+// Les listes s'ajoutent à celles de 50unattended-upgrades.
+Unattended-Upgrade::Origins-Pattern {
+        "origin=LP-PPA-ondrej-php";
+};

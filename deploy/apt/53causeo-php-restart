@@ -1,0 +1,5 @@
+// Installé par deploy/setup.sh dans /etc/apt/apt.conf.d/53causeo-php-restart.
+// Après chaque passage de dpkg (unattended-upgrades ou apt à la main) : si un paquet
+// PHP a changé, redémarrer php-fpm et le worker (deploy/apt/php-restart.sh).
+// Une erreur du script ne fait jamais échouer apt.
+DPkg::Post-Invoke { "if [ -x /usr/local/sbin/causeo-php-restart ]; then /usr/local/sbin/causeo-php-restart || true; fi"; };
