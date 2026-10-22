@@ -39,7 +39,7 @@ class ModulesTest extends TestCase
         (require base_path('database/migrations/2026_10_13_100000_add_trial_terms_to_subscriptions.php'))->up();
 
         // Tables comptées par GET /businesses/{business}.
-        foreach (['documents', 'conversations', 'escalations'] as $table) {
+        foreach (['documents', 'conversations', 'escalations', 'manager_replies'] as $table) {
             Schema::create($table, function (Blueprint $blueprint) {
                 $blueprint->uuid('id')->primary();
                 $blueprint->uuid('business_id');

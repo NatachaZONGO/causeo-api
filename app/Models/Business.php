@@ -8,6 +8,7 @@ use App\Services\Billing\BillingService;
 use App\Services\Billing\BillingState;
 use App\Services\Billing\Currency;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\Casts\Attribute;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
@@ -21,6 +22,13 @@ class Business extends Model
 
     /** Modules activables par entreprise. */
     public const MODULES = ['orders', 'appointments'];
+
+    /** Réglages « Style de réponse » du gérant et leurs valeurs possibles (null : pas de choix). */
+    public const REPLY_STYLE_OPTIONS = [
+        'address' => ['tu', 'vous'],
+        'emojis' => ['never', 'sometimes', 'often'],
+        'length' => ['very_short', 'short'],
+    ];
 
     /**
      * Valeurs par défaut avant enregistrement : aucun module tant qu'on ne l'a pas choisi.
@@ -62,6 +70,7 @@ class Business extends Model
         'pickup_enabled',
         'shipping_enabled',
         'modules',
+        'reply_style',
     ];
 
     /**
@@ -93,7 +102,47 @@ class Business extends Model
             'pickup_enabled' => 'boolean',
             'shipping_enabled' => 'boolean',
             'modules' => 'array',
+            'style_profile' => 'array',
+            'style_profile_updated_at' => 'datetime',
         ];
+    }
+
+    /**
+     * Réglages « Style de réponse », toujours complets : address, emojis, length et
+     * signature (null si le gérant n'a rien choisi), learn_from_owner (vrai par défaut).
+     *
+     * @return Attribute<array<string, mixed>, array<string, mixed>|null>
+     */
+    protected function replyStyle(): Attribute
+    {
+        return Attribute::make(
+            get: fn (?string $value) => self::normalizeReplyStyle(is_string($value) ? (array) json_decode($value, true) : []),
+            set: fn (?array $value) => json_encode(self::normalizeReplyStyle($value ?? []), JSON_UNESCAPED_UNICODE),
+        );
+    }
+
+    /**
+     * @param  array<string, mixed>  $style
+     * @return array{address: ?string, emojis: ?string, length: ?string, signature: ?string, learn_from_owner: bool}
+     */
+    public static function normalizeReplyStyle(array $style): array
+    {
+        $option = fn (string $key) => in_array($style[$key] ?? null, self::REPLY_STYLE_OPTIONS[$key], true) ? $style[$key] : null;
+        $signature = trim((string) ($style['signature'] ?? ''));
+
+        return [
+            'address' => $option('address'),
+            'emojis' => $option('emojis'),
+            'length' => $option('length'),
+            'signature' => $signature !== '' ? $signature : null,
+            'learn_from_owner' => (bool) ($style['learn_from_owner'] ?? true),
+        ];
+    }
+
+    /** Le bot peut-il apprendre de la façon d'écrire du gérant (profil et exemples) ? */
+    public function learnsFromOwner(): bool
+    {
+        return $this->reply_style['learn_from_owner'];
     }
 
     /**
@@ -213,6 +262,14 @@ class Business extends Model
     public function learnedResponses(): HasMany
     {
         return $this->hasMany(LearnedResponse::class);
+    }
+
+    /**
+     * @return HasMany<ManagerReply, $this>
+     */
+    public function managerReplies(): HasMany
+    {
+        return $this->hasMany(ManagerReply::class);
     }
 
     /**

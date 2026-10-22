@@ -5,7 +5,9 @@ namespace App\Http\Controllers\API\V1;
 use App\Http\Controllers\Controller;
 use App\Models\Business;
 use App\Models\Conversation;
+use App\Models\ManagerReply;
 use App\Services\AI\LearningService;
+use App\Services\AI\ManagerReplyService;
 use App\Services\WhatsApp\WhatsAppNotConnectedException;
 use App\Services\WhatsApp\WhatsAppService;
 use Illuminate\Http\JsonResponse;
@@ -15,6 +17,7 @@ class ConversationController extends Controller
 {
     public function __construct(
         private readonly LearningService $learningService,
+        private readonly ManagerReplyService $managerReplies,
     ) {
     }
 
@@ -113,6 +116,9 @@ class ConversationController extends Controller
         }
 
         $message->update(['whatsapp_message_id' => $wamid]);
+
+        // Exemple de ton et matière du profil de style (si le gérant l'accepte).
+        $this->managerReplies->record($conversation->business, $message, ManagerReply::SOURCE_DASHBOARD);
 
         if ($escalation !== null) {
             $escalation->update([

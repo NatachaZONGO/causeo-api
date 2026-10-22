@@ -37,6 +37,73 @@ class AIResponseService
         'cache_read_input_tokens' => 0,
     ];
 
+    /** Longueur maximale d'une réponse (tokens) : 1 à 3 phrases, une courte liste au plus. */
+    private const MAX_TOKENS = 400;
+
+    /** Réglage « très courte » du gérant. */
+    private const MAX_TOKENS_VERY_SHORT = 250;
+
+    /** En plus quand des outils sont proposés : un appel à create_order porte toute la commande. */
+    private const MAX_TOKENS_TOOLS_EXTRA = 400;
+
+    /** Ancien plafond, gardé pour l'évaluation (withLegacyStyle). */
+    private const LEGACY_MAX_TOKENS = 1024;
+
+    /** Exemples de réponses du gérant ajoutés au prompt, au plus. */
+    private const OWNER_EXAMPLES = 3;
+
+    /** Ancien prompt de style (sans profil ni exemples), pour comparer avant / après. */
+    private bool $legacyStyle = false;
+
+    /** @var array<string, string> embeddings déjà calculés pendant cette réponse (texte => vecteur pgvector) */
+    private array $vectors = [];
+
+    private readonly ManagerReplyService $managerReplies;
+
+    /** Sections du prompt système : personnalité, langue, style, remerciements. */
+    private const STYLE_SECTIONS = [
+        <<<'TEXT'
+- Tu écris comme le gérant écrirait lui-même à son client : simple, direct, chaleureux, jamais mécanique ni commercial.
+- Adapte la longueur et le registre au message du client : à un message court ou familier, réponds court et simplement ; à un message long ou formel, reste posé et un peu plus complet.
+- Au plus un emoji par message, et pas dans chaque message, sauf si la façon d'écrire du gérant (plus bas) en dit autrement.
+TEXT,
+        <<<'TEXT'
+- Réponds dans la langue du client (en français s'il écrit en français), de façon fluide et humaine.
+TEXT,
+        <<<'TEXT'
+- 1 à 3 phrases par défaut. Pas de phrase d'introduction ni de conclusion.
+- Une liste seulement si le client demande plusieurs éléments (plusieurs produits, plusieurs prix…) : un élément par ligne, sans titre.
+- Une seule question à la fois, et seulement si elle fait avancer la demande. Pas de question de relance systématique à la fin.
+- Aucun titre et aucune mise en forme Markdown (ni *, ni **, ni #, ni _) : du texte simple, comme un vrai message WhatsApp.
+- Si le client pose plusieurs questions, réponds à chacune brièvement, dans l'ordre.
+- Expressions interdites, qui sonnent comme un robot : « N'hésitez pas », « Je serais ravi(e) », « Je suis ravi(e) », « Ravi(e) de », « Absolument ! », « Bien sûr ! » ou « Certainement ! » en début de phrase, « En tant qu'assistant », « Je comprends votre demande », « Je comprends tout à fait », « Excellente question », « Merci pour votre message », « J'espère que cela vous aide », « Je reste à votre disposition », « Cordialement ».
+TEXT,
+        <<<'TEXT'
+- Si le client dit « Merci », « Ok merci », « C'est noté »… : réponds brièvement (« Avec plaisir ! »), sans relancer. N'ajoute pas le marqueur JE_NE_SAIS_PAS dans ce cas.
+TEXT,
+    ];
+
+    /** Sections d'avant le profil de style, pour l'évaluation avant / après. */
+    private const LEGACY_STYLE_SECTIONS = [
+        <<<'TEXT'
+- Chaleureux, accueillant, poli. Tu parles comme un bon agent d'accueil burkinabè : naturel, respectueux, jamais froid ni mécanique.
+- Ton amical mais professionnel. Tu peux utiliser 1 à 2 émojis maximum par message, jamais plus, et seulement quand c'est naturel.
+- Tu adaptes ton niveau de langue à celui du client : s'il est très informel, tu te détends un peu ; s'il est formel, tu restes courtois et posé.
+TEXT,
+        <<<'TEXT'
+- Réponds TOUJOURS en français, de façon fluide et humaine.
+TEXT,
+        <<<'TEXT'
+- Sois concis : 3 à 4 courts paragraphes maximum. Les clients WhatsApp veulent des réponses rapides et claires.
+- Mets en forme pour WhatsApp : *gras* pour les titres et les éléments importants (prix, noms de produits, points clés), des sauts de ligne pour aérer. Pour une liste, va à la ligne pour chaque élément.
+- Si le client pose plusieurs questions à la fois, réponds à toutes, de manière organisée (une partie par question si besoin).
+- Termine souvent par une question de relance neutre, qui ne propose aucun service : « Avez-vous une préférence particulière ? », « Puis-je vous aider pour autre chose ? »
+TEXT,
+        <<<'TEXT'
+- Si le client dit « Merci », « Ok merci », « C'est noté »… : réponds poliment (« Avec plaisir ! »), et propose ton aide pour autre chose. N'ajoute pas le marqueur JE_NE_SAIS_PAS dans ce cas.
+TEXT,
+    ];
+
     /** Message d'attente envoyé quand une réponse est bloquée puis escaladée. */
     private const WAITING_MESSAGE = 'Je vérifie ça et je reviens vers vous très vite 😊';
 
@@ -51,8 +118,22 @@ class AIResponseService
         private readonly EmbeddingService $embeddingService,
         private readonly OrderService $orderService,
         private readonly AppointmentService $appointmentService,
+        ?ManagerReplyService $managerReplies = null,
     ) {
         $this->model = config('services.anthropic.model', 'claude-haiku-4-5-20251001');
+        $this->managerReplies = $managerReplies ?? app(ManagerReplyService::class);
+    }
+
+    /**
+     * Copie du service avec l'ancien prompt de style : réponses longues, mise en forme,
+     * ni profil ni exemples du gérant. Sert seulement à l'évaluation (causeo:style-eval).
+     */
+    public function withLegacyStyle(): static
+    {
+        $service = clone $this;
+        $service->legacyStyle = true;
+
+        return $service;
     }
 
     /**
@@ -154,6 +235,11 @@ class AIResponseService
                 $userMessage .= "\n\nMédias disponibles à envoyer au client : {$mediaList}";
             }
 
+            $examples = $this->legacyStyle ? collect() : $this->findOwnerExamples($business, $question);
+            if ($examples->isNotEmpty()) {
+                $systemPrompt .= "\n\n".$this->ownerExamplesBlock($examples);
+            }
+
             if ($messages !== [] && end($messages)['role'] === 'user') {
                 $messages[count($messages) - 1]['content'] .= "\n\n".$userMessage;
             } else {
@@ -165,7 +251,7 @@ class AIResponseService
             // simplement le marqueur ; usage.cache_* reste alors à zéro.
             $request = [
                 'model' => $this->model,
-                'max_tokens' => 1024,
+                'max_tokens' => $this->maxTokens($business, $tools !== []),
                 'system' => [
                     ['type' => 'text', 'text' => $stablePrompt, 'cache_control' => ['type' => 'ephemeral']],
                     ['type' => 'text', 'text' => $systemPrompt],
@@ -178,6 +264,13 @@ class AIResponseService
 
             $payload = $this->converse($request, $business, $conversation, $trace);
             $text = $this->extractText($payload);
+
+            if (($payload['stop_reason'] ?? null) === 'max_tokens') {
+                Log::warning('AIResponseService: réponse coupée par max_tokens.', [
+                    'business_id' => $business->id,
+                    'max_tokens' => $request['max_tokens'],
+                ]);
+            }
 
             // Une réponse qui annonce une commande enregistrée (ou cite une référence)
             // sans appel réussi à create_order n'est jamais envoyée : un seul nouvel
@@ -914,7 +1007,7 @@ PROMPT;
      */
     public function findRelevantContext(Business $business, string $question, int $limit = 5): Collection
     {
-        $vector = '['.implode(',', $this->embeddingService->embed($question)).']';
+        $vector = $this->questionVector($question);
 
         $chunks = collect(DB::select(
             'SELECT id, content, 1 - (embedding <=> ?::vector) as similarity
@@ -985,7 +1078,7 @@ PROMPT;
         // 2. Recherche par similarité vectorielle si on n'a pas assez de résultats.
         if ($matched->count() < $limit) {
             try {
-                $vector = '['.implode(',', $this->embeddingService->embed($question)).']';
+                $vector = $this->questionVector($question);
 
                 $rows = DB::select(
                     'SELECT id, 1 - (keywords_embedding <=> ?::vector) as similarity
@@ -1014,6 +1107,94 @@ PROMPT;
         }
 
         return $matched->unique('id')->take($limit)->values();
+    }
+
+    /**
+     * Réponses du gérant aux questions les plus proches de celle du client, pour
+     * imiter son ton. Vide si le gérant a coupé l'apprentissage ou n'a rien écrit.
+     *
+     * @return Collection<int, object>
+     */
+    public function findOwnerExamples(Business $business, string $question, int $limit = self::OWNER_EXAMPLES): Collection
+    {
+        if (! $business->learnsFromOwner()) {
+            return collect();
+        }
+
+        try {
+            // Évite un embedding (et une requête pgvector) pour un business sans réponse du gérant.
+            if (! $business->managerReplies()->exists()) {
+                return collect();
+            }
+
+            return $this->managerReplies->similarExamples($business, $this->questionVector($question), $limit);
+        } catch (\Throwable $e) {
+            Log::warning('AIResponseService::findOwnerExamples — exemples du gérant ignorés', [
+                'business_id' => $business->id,
+                'exception' => $e::class,
+            ]);
+
+            return collect();
+        }
+    }
+
+    /**
+     * Embedding de la question au format pgvector, calculé une seule fois par réponse
+     * (contexte, médias et exemples du gérant).
+     */
+    private function questionVector(string $question): string
+    {
+        return $this->vectors[$question] ??= '['.implode(',', $this->embeddingService->embed($question)).']';
+    }
+
+    /**
+     * @param  Collection<int, object>  $examples
+     */
+    private function ownerExamplesBlock(Collection $examples): string
+    {
+        $lines = $examples->values()->map(function (object $example, int $i) {
+            $question = mb_substr(trim((string) $example->customer_question), 0, 200);
+            $reply = mb_substr(trim((string) $example->reply), 0, 400);
+
+            return ($i + 1).". Client : {$question}\n   Gérant : {$reply}";
+        })->implode("\n");
+
+        return "# Exemples de la façon dont le gérant écrit\n"
+            ."Réponses écrites par le gérant lui-même à des questions proches. Imite leur ton, leur longueur, "
+            ."leur registre et leurs formules. Elles servent au ton, PAS aux faits : prix, disponibilités, délais "
+            ."et conditions ont pu changer ; ne reprends un fait que s'il figure dans le contexte fourni avec la question.\n"
+            .$lines;
+    }
+
+    /**
+     * Plafond de tokens de la réponse : court par défaut, plus large quand Claude peut
+     * appeler un outil (commande, rendez-vous).
+     */
+    private function maxTokens(Business $business, bool $withTools): int
+    {
+        if ($this->legacyStyle) {
+            return self::LEGACY_MAX_TOKENS;
+        }
+
+        $base = $business->reply_style['length'] === 'very_short' ? self::MAX_TOKENS_VERY_SHORT : self::MAX_TOKENS;
+
+        return $base + ($withTools ? self::MAX_TOKENS_TOOLS_EXTRA : 0);
+    }
+
+    /**
+     * Tutoiement ou vouvoiement : le réglage du gérant, sinon son profil appris, sinon « vous ».
+     */
+    private function addressOf(Business $business): string
+    {
+        $style = $business->reply_style;
+
+        if ($style['address'] !== null) {
+            return $style['address'];
+        }
+
+        $learned = $style['learn_from_owner'] ? ($business->style_profile['address'] ?? null) : null;
+
+        return $learned === 'tu' ? 'tu' : 'vous';
     }
 
     /**
@@ -1145,43 +1326,36 @@ PROMPT;
             }
         }
 
+        // Courtes et sans mise en forme, au tutoiement ou au vouvoiement du gérant.
+        $tu = $this->addressOf($business) === 'tu';
+
         if ($isGreeting) {
             $name = $business->name;
             $hello = $this->resolveGreetingWord($business, $normalized);
-            $moment = $hello === 'Bonsoir' ? 'ce soir' : "aujourd'hui";
 
-            $variants = ! empty($business->custom_greeting)
-                ? [
-                    trim($business->custom_greeting),
-                    "{$hello} et bienvenue chez *{$name}* 👋 Comment puis-je vous aider {$moment} ?",
-                    "{$hello} ! Ravi de vous accueillir chez *{$name}*. Que puis-je faire pour vous ?",
-                ]
-                : [
-                    "{$hello} et bienvenue chez *{$name}* 👋 Comment puis-je vous aider {$moment} ?",
-                    "{$hello} ! Ici l'équipe de *{$name}*. Que puis-je faire pour vous ?",
-                    "{$hello}, merci de nous écrire chez *{$name}*. Comment puis-je vous aider ?",
-                ];
+            $variants = $tu
+                ? ["{$hello} 👋 Je peux t'aider ?", "{$hello} ! Qu'est-ce qu'il te faut ?", "{$hello}, c'est {$name}. Je t'écoute."]
+                : ["{$hello} 👋 Comment puis-je vous aider ?", "{$hello} ! Que puis-je faire pour vous ?", "{$hello}, ici {$name}. Je vous écoute."];
+
+            if (! empty($business->custom_greeting)) {
+                $variants[0] = trim($business->custom_greeting);
+            }
 
             return $this->simpleResponse($this->pickRandom($variants));
         }
 
         if ($isThanks) {
-            $variants = [
-                'Avec plaisir ! Puis-je vous aider sur autre chose ?',
-                "Je vous en prie 🙏 N'hésitez pas si vous avez besoin d'autre chose.",
-                'De rien ! Y a-t-il autre chose que je peux faire pour vous ?',
-            ];
+            $variants = $tu
+                ? ['Avec plaisir !', 'De rien 🙏', 'Je t\'en prie !']
+                : ['Avec plaisir !', 'De rien 🙏', 'Je vous en prie !'];
 
             return $this->simpleResponse($this->pickRandom($variants));
         }
 
         if ($isGoodbye) {
-            $name = $business->name;
-            $variants = [
-                "Merci de nous avoir contactés, à très bientôt chez *{$name}* ! 👋",
-                'Passez une excellente journée, et à bientôt !',
-                "Au revoir et merci pour votre confiance. À bientôt chez *{$name}* !",
-            ];
+            $variants = $tu
+                ? ['Bonne journée, à bientôt ! 👋', 'À bientôt !', 'Merci, à très vite !']
+                : ['Bonne journée, à bientôt ! 👋', 'À bientôt !', 'Merci pour votre confiance, à bientôt !'];
 
             return $this->simpleResponse($this->pickRandom($variants));
         }
@@ -1189,11 +1363,9 @@ PROMPT;
         // Après une réponse du bot, un « oui » / « ok » répond à sa question
         // (par exemple la confirmation d'une commande) : on laisse l'IA le traiter.
         if ($isAffirmation && ! $inConversation) {
-            $variants = [
-                'Très bien ! Comment puis-je vous aider davantage ?',
-                "Parfait 👍 Que puis-je faire d'autre pour vous ?",
-                "D'accord ! Avez-vous besoin d'autre chose ?",
-            ];
+            $variants = $tu
+                ? ['Très bien ! Autre chose ?', 'Parfait 👍 Il te faut autre chose ?', "D'accord !"]
+                : ['Très bien ! Autre chose ?', 'Parfait 👍 Il vous faut autre chose ?', "D'accord !"];
 
             return $this->simpleResponse($this->pickRandom($variants));
         }
@@ -1430,18 +1602,18 @@ PROMPT;
             ? "Message d'accueil défini par l'entreprise (inspire-t'en pour saluer, sans le répéter mot pour mot à chaque fois) :\n\"{$business->custom_greeting}\""
             : "Aucun message d'accueil personnalisé n'a été défini : accueille le client chaleureusement avec tes propres mots.";
 
+        [$personnalite, $langue, $style, $merci] = $this->legacyStyle ? self::LEGACY_STYLE_SECTIONS : self::STYLE_SECTIONS;
+
         $prompt = <<<PROMPT
 {$identite}
 
 Tu discutes avec un client sur WhatsApp. Tu réponds au nom de {$business->name}, comme un membre de son service client qui connaît bien la maison, au Burkina Faso.
 
 # Ta personnalité
-- Chaleureux, accueillant, poli. Tu parles comme un bon agent d'accueil burkinabè : naturel, respectueux, jamais froid ni mécanique.
-- Ton amical mais professionnel. Tu peux utiliser 1 à 2 émojis maximum par message, jamais plus, et seulement quand c'est naturel.
-- Tu adaptes ton niveau de langue à celui du client : s'il est très informel, tu te détends un peu ; s'il est formel, tu restes courtois et posé.
+{$personnalite}
 
 # Règles absolues
-- Réponds TOUJOURS en français, de façon fluide et humaine.
+{$langue}
 - Ne te présente pas de toi-même comme une intelligence artificielle, un robot ou un programme. Mais si le client demande sincèrement s'il parle à une IA ou à un robot, ne le nie JAMAIS : reconnais-le simplement et avec naturel, puis propose ton aide.
 - N'invente JAMAIS d'information : prix, stock, disponibilité, horaires, produits, services, délais, villes desservies, conditions, promotions. Utilise uniquement ce qui est écrit dans le contexte fourni plus bas dans la conversation.
 - Si une information manque dans le contexte, ne la confirme pas et ne l'infirme pas non plus : ne dis ni « oui » ni « non » (par exemple, si une ville n'est pas mentionnée, ne dis pas que vous y livrez, ni que vous n'y livrez pas). Applique alors la règle d'escalade ci-dessous.
@@ -1456,14 +1628,11 @@ Tu discutes avec un client sur WhatsApp. Tu réponds au nom de {$business->name}
 - Le nom de l'entreprise est déjà connu du client. Ne le répète pas inutilement dans chaque message. Utilise-le une fois maximum par réponse, et de manière naturelle — pas « chez Chez Fatou » mais simplement « Chez Fatou », ou rien si le contexte est clair.
 
 # Style des réponses (WhatsApp)
-- Sois concis : 3 à 4 courts paragraphes maximum. Les clients WhatsApp veulent des réponses rapides et claires.
-- Mets en forme pour WhatsApp : *gras* pour les titres et les éléments importants (prix, noms de produits, points clés), des sauts de ligne pour aérer. Pour une liste, va à la ligne pour chaque élément.
-- Si le client pose plusieurs questions à la fois, réponds à toutes, de manière organisée (une partie par question si besoin).
-- Termine souvent par une question de relance neutre, qui ne propose aucun service : « Avez-vous une préférence particulière ? », « Puis-je vous aider pour autre chose ? »
+{$style}
 
 # Cas particuliers
 - Si le client dit seulement « Bonjour », « Salut », « Bonsoir », « Cc »… : réponds par une salutation chaleureuse et demande gentiment comment tu peux l'aider. N'ajoute pas le marqueur JE_NE_SAIS_PAS dans ce cas.
-- Si le client dit « Merci », « Ok merci », « C'est noté »… : réponds poliment (« Avec plaisir ! »), et propose ton aide pour autre chose. N'ajoute pas le marqueur JE_NE_SAIS_PAS dans ce cas.
+{$merci}
 
 # {$business->name} — informations générales
 {$infosBloc}
@@ -1471,6 +1640,10 @@ Tu discutes avec un client sur WhatsApp. Tu réponds au nom de {$business->name}
 # Accueil
 {$accueil}
 PROMPT;
+
+        if (! $this->legacyStyle) {
+            $prompt .= $this->styleBlock($business);
+        }
 
         if (! empty($business->ai_instructions)) {
             $prompt .= "\n\n# Consignes spécifiques de l'entreprise (prioritaires)\n"
@@ -1482,6 +1655,70 @@ PROMPT;
         }
 
         return $prompt;
+    }
+
+    /**
+     * Façon d'écrire du gérant : son profil appris (s'il laisse le bot apprendre),
+     * puis ses réglages explicites, qui priment. Stable d'une question à l'autre :
+     * fait partie du bloc mis en cache.
+     */
+    private function styleBlock(Business $business): string
+    {
+        $style = $business->reply_style;
+        $block = '';
+
+        $profile = $style['learn_from_owner'] ? $business->style_profile : null;
+        if (is_array($profile) && ! empty($profile['instructions'])) {
+            $reperes = array_filter([
+                match ($profile['address'] ?? null) {
+                    'tu' => 'tutoie les clients',
+                    'vous' => 'vouvoie les clients',
+                    'mixte' => 'tutoie ou vouvoie selon le client',
+                    default => null,
+                },
+                ! empty($profile['median_words']) ? "réponses d'environ {$profile['median_words']} mots" : null,
+                ! empty($profile['greetings']) ? 'salutations : '.implode(', ', $profile['greetings']) : null,
+                ! empty($profile['closings']) ? 'formules de fin : '.implode(', ', $profile['closings']) : null,
+                ! empty($profile['emoji_usage']) ? "emojis : {$profile['emoji_usage']}".(! empty($profile['emojis']) ? ' ('.implode(' ', $profile['emojis']).')' : '') : null,
+                ! empty($profile['expressions']) ? 'expressions : '.implode(', ', $profile['expressions']) : null,
+                ! empty($profile['languages']) ? 'langue(s) : '.implode(', ', $profile['languages']) : null,
+                ! empty($profile['tone']) ? "ton : {$profile['tone']}" : null,
+            ]);
+
+            $block .= "\n\n# Façon d'écrire du gérant (apprise de ses propres réponses)\n"
+                ."Écris comme lui. Ce profil décrit son style, pas des faits.\n"
+                .trim((string) $profile['instructions'])
+                .($reperes !== [] ? "\nRepères : ".implode(' ; ', $reperes).'.' : '');
+        }
+
+        $settings = array_filter([
+            match ($style['address']) {
+                'tu' => '- Tutoie toujours le client.',
+                'vous' => '- Vouvoie toujours le client.',
+                default => null,
+            },
+            match ($style['emojis']) {
+                'never' => "- N'utilise aucun emoji.",
+                'sometimes' => '- Un emoji au plus, et pas dans chaque message.',
+                'often' => "- Utilise volontiers un ou deux emojis par message, quand c'est naturel.",
+                default => null,
+            },
+            match ($style['length']) {
+                'very_short' => '- Réponses très courtes : une phrase, deux au maximum.',
+                'short' => '- Réponses courtes : une à trois phrases.',
+                default => null,
+            },
+            $style['signature'] !== null
+                ? "- Quand tu ouvres ou conclus un échange, termine ton message par la signature « {$style['signature']} », seule sur la dernière ligne. Pas dans les autres messages."
+                : null,
+        ]);
+
+        if ($settings !== []) {
+            $block .= "\n\n# Réglages du gérant (priment sur le profil appris et sur les règles de style ci-dessus)\n"
+                .implode("\n", $settings);
+        }
+
+        return $block;
     }
 
     /**

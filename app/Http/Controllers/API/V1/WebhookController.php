@@ -8,10 +8,12 @@ use App\Models\Business;
 use App\Models\BusinessMedia;
 use App\Models\Conversation;
 use App\Models\Escalation;
+use App\Models\ManagerReply;
 use App\Models\Message;
 use App\Models\Notification;
 use App\Services\AI\AIResponseService;
 use App\Services\AI\LearningService;
+use App\Services\AI\ManagerReplyService;
 use App\Services\Billing\UsageService;
 use App\Services\WhatsApp\WhatsAppAccountService;
 use App\Services\WhatsApp\WhatsAppService;
@@ -41,6 +43,7 @@ class WebhookController extends Controller
         private readonly LearningService $learningService,
         private readonly WhatsAppAccountService $accounts,
         private readonly UsageService $usage,
+        private readonly ManagerReplyService $managerReplies,
     ) {}
 
     /**
@@ -384,13 +387,15 @@ class WebhookController extends Controller
                     'customer_phone' => $to,
                 ]);
 
-                $conversation->messages()->create([
+                $message = $conversation->messages()->create([
                     'direction' => 'outbound',
                     'sender_type' => 'human',
                     'content' => $text,
                     'status' => 'answered_by_human',
                     'whatsapp_message_id' => $messageId,
                 ]);
+
+                $this->managerReplies->record($business, $message, ManagerReply::SOURCE_ECHO);
 
                 // Une erreur d'apprentissage ne doit pas bloquer les échos suivants.
                 try {

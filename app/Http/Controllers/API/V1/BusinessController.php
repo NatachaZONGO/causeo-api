@@ -58,6 +58,7 @@ class BusinessController extends Controller
         $business->loadCount([
             'documents',
             'conversations',
+            'managerReplies',
             'escalations as pending_escalations_count' => fn ($query) => $query->where('status', 'pending'),
         ]);
 
@@ -77,6 +78,11 @@ class BusinessController extends Controller
 
         if (array_key_exists('modules', $data)) {
             $data['modules'] = $this->normalizeModules($data['modules']);
+        }
+
+        // Mise à jour partielle : les réglages absents de la requête sont gardés.
+        if (array_key_exists('reply_style', $data)) {
+            $data['reply_style'] = array_merge($business->reply_style, (array) $data['reply_style']);
         }
 
         $business->update($data);
@@ -134,6 +140,13 @@ class BusinessController extends Controller
             'shipping_enabled' => ['sometimes', 'boolean'],
             'modules' => ['sometimes', 'array'],
             'modules.*' => ['string', Rule::in(Business::MODULES)],
+            // « Style de réponse » : null pour un réglage revient au profil appris.
+            'reply_style' => ['sometimes', 'array:address,emojis,length,signature,learn_from_owner'],
+            'reply_style.address' => ['nullable', Rule::in(Business::REPLY_STYLE_OPTIONS['address'])],
+            'reply_style.emojis' => ['nullable', Rule::in(Business::REPLY_STYLE_OPTIONS['emojis'])],
+            'reply_style.length' => ['nullable', Rule::in(Business::REPLY_STYLE_OPTIONS['length'])],
+            'reply_style.signature' => ['nullable', 'string', 'max:60'],
+            'reply_style.learn_from_owner' => ['sometimes', 'boolean'],
         ];
     }
 
@@ -176,6 +189,13 @@ class BusinessController extends Controller
             'modules.array' => 'Les modules doivent être une liste.',
             'modules.*.string' => 'Chaque module doit être une chaîne de caractères.',
             'modules.*.in' => 'Module inconnu. Modules disponibles : '.implode(', ', Business::MODULES).'.',
+            'reply_style.array' => 'Le style de réponse doit contenir address, emojis, length, signature ou learn_from_owner.',
+            'reply_style.address.in' => 'Choisissez « tu » ou « vous ».',
+            'reply_style.emojis.in' => 'Emojis : never, sometimes ou often.',
+            'reply_style.length.in' => 'Longueur : very_short ou short.',
+            'reply_style.signature.string' => 'La signature doit être un texte.',
+            'reply_style.signature.max' => 'La signature ne doit pas dépasser 60 caractères.',
+            'reply_style.learn_from_owner.boolean' => '« Apprendre de ma façon d\'écrire » doit être activé ou désactivé (vrai ou faux).',
         ];
     }
 }
