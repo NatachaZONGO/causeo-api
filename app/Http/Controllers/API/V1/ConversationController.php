@@ -63,9 +63,11 @@ class ConversationController extends Controller
         abort_if(! $isOwner && ! auth()->user()?->is_admin, 403, 'Cette entreprise ne vous appartient pas.');
 
         $data = $request->validate([
-            'before' => ['nullable', 'string', 'max:64'],
+            // uuid : sous PostgreSQL, une autre valeur ferait échouer la requête (erreur 500).
+            'before' => ['nullable', 'uuid'],
             'limit' => ['nullable', 'integer', 'min:1', 'max:100'],
         ], [
+            'before.uuid' => 'Identifiant de message invalide.',
             'limit.max' => 'Au plus 100 messages par page.',
         ]);
 

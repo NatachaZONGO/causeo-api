@@ -16,7 +16,7 @@ final class ConversationListQuery
 {
     public const FILTERS = ['all', 'unread', 'pending', 'orders'];
 
-    /** Colonnes du dernier message (préfixées : latestOfMany joint messages à lui-même). */
+    /** Colonnes du dernier message (préfixées : sa sous-requête relit la table messages). */
     private const LATEST_MESSAGE_COLUMNS = 'latestMessage:messages.id,messages.conversation_id,messages.direction,messages.sender_type,messages.content,messages.metadata,messages.created_at';
 
     /**

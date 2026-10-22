@@ -11,6 +11,10 @@
         <testsuite name="Feature">
             <directory>tests/Feature</directory>
         </testsuite>
+        <!-- Ignorés sauf avec CAUSEO_PGSQL_TESTS=true et DB_CONNECTION=pgsql (voir tests/Postgres/PostgresTestCase.php). -->
+        <testsuite name="Postgres">
+            <directory>tests/Postgres</directory>
+        </testsuite>
     </testsuites>
     <source>
         <include>

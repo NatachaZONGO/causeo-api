@@ -85,12 +85,23 @@ class Conversation extends Model
     }
 
     /**
-     * Le message le plus récent de la conversation.
+     * Le message le plus récent de la conversation (created_at, puis id en cas d'égalité).
+     *
+     * Pas de latestOfMany : il départage les égalités avec MAX(messages.id), qui n'existe
+     * pas pour un uuid sous PostgreSQL (« function max(uuid) does not exist »). Une
+     * sous-requête corrélée par message chargé, et une seule requête pour toute la page.
      *
      * @return HasOne<Message>
      */
     public function latestMessage(): HasOne
     {
-        return $this->hasOne(Message::class)->latestOfMany('created_at');
+        return $this->hasOne(Message::class)->where('messages.id', function ($query) {
+            $query->select('latest.id')
+                ->from('messages as latest')
+                ->whereColumn('latest.conversation_id', 'messages.conversation_id')
+                ->orderByDesc('latest.created_at')
+                ->orderByDesc('latest.id')
+                ->limit(1);
+        });
     }
 }

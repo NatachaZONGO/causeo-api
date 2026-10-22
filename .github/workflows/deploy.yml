@@ -57,9 +57,70 @@ jobs:
           cp .env.example .env
           php artisan key:generate --quiet
 
-      # phpunit.xml : SQLite en mémoire, mailer array, file sync.
+      # phpunit.xml : SQLite en mémoire, mailer array, file sync. La suite Postgres est ignorée ici.
       - name: Tests
         run: php artisan test
+
+  # Ce que SQLite accepte et PostgreSQL refuse (MAX(uuid), chemins JSON, pgvector,
+  # contraintes CHECK) : listes et requêtes complexes sur un vrai PostgreSQL, avec les
+  # vraies migrations (tests/Postgres).
+  tests-pgsql:
+    name: Tests (PHP 8.2, PostgreSQL + pgvector)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: causeo
+          POSTGRES_PASSWORD: causeo
+          POSTGRES_DB: causeo_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U causeo -d causeo_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    # Prioritaires sur phpunit.xml (ses <env> ne remplacent pas une variable déjà définie).
+    env:
+      CAUSEO_PGSQL_TESTS: 'true'
+      DB_CONNECTION: pgsql
+      DB_HOST: 127.0.0.1
+      DB_PORT: 5432
+      DB_DATABASE: causeo_test
+      DB_USERNAME: causeo
+      DB_PASSWORD: causeo
+      DB_SSLMODE: disable
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          extensions: mbstring, xml, curl, zip, bcmath, intl, pdo_pgsql, pgsql, pcntl
+          coverage: none
+
+      - name: Cache Composer
+        uses: actions/cache@v4
+        with:
+          path: ~/.composer/cache/files
+          key: composer-${{ hashFiles('composer.lock') }}
+          restore-keys: composer-
+
+      - name: Dépendances
+        run: composer install --prefer-dist --no-interaction --no-progress
+
+      - name: Environnement de test
+        run: |
+          cp .env.example .env
+          php artisan key:generate --quiet
+
+      - name: Tests PostgreSQL
+        run: php artisan test --testsuite=Postgres
 
   deploy:
     name: Déploiement sur le VPS
