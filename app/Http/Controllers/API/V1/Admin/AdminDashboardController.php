@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\API\V1\Admin;
 
+use App\Http\Controllers\API\V1\ConversationController;
 use App\Http\Controllers\Controller;
 use App\Models\Business;
 use App\Models\Conversation;
@@ -12,6 +13,7 @@ use App\Models\Plan;
 use App\Models\Subscription;
 use App\Models\User;
 use App\Services\Billing\BillingService;
+use App\Services\Conversations\ConversationListQuery;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -212,14 +214,15 @@ class AdminDashboardController extends Controller
     }
 
     /**
-     * Lister toutes les conversations de toutes les entreprises.
+     * Lister toutes les conversations de toutes les entreprises : mêmes recherche (q, ou
+     * search) et filtres que la liste du gérant, plus business_id.
      */
     public function conversations(Request $request): JsonResponse
     {
+        $data = ConversationController::validateList($request);
+
         $query = Conversation::query()
             ->with('business:id,name')
-            // Colonnes préfixées : latestOfMany joint messages à lui-même (sinon « ambiguous column »).
-            ->with('latestMessage:messages.id,messages.conversation_id,messages.content,messages.created_at')
             ->withCount([
                 'escalations as pending_escalations_count' => fn ($q) => $q->where('status', 'pending'),
             ]);
@@ -228,15 +231,9 @@ class AdminDashboardController extends Controller
             $query->where('business_id', $request->input('business_id'));
         }
 
-        if ($request->filled('search')) {
-            $search = $request->input('search');
-            $query->where(function ($q) use ($search) {
-                $q->where('customer_name', 'like', "%{$search}%")
-                    ->orWhere('customer_phone', 'like', "%{$search}%");
-            });
-        }
-
-        $conversations = $query->latest('last_message_at')->paginate(15);
+        $search = $data['q'] ?? $request->input('search');
+        $conversations = ConversationListQuery::apply($query, is_string($search) ? $search : null, $data['filter'] ?? null)
+            ->paginate(30);
 
         // Champs attendus par la liste admin, tirés de ce qui est déjà chargé (pas de requête en plus).
         $conversations->getCollection()->each(function (Conversation $conversation) {

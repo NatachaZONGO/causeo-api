@@ -25,6 +25,7 @@ class Conversation extends Model
         'whatsapp_conversation_id',
         'is_active',
         'last_message_at',
+        'last_read_at',
     ];
 
     /**
@@ -37,6 +38,7 @@ class Conversation extends Model
         return [
             'is_active' => 'boolean',
             'last_message_at' => 'datetime',
+            'last_read_at' => 'datetime',
         ];
     }
 
@@ -62,6 +64,24 @@ class Conversation extends Model
     public function escalations(): HasMany
     {
         return $this->hasMany(Escalation::class);
+    }
+
+    /**
+     * Commandes passées dans cette conversation.
+     *
+     * @return HasMany<Order>
+     */
+    public function orders(): HasMany
+    {
+        return $this->hasMany(Order::class);
+    }
+
+    /**
+     * Le gérant a lu la conversation : ses messages entrants ne sont plus « non lus ».
+     */
+    public function markAsRead(): void
+    {
+        $this->forceFill(['last_read_at' => now()])->save();
     }
 
     /**

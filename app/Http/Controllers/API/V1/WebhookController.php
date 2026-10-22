@@ -421,6 +421,9 @@ class WebhookController extends Controller
                     $this->managerReplies->record($business, $message, ManagerReply::SOURCE_ECHO);
                 }
 
+                // Réponse depuis son téléphone : le gérant a lu la conversation.
+                $conversation->markAsRead();
+
                 // Une erreur d'apprentissage ne doit pas bloquer les échos suivants.
                 try {
                     $this->learningService->answerPendingEscalation($conversation, $text, learn: ! $isAudio);

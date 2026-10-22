@@ -11,6 +11,9 @@ class AdminAccessLog extends Model
 {
     public const VOICE_MESSAGE_LISTENED = 'voice_message_listened';
 
+    /** Ouverture d'une conversation (journalisée au plus une fois par période, voir ConversationController). */
+    public const CONVERSATION_VIEWED = 'conversation_viewed';
+
     /** Une entrée de journal ne change jamais : pas de updated_at. */
     public const UPDATED_AT = null;
 
@@ -22,5 +25,6 @@ class AdminAccessLog extends Model
         'action',
         'message_id',
         'business_id',
+        'conversation_id',
     ];
 }

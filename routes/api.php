@@ -67,6 +67,7 @@ Route::prefix('v1')->middleware('auth:sanctum')->group(function () {
     Route::get('businesses/{business}/conversations', [ConversationController::class, 'index']);
     Route::get('conversations/{conversation}', [ConversationController::class, 'show']);
     Route::post('conversations/{conversation}/reply', [ConversationController::class, 'manualReply']);
+    Route::post('conversations/{conversation}/read', [ConversationController::class, 'read']);
     Route::get('messages/{message}/audio', [\App\Http\Controllers\API\V1\MessageAudioController::class, 'show']);
     Route::post('escalations/{escalation}/resolve', [\App\Http\Controllers\API\V1\EscalationController::class, 'resolve']);
 
