@@ -5,6 +5,9 @@ namespace App\Services;
 use App\Models\Business;
 use App\Models\Conversation;
 use App\Models\Order;
+use App\Models\ProductVariant;
+use App\Services\Catalog\CatalogService;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use InvalidArgumentException;
 
@@ -12,12 +15,15 @@ class OrderService
 {
     public function __construct(
         private readonly NotificationService $notificationService,
+        private readonly CatalogService $catalog,
     ) {
     }
 
     /**
      * Créer une commande à partir des données de l'outil create_order.
-     * Le total est toujours recalculé ici à partir des articles.
+     * Le total est toujours recalculé ici à partir des articles. Une ligne avec variant_id
+     * (module Catalogue) prend le nom, les options et le prix du catalogue, est refusée en
+     * rupture, et sort du stock dans la même transaction que la création de la commande.
      *
      * @param  array<string, mixed>  $input
      *
@@ -25,7 +31,7 @@ class OrderService
      */
     public function createFromAi(Business $business, Conversation $conversation, array $input): Order
     {
-        $items = $this->normalizeItems($input['items'] ?? null);
+        $items = $this->normalizeItems($input['items'] ?? null, $business->hasModule('catalog') ? $business : null);
 
         $fulfillmentType = $this->string($input['fulfillment_type'] ?? null);
         $enabled = $business->enabledFulfillmentTypes();
@@ -82,7 +88,7 @@ class OrderService
             return $duplicate;
         }
 
-        $order = Order::create([
+        $order = DB::transaction(fn () => tap(Order::create([
             'business_id' => $business->id,
             'conversation_id' => $conversation->id,
             'customer_phone' => $conversation->customer_phone,
@@ -96,7 +102,7 @@ class OrderService
             'pickup_time' => $isPickup ? $this->string($input['pickup_time'] ?? null) : null,
             'status' => 'new',
             'notes' => $this->string($input['notes'] ?? null),
-        ]);
+        ]), fn (Order $order) => $this->catalog->reserveForOrder($order)));
 
         $this->notificationService->notifyOrder($order);
 
@@ -115,9 +121,10 @@ class OrderService
     }
 
     /**
-     * @return array<int, array{name: string, options: ?string, quantity: int, unit_price: float}>
+     * @param  ?Business  $catalogBusiness  business dont le catalogue fait foi (module actif), sinon null
+     * @return array<int, array{name: string, options: ?string, quantity: int, unit_price: float, variant_id?: string}>
      */
-    private function normalizeItems(mixed $items): array
+    private function normalizeItems(mixed $items, ?Business $catalogBusiness = null): array
     {
         if (! is_array($items) || $items === []) {
             throw new InvalidArgumentException('La commande doit contenir au moins un article.');
@@ -130,6 +137,16 @@ class OrderService
             $name = is_array($item) ? $this->string($item['name'] ?? null) : null;
             $quantity = is_array($item) ? ($item['quantity'] ?? null) : null;
             $unitPrice = is_array($item) ? ($item['unit_price'] ?? null) : null;
+
+            $variant = $catalogBusiness !== null && is_array($item) && ! empty($item['variant_id'])
+                ? $this->catalogVariant($catalogBusiness, (string) $item['variant_id'], $position)
+                : null;
+
+            if ($variant !== null) {
+                // Le catalogue fait foi : nom, options et prix de la variante.
+                $name = $variant->product->name;
+                $unitPrice = $variant->effective_price;
+            }
 
             if ($name === null) {
                 throw new InvalidArgumentException("Article {$position} : le nom est manquant.");
@@ -148,13 +165,43 @@ class OrderService
 
             $normalized[] = [
                 'name' => $name,
-                'options' => $this->string($options),
+                'options' => $variant !== null ? ($this->string($variant->optionsLabel()) ?? $this->string($options)) : $this->string($options),
                 'quantity' => (int) $quantity,
                 'unit_price' => (float) $unitPrice,
-            ];
+            ] + ($variant !== null ? ['variant_id' => $variant->id] : []);
         }
 
         return $normalized;
+    }
+
+    /**
+     * Variante du catalogue du business, en vente et pas en rupture.
+     *
+     * @throws InvalidArgumentException message destiné à l'IA
+     */
+    private function catalogVariant(Business $business, string $variantId, int $position): ProductVariant
+    {
+        $variant = ProductVariant::query()
+            ->with('product')
+            ->whereKey($variantId)
+            ->whereHas('product', fn ($query) => $query->where('business_id', $business->id))
+            ->first();
+
+        if ($variant === null) {
+            throw new InvalidArgumentException("Article {$position} : variant_id inconnu. Utilise uniquement un variant_id renvoyé par search_catalog.");
+        }
+
+        $label = trim($variant->product->name.' '.$variant->optionsLabel());
+
+        if (! $variant->product->is_active) {
+            throw new InvalidArgumentException("Article {$position} : « {$label} » n'est plus en vente. Propose un autre article (search_catalog).");
+        }
+
+        if ($variant->availability === ProductVariant::OUT_OF_STOCK) {
+            throw new InvalidArgumentException("Article {$position} : « {$label} » est en rupture de stock. Ne l'enregistre pas : propose une autre variante ou un article proche (search_catalog).");
+        }
+
+        return $variant;
     }
 
     /**

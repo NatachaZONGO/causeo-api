@@ -7,6 +7,7 @@ use App\Models\Appointment;
 use App\Models\Escalation;
 use App\Models\Notification;
 use App\Models\Order;
+use App\Models\ProductVariant;
 use App\Services\WhatsApp\OwnerAlertService;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Mail;
@@ -117,6 +118,63 @@ class NotificationService
             // Le message d'une erreur d'envoi peut contenir l'adresse : on ne garde que sa classe.
             Log::error('NotificationService::emailMediaEscalation a échoué', [
                 'escalation_id' => $escalation->id,
+                'exception' => $e::class,
+            ]);
+        }
+    }
+
+    /**
+     * Prévenir le gérant qu'une variante passe sous son seuil ($level low_stock) ou en
+     * rupture (out_of_stock) : la cloche, et un e-mail s'il l'a demandé (stock_alert_email).
+     * Une alerte non lue pour la même variante est mise à jour au lieu d'être dupliquée.
+     */
+    public function notifyStock(ProductVariant $variant, string $level): void
+    {
+        try {
+            $variant->loadMissing('product.business.user');
+            $product = $variant->product;
+            $business = $product->business;
+            $label = trim($product->name.($variant->optionsLabel() !== '' ? " ({$variant->optionsLabel()})" : ''));
+            $out = $level === ProductVariant::OUT_OF_STOCK;
+            $count = (int) $variant->stock_quantity;
+
+            $attributes = [
+                'title' => $out ? "Rupture de stock : {$product->name}" : "Stock faible : {$product->name}",
+                'body' => $out ? "{$label} : plus aucune pièce en stock." : "{$label} : il reste {$count} pièce".($count > 1 ? 's' : '').'.',
+                'data' => [
+                    'kind' => 'stock',
+                    'level' => $level,
+                    'product_id' => $product->id,
+                    'variant_id' => $variant->id,
+                    'action_path' => '/dashboard/catalog?product='.$product->id,
+                ],
+            ];
+
+            $existing = Notification::query()
+                ->where('business_id', $business->id)
+                ->where('type', 'stock')
+                ->whereNull('read_at')
+                ->where('data->variant_id', $variant->id)
+                ->first();
+
+            if ($existing !== null) {
+                $existing->fill($attributes)->save();
+            } else {
+                Notification::create($attributes + ['business_id' => $business->id, 'type' => 'stock']);
+            }
+
+            $email = $business->user?->email;
+            if ($business->stock_alert_email && ! empty($email)) {
+                Mail::to($email)->queue(new OwnerNotificationMail(
+                    $attributes['title'],
+                    [$attributes['body'], $out ? "L'assistant indique aux clients que l'article est en rupture." : "L'assistant indique aux clients qu'il reste les dernières pièces."],
+                    'Voir le catalogue',
+                    rtrim((string) config('app.frontend_url'), '/').$attributes['data']['action_path'],
+                ));
+            }
+        } catch (Throwable $e) {
+            Log::error('NotificationService::notifyStock a échoué', [
+                'variant_id' => $variant->id,
                 'exception' => $e::class,
             ]);
         }

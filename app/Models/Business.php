@@ -22,7 +22,7 @@ class Business extends Model
     use HasFactory, HasUuids;
 
     /** Modules activables par entreprise. */
-    public const MODULES = ['orders', 'appointments'];
+    public const MODULES = ['orders', 'appointments', 'catalog'];
 
     /** Tutoiement ou vouvoiement des clients (Mon entreprise) : « vous » sauf choix contraire du gérant. */
     public const TONES = ['vous', 'tu'];
@@ -88,6 +88,7 @@ class Business extends Model
         'voice_fallback_message',
         'brand_color',
         'logo_path',
+        'stock_alert_email',
     ];
 
     /**
@@ -133,6 +134,7 @@ class Business extends Model
             'style_profile' => 'array',
             'style_profile_updated_at' => 'datetime',
             'voice_fallback_reply' => 'boolean',
+            'stock_alert_email' => 'boolean',
         ];
     }
 
@@ -355,6 +357,16 @@ class Business extends Model
     public function appointments(): HasMany
     {
         return $this->hasMany(Appointment::class);
+    }
+
+    /**
+     * Articles du catalogue (module « catalog »).
+     *
+     * @return HasMany<Product, $this>
+     */
+    public function products(): HasMany
+    {
+        return $this->hasMany(Product::class);
     }
 
     /**

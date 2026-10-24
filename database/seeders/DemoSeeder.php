@@ -11,6 +11,7 @@ use App\Models\Order;
 use App\Models\Plan;
 use App\Models\User;
 use App\Services\Billing\BillingService;
+use App\Services\Catalog\CatalogService;
 use App\Services\Embedding\EmbeddingService;
 use Carbon\CarbonImmutable;
 use Illuminate\Database\Seeder;
@@ -21,7 +22,7 @@ use Throwable;
 
 /**
  * Données de démonstration pour la base de développement (causeo-dev) : une boutique de
- * mode avec commandes et une coiffure avec rendez-vous, chacune avec son catalogue et
+ * mode avec catalogue, stock et commandes, et une coiffure avec rendez-vous, chacune avec son catalogue et
  * des conversations. Relancer le seeder remplace ces données (comptes @demo.causeo.test).
  * Jamais en production.
  */
@@ -62,7 +63,7 @@ class DemoSeeder extends Seeder
             'city' => 'Ouagadougou',
             'address' => 'Avenue Kwame Nkrumah, à côté de la pharmacie du Progrès',
             'opening_hours' => ['lundi-samedi' => '9h - 20h', 'dimanche' => 'fermé'],
-            'modules' => ['orders'],
+            'modules' => ['orders', 'catalog'],
             'delivery_enabled' => true,
             'pickup_enabled' => true,
             'shipping_enabled' => false,
@@ -74,6 +75,19 @@ class DemoSeeder extends Seeder
             "Chemise homme en lin, manches courtes : 9 000 FCFA. Tailles M, L, XL. Couleurs : blanc, beige, bleu ciel.\nChemise en Faso Dan Fani : 11 500 FCFA. Tailles M à XXL.\nPagne wax 6 yards : 7 500 FCFA.",
             "Livraison à Ouagadougou : 1 000 FCFA, sous 24 h. Retrait gratuit à la boutique.\nPaiement : Orange Money, Moov Money ou espèces au retrait.\nRetouche de taille offerte dans les 7 jours avec le ticket.",
         ]);
+
+        // Catalogue et stock : quelques variantes en stock faible ou en rupture.
+        $catalog = app(CatalogService::class);
+        $robe = $catalog->saveProduct($business, ['name' => 'Robe wax Awa', 'category' => 'Robes', 'description' => 'Robe longue en wax rouge et jaune.', 'base_price' => 12500]);
+        $catalog->generateVariants($robe, ['taille' => ['38', '40', '42', '44', '46']], ['stock_quantity' => 4]);
+        $robe->variants()->get()->each(fn ($variant) => match ($variant->options['taille']) {
+            '42' => $catalog->setStock($variant, 1),
+            '46' => $catalog->setStock($variant, 0),
+            default => null,
+        });
+        $chemise = $catalog->saveProduct($business, ['name' => 'Chemise homme en lin', 'category' => 'Chemises', 'description' => 'Manches courtes.', 'base_price' => 9000]);
+        $catalog->generateVariants($chemise, ['taille' => ['M', 'L', 'XL'], 'couleur' => ['blanc', 'beige', 'bleu ciel']], ['stock_quantity' => 3]);
+        $catalog->saveProduct($business, ['name' => 'Pagne wax 6 yards', 'category' => 'Pagnes', 'base_price' => 7500]);
 
         $now = CarbonImmutable::now();
 

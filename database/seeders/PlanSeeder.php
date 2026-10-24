@@ -33,7 +33,7 @@ class PlanSeeder extends Seeder
         $allModules = Business::MODULES;
         $available = 'Votre vendeuse disponible 24 h/24';
         $learning = 'L\'assistant apprend de vos réponses';
-        $modules = 'Commandes et rendez-vous pris directement sur WhatsApp';
+        $modules = 'Commandes, rendez-vous et catalogue avec stock, directement sur WhatsApp';
 
         $plans = [
             [

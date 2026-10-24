@@ -205,6 +205,25 @@ class MediaMessageTest extends TestCase
         $this->assertSame(1, app(UsageService::class)->repliesSince($this->business, now()->subDay()));
     }
 
+    public function test_catalog_products_join_the_illustrated_catalog_for_customer_photos(): void
+    {
+        $this->business->update(['modules' => ['orders', 'catalog']]);
+        $mediaId = DB::table('business_media')->value('id');
+        app(\App\Services\Catalog\CatalogService::class)->saveProduct($this->business->fresh(), ['name' => 'Robe wax Awa', 'base_price' => 12500, 'media_ids' => [$mediaId]], null, [
+            ['options' => ['taille' => '42'], 'stock_quantity' => 1],
+        ]);
+        $this->files['MEDIA-1'] = ['image/jpeg', $this->jpeg(400, 300)];
+
+        $this->receive('wamid.IMG1', 'image', ['id' => 'MEDIA-1', 'mime_type' => 'image/jpeg']);
+
+        $request = $this->claudeRequests()[0];
+        $this->assertContains('search_catalog', array_column($request['tools'], 'name'));
+        $this->assertStringContainsString(
+            "(id: {$mediaId}, type: image) → article du catalogue « Robe wax Awa », 12 500 FCFA, dernières pièces",
+            end($request['messages'])['content'][1]['text'],
+        );
+    }
+
     public function test_photos_sent_in_a_row_are_shown_together_in_one_reply(): void
     {
         Queue::fake([ReplyToCustomer::class, SendCustomerReply::class]);

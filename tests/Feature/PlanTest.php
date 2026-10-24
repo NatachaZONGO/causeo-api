@@ -26,9 +26,9 @@ class PlanTest extends TestCase
 
         $this->assertPlan($plans['free'], 0, null, 10, 'day', 1, [], false, true);
         $this->assertPlan($plans['starter'], 9900, 30, 750, 'period', null, [], true, true);
-        $this->assertPlan($plans['pro'], 19900, 30, 2000, 'period', null, ['orders', 'appointments'], true, true);
-        $this->assertPlan($plans['business'], 44900, 30, 6000, 'period', null, ['orders', 'appointments'], true, true);
-        $this->assertPlan($plans['internal'], 0, null, null, null, null, ['orders', 'appointments'], true, false);
+        $this->assertPlan($plans['pro'], 19900, 30, 2000, 'period', null, ['orders', 'appointments', 'catalog'], true, true);
+        $this->assertPlan($plans['business'], 44900, 30, 6000, 'period', null, ['orders', 'appointments', 'catalog'], true, true);
+        $this->assertPlan($plans['internal'], 0, null, null, null, null, ['orders', 'appointments', 'catalog'], true, false);
 
         $this->assertTrue($plans['pro']->allowsModule('orders'));
         $this->assertFalse($plans['free']->allowsModule('orders'));
@@ -63,7 +63,7 @@ class PlanTest extends TestCase
         $this->assertSame([
             "Jusqu'à 66 h économisées par mois (2 000 unités)",
             'Votre vendeuse disponible 24 h/24',
-            'Commandes et rendez-vous pris directement sur WhatsApp',
+            'Commandes, rendez-vous et catalogue avec stock, directement sur WhatsApp',
             "L'assistant apprend de vos réponses",
             'Documents illimités',
         ], $plans['pro']->features);
@@ -71,7 +71,7 @@ class PlanTest extends TestCase
         $this->assertSame("Jusqu'à 10 h économisées par mois (10 unités par jour)", $plans['free']->features[0]);
         $this->assertSame("Jusqu'à 25 h économisées par mois (750 unités)", $plans['starter']->features[0]);
         $this->assertSame("Jusqu'à 200 h économisées par mois (6 000 unités)", $plans['business']->features[0]);
-        $this->assertNotContains('Commandes et rendez-vous pris directement sur WhatsApp', $plans['starter']->features);
+        $this->assertNotContains('Commandes, rendez-vous et catalogue avec stock, directement sur WhatsApp', $plans['starter']->features);
     }
 
     public function test_seeder_is_idempotent_and_restores_edited_values(): void
@@ -124,7 +124,7 @@ class PlanTest extends TestCase
             ->assertJsonPath('plans.2.daily_price_fcfa', 663.33)
             ->assertJsonPath('plans.2.highlight_daily_price', true)
             ->assertJsonPath('plans.2.badge', 'Le plus choisi')
-            ->assertJsonPath('plans.2.modules', ['orders', 'appointments']);
+            ->assertJsonPath('plans.2.modules', ['orders', 'appointments', 'catalog']);
         $this->assertEquals(330, $response->json('plans.1.daily_price_fcfa'));
     }
 

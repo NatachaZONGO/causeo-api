@@ -89,7 +89,7 @@ Mot de passe de tous les comptes : `demo1234`.
 
 | Compte | Business |
 |---|---|
-| `boutique@demo.causeo.test` | **Awa Couture** : boutique de mode (wax, Faso Dan Fani, lin), module Commandes, livraison et retrait. Catalogue avec prix, 3 conversations, une commande en cours, une commande livrée, une escalade en attente. |
+| `boutique@demo.causeo.test` | **Awa Couture** : boutique de mode (wax, Faso Dan Fani, lin), modules Commandes et Catalogue, livraison et retrait. Catalogue avec variantes (tailles, couleurs) et stock, dont une taille en stock faible et une en rupture, document de prix, 3 conversations, une commande en cours, une commande livrée, une escalade en attente. |
 | `coiffure@demo.causeo.test` | **Salon Belle Tresse** : coiffure, module Rendez-vous. Prestations et tarifs, 3 conversations, une demande de rendez-vous à confirmer, un rendez-vous confirmé. |
 | `admin@demo.causeo.test` | administrateur Causeo (pages admin du dashboard) |
 

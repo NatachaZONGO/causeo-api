@@ -6,8 +6,10 @@ use App\Models\Appointment;
 use App\Models\Business;
 use App\Models\Conversation;
 use App\Models\Order;
+use App\Models\ProductVariant;
 use App\Services\Embedding\EmbeddingService;
 use App\Services\AppointmentService;
+use App\Services\Catalog\CatalogService;
 use App\Services\OrderService;
 use App\Services\WhatsApp\MediaMessage;
 use Carbon\CarbonImmutable;
@@ -27,7 +29,7 @@ class AIResponseService
     private const HISTORY_MAX_MESSAGES = 20;
 
     /** Nombre maximal d'allers-retours tool_use / tool_result par réponse. */
-    private const MAX_TOOL_ROUNDS = 3;
+    private const MAX_TOOL_ROUNDS = 4;
 
     /** Tokens consommés pendant une réponse, additionnés sur tous les appels à Claude. */
     private const EMPTY_USAGE = [
@@ -60,6 +62,8 @@ class AIResponseService
     private array $vectors = [];
 
     private readonly ManagerReplyService $managerReplies;
+
+    private readonly CatalogService $catalog;
 
     /** Sections du prompt système : personnalité, langue, style, remerciements. */
     private const STYLE_SECTIONS = [
@@ -130,6 +134,33 @@ TEXT;
     /** Médias du business listés comme catalogue quand le client envoie une photo. */
     private const PHOTO_CATALOG_LIMIT = 30;
 
+    /** Consignes quand le catalogue est disponible (outil search_catalog). */
+    private const CATALOG_INSTRUCTIONS = <<<'TEXT'
+# Catalogue et stock
+Le catalogue de la boutique se consulte avec l'outil search_catalog. Il fait foi pour les articles, les prix et la disponibilité : il prime sur les documents du contexte et sur l'historique.
+1. Dès que le client parle d'un article, d'un prix, d'une taille, d'une couleur ou d'une disponibilité, appelle search_catalog (avec les filtres utiles) avant de répondre.
+2. N'annonce que ce que renvoie l'outil : le nom, le prix et la disponibilité (« disponible », « dernières pièces », « en rupture »). Ne donne jamais un nombre de pièces en stock.
+3. En rupture : dis-le simplement et propose une autre variante disponible du même article, ou un article proche renvoyé par l'outil.
+4. Si l'outil ne renvoie rien, l'article n'est pas au catalogue : ne l'invente pas ; pose une question pour préciser, ou applique la règle d'escalade.
+TEXT;
+
+    /** Outil de recherche dans le catalogue (module « catalog »). */
+    private const SEARCH_CATALOG_TOOL = [
+        'name' => 'search_catalog',
+        'description' => 'Cherche des articles dans le catalogue de la boutique. Renvoie les articles correspondants avec leurs variantes (options comme la taille ou la couleur), leur prix en FCFA et leur disponibilité (disponible, dernières pièces, en rupture), et le variant_id à utiliser pour une commande.',
+        'input_schema' => [
+            'type' => 'object',
+            'properties' => [
+                'query' => ['type' => 'string', 'description' => 'Ce que cherche le client, en quelques mots (par exemple « robe wax rouge », « chemise lin »).'],
+                'size' => ['type' => 'string', 'description' => 'Taille ou pointure demandée, facultatif.'],
+                'color' => ['type' => 'string', 'description' => 'Couleur demandée, facultatif.'],
+                'category' => ['type' => 'string', 'description' => 'Catégorie, facultatif.'],
+                'max_price' => ['type' => 'number', 'description' => 'Prix maximal en FCFA, facultatif.'],
+            ],
+            'required' => ['query'],
+        ],
+    ];
+
     /** Message d'attente envoyé quand une réponse est bloquée puis escaladée. */
     private const WAITING_MESSAGE = 'Je vérifie ça et je reviens vers vous très vite 😊';
 
@@ -145,9 +176,11 @@ TEXT;
         private readonly OrderService $orderService,
         private readonly AppointmentService $appointmentService,
         ?ManagerReplyService $managerReplies = null,
+        ?CatalogService $catalog = null,
     ) {
         $this->model = config('services.anthropic.model', 'claude-haiku-4-5-20251001');
         $this->managerReplies = $managerReplies ?? app(ManagerReplyService::class);
+        $this->catalog = $catalog ?? app(CatalogService::class);
     }
 
     /**
@@ -221,10 +254,17 @@ TEXT;
             // Commandes et rendez-vous ne sont possibles que dans une vraie conversation
             // client, avec le module correspondant actif (et au moins un mode de remise
             // proposé pour les commandes).
+            // Le catalogue (module « catalog » et au moins un article actif) se consulte aussi hors conversation.
+            $catalogAvailable = $this->catalog->isAvailable($business);
+
             $tools = [];
             if ($conversation !== null && $business->hasModule('orders') && $business->enabledFulfillmentTypes() !== []) {
-                $stablePrompt .= "\n\n".$this->orderInstructions($business);
-                $tools[] = $this->createOrderTool($business);
+                $stablePrompt .= "\n\n".$this->orderInstructions($business, $catalogAvailable);
+                $tools[] = $this->createOrderTool($business, $catalogAvailable);
+            }
+            if ($catalogAvailable) {
+                $stablePrompt .= "\n\n".self::CATALOG_INSTRUCTIONS;
+                $tools[] = self::SEARCH_CATALOG_TOOL;
             }
             $appointmentsAvailable = $conversation !== null && $business->hasModule('appointments');
             if ($appointmentsAvailable) {
@@ -281,6 +321,7 @@ TEXT;
                     ."réponds naturellement et chaleureusement. "
                     ."Les informations déjà données dans l'historique de cette conversation (par exemple un récapitulatif de commande) restent valables. "
                     ."Si le client pose une question technique ou spécifique sur un produit / service / prix / horaire "
+                    .($catalogAvailable ? "que l'outil search_catalog ne trouve pas non plus (appelle-le d'abord pour tout article ou prix), " : '')
                     ."que tu ne connais pas, ne confirme rien et n'infirme rien : réponds par un message d'attente court, "
                     ."par exemple « Je vérifie ça et je reviens vers vous très vite 😊 », sans mentionner d'équipe, "
                     ."de responsable ni de transmission, puis ajoute JE_NE_SAIS_PAS seul sur la dernière ligne.";
@@ -288,9 +329,12 @@ TEXT;
                 $userMessage = $question;
             }
 
+            // Photos des articles du catalogue : la photo du client peut y être reconnue.
+            $productsByMedia = $withPhotos && $catalogAvailable ? $this->catalogProductsByMedia($business) : [];
+
             if ($media->isNotEmpty()) {
                 $mediaList = $withPhotos
-                    ? $media->map(fn ($m) => '- '.$this->catalogLine($m))->implode("\n")
+                    ? $media->map(fn ($m) => '- '.$this->catalogLine($m, $productsByMedia))->implode("\n")
                     : $media->map(fn ($m) => "{$m->title} (id: {$m->id}, type: {$m->type})")->implode(', ');
                 $userMessage .= $withPhotos
                     ? "\n\nMédias du business (catalogue illustré), aussi disponibles à envoyer au client :\n{$mediaList}"
@@ -857,6 +901,7 @@ TEXT;
         $available = array_filter([
             'create_order' => $business->hasModule('orders'),
             'create_appointment' => $business->hasModule('appointments'),
+            'search_catalog' => $business->hasModule('catalog'),
         ]);
 
         foreach ($content as $block) {
@@ -874,7 +919,8 @@ TEXT;
                 'fields' => array_keys((array) ($block['input'] ?? [])),
             ]);
 
-            if ($conversation === null || ! isset($available[$tool])) {
+            // Consulter le catalogue ne demande pas de conversation ; enregistrer, si.
+            if (! isset($available[$tool]) || ($conversation === null && $tool !== 'search_catalog')) {
                 $trace['tool_errors'][] = "Outil inconnu : {$tool}.";
                 $results[] = $result + ['content' => "Outil inconnu : {$tool}.", 'is_error' => true];
 
@@ -882,6 +928,23 @@ TEXT;
             }
 
             $input = (array) ($block['input'] ?? []);
+
+            if ($tool === 'search_catalog') {
+                $found = $this->catalog->search($business, (string) ($input['query'] ?? ''), array_intersect_key($input, array_flip(['size', 'color', 'category', 'max_price'])));
+
+                Log::info('AIResponseService: search_catalog', [
+                    'business_id' => $business->id,
+                    'conversation_id' => $conversation?->id,
+                    'filters' => array_keys(array_intersect_key($input, array_flip(['size', 'color', 'category', 'max_price']))),
+                    'results' => count($found),
+                ]);
+
+                $results[] = $result + ['content' => json_encode($found === []
+                    ? ['results' => [], 'note' => "Aucun article du catalogue ne correspond. Ne l'invente pas : pose une question ou applique la règle d'escalade."]
+                    : ['results' => $found], JSON_UNESCAPED_UNICODE)];
+
+                continue;
+            }
 
             try {
                 if ($tool === 'create_order') {
@@ -1009,7 +1072,7 @@ PROMPT;
      *
      * @return array<string, mixed>
      */
-    private function createOrderTool(Business $business): array
+    private function createOrderTool(Business $business, bool $withCatalog = false): array
     {
         return [
             'name' => 'create_order',
@@ -1029,7 +1092,7 @@ PROMPT;
                                 'options' => ['type' => 'string', 'description' => 'Options choisies (taille, couleur…), vide si aucune.'],
                                 'quantity' => ['type' => 'integer', 'minimum' => 1],
                                 'unit_price' => ['type' => 'number', 'minimum' => 0, 'description' => 'Prix unitaire en FCFA, tel qu\'indiqué dans le contexte.'],
-                            ],
+                            ] + ($withCatalog ? ['variant_id' => ['type' => 'string', 'description' => 'Identifiant de la variante renvoyé par search_catalog, pour un article du catalogue (le prix enregistré est alors celui du catalogue).']] : []),
                             'required' => ['name', 'quantity', 'unit_price'],
                         ],
                     ],
@@ -1053,7 +1116,7 @@ PROMPT;
     /**
      * Règles de prise de commande ajoutées au prompt quand l'outil est disponible.
      */
-    private function orderInstructions(Business $business): string
+    private function orderInstructions(Business $business, bool $withCatalog = false): string
     {
         $enabled = $business->enabledFulfillmentTypes();
 
@@ -1085,7 +1148,7 @@ Tu peux enregistrer une commande avec l'outil create_order. Procède ainsi :
 8. La référence d'une commande vient uniquement du résultat de l'outil create_order. N'invente jamais de référence et ne réutilise jamais celle d'une commande précédente pour une nouvelle demande : chaque nouvelle commande passe par un nouveau récapitulatif, une nouvelle confirmation et un nouvel appel à l'outil.
 9. Si un récapitulatif attend encore une réponse du client et qu'il demande autre chose (un autre article, une autre ville, un autre mode de remise…), demande-lui d'abord s'il souhaite ajouter cela à sa commande en cours ou remplacer sa commande, puis refais le récapitulatif en conséquence.
 10. Les notes « [Note système …] » de l'historique sont internes : elles indiquent si une commande a réellement été enregistrée. Ne les recopie jamais au client.
-PROMPT;
+PROMPT.($withCatalog ? "\n11. Pour un article du catalogue, mets dans la ligne le variant_id renvoyé par search_catalog (la variante choisie : taille, couleur…). N'enregistre jamais une variante en rupture." : '');
     }
 
     /**
@@ -1265,15 +1328,51 @@ PROMPT;
         return $business->media()->active()->latest()->limit(self::PHOTO_CATALOG_LIMIT)->get();
     }
 
-    /** « Robe wax rouge — modèle Awa (mots-clés : robe, wax) (id: …, type: image) » */
-    private function catalogLine(object $media): string
+    /**
+     * « Robe wax rouge — modèle Awa (mots-clés : robe, wax) (id: …, type: image) », suivie de
+     * l'article du catalogue que montre cette photo, s'il y en a un.
+     *
+     * @param  array<string, string>  $productsByMedia
+     */
+    private function catalogLine(object $media, array $productsByMedia = []): string
     {
         $keywords = array_filter(array_map('strval', (array) ($media->keywords ?? [])));
 
         return trim((string) $media->title)
             .(! empty($media->description) ? ' — '.trim((string) $media->description) : '')
             .($keywords !== [] ? ' (mots-clés : '.implode(', ', $keywords).')' : '')
-            ." (id: {$media->id}, type: {$media->type})";
+            ." (id: {$media->id}, type: {$media->type})"
+            .(isset($productsByMedia[$media->id]) ? ' → '.$productsByMedia[$media->id] : '');
+    }
+
+    /**
+     * Article du catalogue illustré par chaque média : « article du catalogue « Robe wax Awa »,
+     * 12 500 FCFA, disponible (vérifie la variante avec search_catalog avant de confirmer) ».
+     *
+     * @return array<string, string>
+     */
+    private function catalogProductsByMedia(Business $business): array
+    {
+        $lines = [];
+
+        foreach ($business->products()->where('is_active', true)->whereNotNull('media_ids')->with('variants')->limit(200)->get() as $product) {
+            $prices = $product->variants->map(fn (ProductVariant $variant) => $variant->price ?? $product->base_price);
+            $availabilities = $product->variants->pluck('availability');
+            $availability = match (true) {
+                $availabilities->contains(ProductVariant::AVAILABLE) => 'disponible',
+                $availabilities->contains(ProductVariant::LOW_STOCK) => 'dernières pièces',
+                default => 'en rupture',
+            };
+            $price = $prices->min() === $prices->max()
+                ? number_format((float) $prices->min(), 0, ',', ' ').' FCFA'
+                : 'de '.number_format((float) $prices->min(), 0, ',', ' ').' à '.number_format((float) $prices->max(), 0, ',', ' ').' FCFA';
+
+            foreach ((array) $product->media_ids as $mediaId) {
+                $lines[$mediaId] ??= "article du catalogue « {$product->name} », {$price}, {$availability} (vérifie la variante avec search_catalog avant de confirmer)";
+            }
+        }
+
+        return $lines;
     }
 
     /**

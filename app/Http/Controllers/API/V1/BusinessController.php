@@ -176,6 +176,8 @@ class BusinessController extends Controller
             'voice_fallback_message' => ['nullable', 'string', 'max:300'],
             // Couleur de marque (#RRGGBB) ; le texte à poser dessus est calculé (brand_text_color).
             'brand_color' => ['nullable', 'string', 'regex:/^#[0-9A-Fa-f]{6}$/'],
+            // Catalogue : e-mail en plus de la cloche quand un article passe en stock faible ou en rupture.
+            'stock_alert_email' => ['sometimes', 'boolean'],
         ];
     }
 
@@ -228,6 +230,7 @@ class BusinessController extends Controller
             'voice_fallback_reply.boolean' => 'La réponse aux vocaux non compris, documents et vidéos doit être activée ou désactivée (vrai ou faux).',
             'voice_fallback_message.string' => 'Le message de réponse aux vocaux, documents et vidéos doit être un texte.',
             'voice_fallback_message.max' => 'Le message de réponse aux vocaux, documents et vidéos ne doit pas dépasser 300 caractères.',
+            'stock_alert_email.boolean' => 'Les alertes de stock par e-mail doivent être activées ou désactivées (vrai ou faux).',
             'brand_color.regex' => 'La couleur doit être au format hexadécimal #RRGGBB, par exemple #0F766E.',
             'brand_color.string' => 'La couleur doit être au format hexadécimal #RRGGBB, par exemple #0F766E.',
             'reply_style.learn_from_owner.boolean' => '« Apprendre de ma façon d\'écrire » doit être activé ou désactivé (vrai ou faux).',

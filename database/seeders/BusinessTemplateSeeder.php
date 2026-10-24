@@ -42,7 +42,7 @@ class BusinessTemplateSeeder extends Seeder
                     ['question' => 'Faites-vous des retouches ?', 'answer' => 'Oui, nous proposons un service de retouche sur place.'],
                     ['question' => 'Avez-vous un service de livraison ?', 'answer' => 'Oui, nous livrons à domicile. Contactez-nous pour les détails.'],
                 ],
-                'default_modules' => ['orders'],
+                'default_modules' => ['orders', 'catalog'],
                 'sort_order' => 2,
             ],
             [

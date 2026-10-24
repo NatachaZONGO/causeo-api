@@ -60,6 +60,17 @@ Route::prefix('v1/auth')->group(function () {
 */
 Route::prefix('v1')->middleware('auth:sanctum')->group(function () {
     Route::apiResource('businesses', \App\Http\Controllers\API\V1\BusinessController::class);
+    // Catalogue et stock (module « catalog »).
+    Route::get('businesses/{business}/products/export', [\App\Http\Controllers\API\V1\ProductController::class, 'export']);
+    Route::get('businesses/{business}/products/import-template', [\App\Http\Controllers\API\V1\ProductController::class, 'template']);
+    Route::post('businesses/{business}/products/import', [\App\Http\Controllers\API\V1\ProductController::class, 'import']);
+    Route::get('businesses/{business}/products', [\App\Http\Controllers\API\V1\ProductController::class, 'index']);
+    Route::post('businesses/{business}/products', [\App\Http\Controllers\API\V1\ProductController::class, 'store']);
+    Route::get('products/{product}', [\App\Http\Controllers\API\V1\ProductController::class, 'show']);
+    Route::put('products/{product}', [\App\Http\Controllers\API\V1\ProductController::class, 'update']);
+    Route::delete('products/{product}', [\App\Http\Controllers\API\V1\ProductController::class, 'destroy']);
+    Route::post('products/{product}/variants/generate', [\App\Http\Controllers\API\V1\ProductController::class, 'generateVariants']);
+    Route::patch('variants/{variant}/stock', [\App\Http\Controllers\API\V1\ProductController::class, 'updateStock']);
     Route::post('businesses/{business}/logo', [\App\Http\Controllers\API\V1\BusinessLogoController::class, 'store']);
     Route::delete('businesses/{business}/logo', [\App\Http\Controllers\API\V1\BusinessLogoController::class, 'destroy']);
     Route::apiResource('businesses.documents', \App\Http\Controllers\API\V1\DocumentController::class)->shallow()->except('update');

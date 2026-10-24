@@ -5,6 +5,7 @@ namespace App\Http\Controllers\API\V1;
 use App\Http\Controllers\Controller;
 use App\Models\Business;
 use App\Models\Order;
+use App\Services\Catalog\CatalogService;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Http\JsonResponse;
@@ -74,7 +75,15 @@ class OrderController extends Controller
             'status.in' => 'Le statut doit être l\'un des suivants : '.implode(', ', Order::STATUSES).'.',
         ]);
 
+        $previous = $order->status;
         $order->update(['status' => $data['status']]);
+
+        // Catalogue : une commande annulée rend ses articles au stock, une commande réactivée les reprend.
+        if ($data['status'] === 'cancelled' && $previous !== 'cancelled') {
+            app(CatalogService::class)->releaseOrder($order, auth()->id());
+        } elseif ($previous === 'cancelled' && $data['status'] !== 'cancelled') {
+            app(CatalogService::class)->reserveAgain($order, auth()->id());
+        }
 
         return response()->json([
             'message' => 'Le statut de la commande a été mis à jour.',
