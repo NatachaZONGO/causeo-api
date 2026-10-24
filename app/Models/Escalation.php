@@ -43,10 +43,25 @@ class Escalation extends Model
         'reason',
     ];
 
-    /** Escalade d'un message vocal non transcrit : la question n'est pas le texte du client. */
-    public function isUntranscribedVoice(): bool
+    /** Motifs (reason) des escalades qui ne viennent pas d'une question écrite ; voice_* pour les vocaux. */
+    public const REASON_DOCUMENT = 'document_received';
+
+    public const REASON_VIDEO = 'video_received';
+
+    /** Question accompagnée d'une photo, que l'assistant n'a pas su traiter. */
+    public const REASON_IMAGE = 'image_question';
+
+    /** Capture d'un reçu de paiement : le gérant doit vérifier le paiement. */
+    public const REASON_PAYMENT_PROOF = 'payment_proof';
+
+    /**
+     * Escalade d'un vocal non transcrit, d'un document, d'une vidéo ou d'une preuve de
+     * paiement : la « question » est un motif (« Document reçu : devis.pdf »), pas le texte
+     * du client, et ne doit pas être apprise.
+     */
+    public function hasNonTextQuestion(): bool
     {
-        return is_string($this->reason) && str_starts_with($this->reason, 'voice_');
+        return is_string($this->reason) && $this->reason !== '';
     }
 
     /**

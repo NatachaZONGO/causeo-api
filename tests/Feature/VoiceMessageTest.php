@@ -274,7 +274,7 @@ class VoiceMessageTest extends TestCase
         $this->putJson("/api/v1/businesses/{$this->business->id}", ['voice_fallback_reply' => 'peut-être', 'voice_fallback_message' => str_repeat('x', 301)])
             ->assertUnprocessable()
             ->assertJsonValidationErrors(['voice_fallback_reply', 'voice_fallback_message'])
-            ->assertJsonPath('errors.voice_fallback_message.0', 'Le message de réponse aux vocaux ne doit pas dépasser 300 caractères.');
+            ->assertJsonPath('errors.voice_fallback_message.0', 'Le message de réponse aux vocaux, documents et vidéos ne doit pas dépasser 300 caractères.');
 
         $this->putJson("/api/v1/businesses/{$this->business->id}", ['voice_fallback_message' => str_repeat('x', 300)])->assertOk();
     }

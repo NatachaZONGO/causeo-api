@@ -62,8 +62,8 @@ class LearningService
      */
     public function learnFromEscalation(Escalation $escalation): void
     {
-        // Vocal non transcrit : la « question » n'est que le motif (« Message vocal en mooré »).
-        if ($escalation->isUntranscribedVoice()) {
+        // Vocal non transcrit, document, preuve de paiement… : la « question » n'est que le motif.
+        if ($escalation->hasNonTextQuestion()) {
             return;
         }
 

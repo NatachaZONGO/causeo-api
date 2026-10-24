@@ -9,6 +9,7 @@ use App\Models\Order;
 use App\Services\Embedding\EmbeddingService;
 use App\Services\AppointmentService;
 use App\Services\OrderService;
+use App\Services\WhatsApp\MediaMessage;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
@@ -113,6 +114,22 @@ Tu ne peux pas enregistrer de rendez-vous ni de réservation toi-même. Si le cl
 - Puis ajoute le marqueur JE_NE_SAIS_PAS, seul sur la dernière ligne.
 TEXT;
 
+    /** Ligne technique ajoutée par Claude quand une photo est la capture d'un paiement. */
+    private const PAYMENT_PROOF_MARKER = 'PREUVE_PAIEMENT';
+
+    /** Réponse au client pour une preuve de paiement : jamais de confirmation du paiement. */
+    private const PAYMENT_PROOF_REPLY = "Merci, j'ai bien reçu votre capture 🙏 Le responsable va vérifier le paiement et revient vers vous très vite.";
+
+    private const PAYMENT_PROOF_REPLY_TU = "Merci, j'ai bien reçu ta capture 🙏 Le responsable va vérifier le paiement et revient vers toi très vite.";
+
+    /** Recherche documentaire pour une photo sans légende : les pages de catalogue et de prix. */
+    private const PHOTO_CONTEXT_QUERY = 'catalogue des articles, produits, modèles, prix et disponibilité';
+
+    private const PHOTO_CONTEXT_LIMIT = 8;
+
+    /** Médias du business listés comme catalogue quand le client envoie une photo. */
+    private const PHOTO_CATALOG_LIMIT = 30;
+
     /** Message d'attente envoyé quand une réponse est bloquée puis escaladée. */
     private const WAITING_MESSAGE = 'Je vérifie ça et je reviens vers vous très vite 😊';
 
@@ -148,11 +165,16 @@ TEXT;
     /**
      * Générer une réponse à la question d'un client pour une entreprise donnée.
      *
-     * @return array{answer: ?string, confidence: float, should_escalate: bool, context_used: array<int, mixed>, media_ids: array<int, string>}
+     * Photos du client : blocs image déjà préparés (CustomerImageService), montrés à Claude
+     * avec la question ; $unreadableImages photos n'ont pas pu l'être.
+     *
+     * @param  list<array<string, mixed>>  $images
+     * @return array{answer: ?string, confidence: float, should_escalate: bool, context_used: array<int, mixed>, media_ids: array<int, string>, payment_proof?: bool}
      */
-    public function answer(Business $business, string $question, ?string $conversationId = null): array
+    public function answer(Business $business, string $question, ?string $conversationId = null, array $images = [], int $unreadableImages = 0): array
     {
         $conversation = $conversationId !== null ? Conversation::find($conversationId) : null;
+        $withPhotos = $images !== [] || $unreadableImages > 0;
 
         // Seuls les messages de la session en cours comptent : après une longue pause,
         // un ancien sujet ou un récapitulatif resté sans réponse est abandonné.
@@ -163,7 +185,7 @@ TEXT;
         // « D'accord merci » répondent à cette question : seule l'IA peut appeler l'outil.
         $awaitsAnswer = $lastBotMessage !== null && str_contains((string) $lastBotMessage->content, '?');
 
-        $simple = $this->handleSimpleMessage($business, $question, $lastBotMessage !== null, $awaitsAnswer);
+        $simple = $withPhotos ? null : $this->handleSimpleMessage($business, $question, $lastBotMessage !== null, $awaitsAnswer);
         if ($simple !== null) {
             Log::info('AIResponseService: réponse toute faite, sans appel à Claude', [
                 'business_id' => $business->id,
@@ -178,10 +200,15 @@ TEXT;
         $trace = ['orders' => [], 'appointments' => [], 'tool_errors' => [], 'blocked_claim' => false, 'usage' => self::EMPTY_USAGE];
 
         try {
-            $context = $this->findRelevantContext($business, $question);
+            // Avec une photo, la légende guide la recherche ; sans légende, on cherche le catalogue
+            // (prix, articles), et tous les médias du business servent de catalogue illustré.
+            $searchText = $withPhotos ? $this->withoutPhotoPlaceholders($question) : $question;
+            $context = $withPhotos
+                ? $this->findRelevantContext($business, $searchText !== '' ? $searchText : self::PHOTO_CONTEXT_QUERY, self::PHOTO_CONTEXT_LIMIT)
+                : $this->findRelevantContext($business, $question);
             $hasContext = $context->isNotEmpty();
 
-            $media = $this->findRelevantMedia($business, $question);
+            $media = $withPhotos ? $this->catalogMedia($business) : $this->findRelevantMedia($business, $question);
 
             $messages = $this->buildConversationHistory($session, $conversation, $question);
 
@@ -262,10 +289,16 @@ TEXT;
             }
 
             if ($media->isNotEmpty()) {
-                $mediaList = $media
-                    ->map(fn ($m) => "{$m->title} (id: {$m->id}, type: {$m->type})")
-                    ->implode(', ');
-                $userMessage .= "\n\nMédias disponibles à envoyer au client : {$mediaList}";
+                $mediaList = $withPhotos
+                    ? $media->map(fn ($m) => '- '.$this->catalogLine($m))->implode("\n")
+                    : $media->map(fn ($m) => "{$m->title} (id: {$m->id}, type: {$m->type})")->implode(', ');
+                $userMessage .= $withPhotos
+                    ? "\n\nMédias du business (catalogue illustré), aussi disponibles à envoyer au client :\n{$mediaList}"
+                    : "\n\nMédias disponibles à envoyer au client : {$mediaList}";
+            }
+
+            if ($withPhotos) {
+                $systemPrompt .= "\n\n".$this->photoInstructions(count($images), $unreadableImages, in_array('create_order', array_column($tools, 'name'), true));
             }
 
             $examples = $this->legacyStyle ? collect() : $this->findOwnerExamples($business, $question);
@@ -277,6 +310,12 @@ TEXT;
                 $messages[count($messages) - 1]['content'] .= "\n\n".$userMessage;
             } else {
                 $messages[] = ['role' => 'user', 'content' => $userMessage];
+            }
+
+            // Les photos précèdent le texte du dernier message du client.
+            if ($images !== []) {
+                $last = count($messages) - 1;
+                $messages[$last]['content'] = [...$images, ['type' => 'text', 'text' => $messages[$last]['content']]];
             }
 
             // Le cache couvre les outils et le premier bloc (rendus dans cet ordre). En dessous
@@ -297,6 +336,24 @@ TEXT;
 
             $payload = $this->converse($request, $business, $conversation, $trace);
             $text = $this->extractText($payload);
+
+            // Capture d'un paiement : jamais confirmé par le bot, le gérant vérifie.
+            if ($withPhotos && str_contains($text, self::PAYMENT_PROOF_MARKER)) {
+                Log::info('AIResponseService: preuve de paiement reconnue sur une photo', [
+                    'business_id' => $business->id,
+                    'conversation_id' => $conversationId,
+                ]);
+
+                return [
+                    'answer' => $this->addressOf($business) === 'tu' ? self::PAYMENT_PROOF_REPLY_TU : self::PAYMENT_PROOF_REPLY,
+                    'confidence' => 0.5,
+                    'should_escalate' => true,
+                    'payment_proof' => true,
+                    'context_used' => $context->pluck('id')->all(),
+                    'media_ids' => [],
+                    'tool_trace' => $this->traceForMetadata($trace),
+                ];
+            }
 
             if (($payload['stop_reason'] ?? null) === 'max_tokens') {
                 Log::warning('AIResponseService: réponse coupée par max_tokens.', [
@@ -1130,6 +1187,79 @@ PROMPT;
     }
 
     /**
+     * Consignes quand le client a envoyé une ou plusieurs photos.
+     */
+    private function photoInstructions(int $shown, int $unreadable, bool $ordersAvailable): string
+    {
+        $photos = match (true) {
+            $shown === 0 => "Le client a envoyé {$unreadable} photo(s) qui n'ont pas pu être affichées : demande-lui simplement ce qu'il souhaite, ou applique la règle d'escalade.",
+            $shown === 1 => 'Le client a envoyé une photo, jointe à son message.',
+            default => "Le client a envoyé {$shown} photos, jointes à son message : traite-les ensemble.",
+        };
+
+        if ($shown > 0 && $unreadable > 0) {
+            $photos .= " {$unreadable} autre(s) photo(s) n'ont pas pu être affichées.";
+        }
+
+        $order = $ordersAvailable ? ' Tu peux ensuite proposer de passer commande, comme pour une demande écrite.' : '';
+
+        return <<<PROMPT
+# Photo(s) du client
+{$photos}
+1. Si une photo est la capture ou la photo d'un reçu de paiement (Orange Money, Moov Money, Wave, transfert, virement, dépôt…) : ne confirme JAMAIS le paiement ni son montant, et ne dis jamais qu'il est reçu ou validé. Écris seulement PREUVE_PAIEMENT, seul sur la dernière ligne : un message adapté est envoyé au client et le gérant vérifie.
+2. Sinon, cherche l'article photographié dans le contexte et dans les médias du business (titres, descriptions, mots-clés). Si un article correspond clairement, donne son nom, son prix et sa disponibilité tels qu'ils figurent dans le contexte, sans rien ajouter qui n'y figure pas.{$order}
+3. Si rien ne correspond clairement, ou au moindre doute, dis-le simplement et pose une seule question pour préciser (nom de l'article, taille, couleur…), ou applique la règle d'escalade. N'invente jamais un article, un prix ou une disponibilité, et ne devine pas un prix d'après la photo.
+4. Ne décris pas la photo au client : réponds à ce qu'il cherche.
+PROMPT;
+    }
+
+    /**
+     * Tous les médias actifs du business (au plus PHOTO_CATALOG_LIMIT), pour reconnaître
+     * l'article d'une photo.
+     *
+     * @return Collection<int, \App\Models\BusinessMedia>
+     */
+    private function catalogMedia(Business $business): Collection
+    {
+        return $business->media()->active()->latest()->limit(self::PHOTO_CATALOG_LIMIT)->get();
+    }
+
+    /** « Robe wax rouge — modèle Awa (mots-clés : robe, wax) (id: …, type: image) » */
+    private function catalogLine(object $media): string
+    {
+        $keywords = array_filter(array_map('strval', (array) ($media->keywords ?? [])));
+
+        return trim((string) $media->title)
+            .(! empty($media->description) ? ' — '.trim((string) $media->description) : '')
+            .($keywords !== [] ? ' (mots-clés : '.implode(', ', $keywords).')' : '')
+            ." (id: {$media->id}, type: {$media->type})";
+    }
+
+    /**
+     * Message passé du client qui était une photo, un document… : la légende seule ne
+     * dit pas qu'il y avait un fichier (Claude ne revoit pas les anciennes photos).
+     */
+    private function withMediaLabel(string $content, ?string $metadata): string
+    {
+        $type = (json_decode((string) $metadata, true) ?: [])['type'] ?? null;
+
+        if (! in_array($type, MediaMessage::TYPES, true) || in_array($content, MediaMessage::PLACEHOLDERS, true)) {
+            return $content;
+        }
+
+        return MediaMessage::PLACEHOLDERS[$type].' : '.$content;
+    }
+
+    /** Texte du client sans les « 📷 Photo » des photos sans légende. */
+    private function withoutPhotoPlaceholders(string $question): string
+    {
+        return trim(implode("\n", array_filter(
+            array_map('trim', explode("\n", $question)),
+            fn (string $line) => $line !== '' && ! in_array($line, MediaMessage::PLACEHOLDERS, true),
+        )));
+    }
+
+    /**
      * Récupérer les médias pertinents pour la question du client.
      *
      * D'abord par mots-clés exacts, puis (si besoin) par similarité vectorielle
@@ -1319,6 +1449,8 @@ PROMPT;
 
             if ($role === 'assistant') {
                 $content .= $this->orderNote($content, $row->metadata, $knownReferences);
+            } else {
+                $content = $this->withMediaLabel($content, $row->metadata);
             }
 
             // Fusionne les messages consécutifs de même rôle (contrainte de l'API).

@@ -35,13 +35,18 @@ class NotificationService
 
             $customer = $conversation?->customer_name ?: $conversation?->customer_phone;
 
+            $title = $escalation->reason === Escalation::REASON_PAYMENT_PROOF
+                ? ($customer ? "Preuve de paiement de {$customer} à vérifier" : 'Preuve de paiement à vérifier')
+                : ($customer ? "Question de {$customer} à traiter" : 'Question client à traiter');
+
             $attributes = [
-                'title' => $customer ? "Question de {$customer} à traiter" : 'Question client à traiter',
+                'title' => $title,
                 'body' => $escalation->customer_question,
-                'data' => [
+                'data' => array_filter([
                     'conversation_id' => $escalation->conversation_id,
                     'escalation_id' => $escalation->id,
-                ],
+                    'reason' => $escalation->reason,
+                ]),
             ];
 
             $existing = Notification::query()
@@ -75,10 +80,11 @@ class NotificationService
     }
 
     /**
-     * E-mail au gérant pour un message vocal que le bot n'a pas traité, en plus de la
-     * cloche et de l'alerte WhatsApp de l'escalade : il faut l'écouter pour répondre.
+     * E-mail au gérant pour un vocal, un document, une vidéo ou une preuve de paiement
+     * que le bot n'a pas traité, en plus de la cloche et de l'alerte WhatsApp de
+     * l'escalade : il faut l'ouvrir pour répondre.
      */
-    public function emailVoiceEscalation(Escalation $escalation): void
+    public function emailMediaEscalation(Escalation $escalation, bool $repliedToCustomer): void
     {
         try {
             $conversation = $escalation->conversation;
@@ -90,18 +96,26 @@ class NotificationService
 
             $customer = $conversation->customer_name ?: $conversation->customer_phone;
 
+            [$subject, $open, $action] = match ($escalation->reason) {
+                Escalation::REASON_DOCUMENT => ["Document de {$customer} à consulter", 'Ouvrez le document dans la conversation', 'Voir le document'],
+                Escalation::REASON_VIDEO => ["Vidéo de {$customer} à regarder", 'Regardez la vidéo dans la conversation', 'Voir la vidéo'],
+                Escalation::REASON_PAYMENT_PROOF => ["Preuve de paiement de {$customer} à vérifier", 'Vérifiez le paiement, puis répondez au client', 'Voir la capture'],
+                default => ["Message vocal de {$customer} à écouter", 'Écoutez le message dans la conversation', 'Écouter le message'],
+            };
+
             Mail::to($email)->queue(new OwnerNotificationMail(
-                "Message vocal de {$customer} à écouter",
+                $subject,
                 [
                     "{$escalation->customer_question}, reçu de {$customer}.",
-                    "L'assistant a répondu au client que vous le recontacteriez. Écoutez le message dans la conversation, puis répondez depuis Causeo ou WhatsApp.",
+                    ($repliedToCustomer ? "L'assistant a répondu au client que vous le recontacteriez. " : "L'assistant n'a pas répondu au client. ")
+                        ."{$open}, puis répondez depuis Causeo ou WhatsApp.",
                 ],
-                'Écouter le message',
+                $action,
                 rtrim((string) config('app.frontend_url'), '/').'/dashboard/conversations?conversation='.$conversation->id,
             ));
         } catch (Throwable $e) {
             // Le message d'une erreur d'envoi peut contenir l'adresse : on ne garde que sa classe.
-            Log::error('NotificationService::emailVoiceEscalation a échoué', [
+            Log::error('NotificationService::emailMediaEscalation a échoué', [
                 'escalation_id' => $escalation->id,
                 'exception' => $e::class,
             ]);

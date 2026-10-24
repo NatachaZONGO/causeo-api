@@ -34,6 +34,8 @@ class Order extends Model
         'pickup_time',
         'status',
         'notes',
+        // Message WhatsApp contenant la capture du paiement envoyée par le client.
+        'payment_proof_message_id',
     ];
 
     /**

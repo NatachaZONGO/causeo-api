@@ -166,7 +166,7 @@ class BusinessController extends Controller
             'reply_style.length' => ['nullable', Rule::in(Business::REPLY_STYLE_OPTIONS['length'])],
             'reply_style.signature' => ['nullable', 'string', 'max:60'],
             'reply_style.learn_from_owner' => ['sometimes', 'boolean'],
-            // Réponse au client quand son vocal n'est pas transcrit (désactivée par défaut).
+            // Réponse au client quand son vocal n'est pas compris, ou pour un document ou une vidéo (désactivée par défaut).
             'voice_fallback_reply' => ['sometimes', 'boolean'],
             'voice_fallback_message' => ['nullable', 'string', 'max:300'],
         ];
@@ -218,9 +218,9 @@ class BusinessController extends Controller
             'reply_style.length.in' => 'Longueur : very_short ou short.',
             'reply_style.signature.string' => 'La signature doit être un texte.',
             'reply_style.signature.max' => 'La signature ne doit pas dépasser 60 caractères.',
-            'voice_fallback_reply.boolean' => 'La réponse aux messages vocaux non compris doit être activée ou désactivée (vrai ou faux).',
-            'voice_fallback_message.string' => 'Le message de réponse aux vocaux doit être un texte.',
-            'voice_fallback_message.max' => 'Le message de réponse aux vocaux ne doit pas dépasser 300 caractères.',
+            'voice_fallback_reply.boolean' => 'La réponse aux vocaux non compris, documents et vidéos doit être activée ou désactivée (vrai ou faux).',
+            'voice_fallback_message.string' => 'Le message de réponse aux vocaux, documents et vidéos doit être un texte.',
+            'voice_fallback_message.max' => 'Le message de réponse aux vocaux, documents et vidéos ne doit pas dépasser 300 caractères.',
             'reply_style.learn_from_owner.boolean' => '« Apprendre de ma façon d\'écrire » doit être activé ou désactivé (vrai ou faux).',
         ];
     }

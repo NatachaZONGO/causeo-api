@@ -187,9 +187,10 @@ class WhatsAppService
      * Parser un webhook WhatsApp entrant.
      *
      * @param  array<string, mixed>  $payload
-     * Messages texte et audio (notes vocales comprises) ; les autres types sont ignorés.
+     * Messages texte, audio (notes vocales comprises), image, document, vidéo et autocollant ;
+     * les autres types sont ignorés.
      *
-     * @return array{type: string, from: string, message_id: string, text: string, customer_name: ?string, media_id?: string, mime_type?: string, voice?: bool}|null
+     * @return array{type: string, from: string, message_id: string, text: string, customer_name: ?string, media_id?: string, mime_type?: string, voice?: bool, filename?: string, caption?: string}|null
      */
     public function parseIncomingMessage(array $payload): ?array
     {
@@ -198,7 +199,7 @@ class WhatsAppService
         $message = $value['messages'][0] ?? null;
         $type = $message['type'] ?? null;
 
-        if ($message === null || ! in_array($type, ['text', 'audio'], true)) {
+        if ($message === null || ! in_array($type, ['text', 'audio', ...MediaMessage::TYPES], true)) {
             return null;
         }
 
@@ -209,6 +210,12 @@ class WhatsAppService
             'text' => $message['text']['body'] ?? '',
             'customer_name' => $value['contacts'][0]['profile']['name'] ?? null,
         ];
+
+        if (in_array($type, MediaMessage::TYPES, true)) {
+            $media = MediaMessage::fromPayload($type, (array) ($message[$type] ?? []));
+
+            return $media === null ? null : $incoming + $media;
+        }
 
         if ($type === 'audio') {
             if (empty($message['audio']['id'])) {

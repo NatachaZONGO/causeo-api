@@ -94,7 +94,8 @@ fi
 apt-get install -y -q "php${PHP_VERSION}-fpm" "php${PHP_VERSION}-cli" "php${PHP_VERSION}-common" \
     "php${PHP_VERSION}-pgsql" "php${PHP_VERSION}-mbstring" "php${PHP_VERSION}-xml" \
     "php${PHP_VERSION}-curl" "php${PHP_VERSION}-zip" "php${PHP_VERSION}-bcmath" \
-    "php${PHP_VERSION}-intl" "php${PHP_VERSION}-opcache" "php${PHP_VERSION}-readline"
+    "php${PHP_VERSION}-intl" "php${PHP_VERSION}-opcache" "php${PHP_VERSION}-readline" \
+    "php${PHP_VERSION}-gd" # gd : réduction des photos des clients avant de les montrer à Claude
 update-alternatives --set php "/usr/bin/php${PHP_VERSION}" >/dev/null
 
 # pcntl est compilé dans PHP CLI (queue:work en a besoin pour --timeout).

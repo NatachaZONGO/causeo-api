@@ -7,8 +7,11 @@ use App\Models\Business;
 use App\Models\Conversation;
 use App\Models\Escalation;
 use App\Models\Message;
+use App\Models\Order;
 use App\Services\AI\AIResponseService;
+use App\Services\AI\CustomerImageService;
 use App\Services\Conversations\ReplyPacing;
+use App\Services\NotificationService;
 use App\Services\WhatsApp\WhatsAppServiceFactory;
 use Carbon\CarbonInterface;
 use Illuminate\Bus\Queueable;
@@ -35,6 +38,12 @@ class ReplyToCustomer implements ShouldQueue
     public int $tries = 5;
 
     public int $timeout = 150;
+
+    /** Photos d'une même rafale montrées à Claude, au plus. */
+    private const MAX_PHOTOS = 5;
+
+    /** Une preuve de paiement est rattachée à une commande de moins de ORDER_WINDOW_DAYS jours. */
+    private const ORDER_WINDOW_DAYS = 7;
 
     /** Âge maximal d'un message sans réponse repris dans une réponse groupée. */
     private const PENDING_WINDOW_MINUTES = 15;
@@ -93,7 +102,7 @@ class ReplyToCustomer implements ShouldQueue
             ->values();
     }
 
-    public function handle(AIResponseService $ai, WhatsAppServiceFactory $whatsAppFactory, ReplyPacing $pacing): void
+    public function handle(AIResponseService $ai, WhatsAppServiceFactory $whatsAppFactory, ReplyPacing $pacing, CustomerImageService $images, NotificationService $notifications): void
     {
         // Une seule réponse en préparation par conversation : l'autre job réessaie un peu plus tard
         // (s'il a déjà repris ce message, il n'y aura plus rien à faire).
@@ -106,7 +115,7 @@ class ReplyToCustomer implements ShouldQueue
         }
 
         try {
-            $this->reply($ai, $whatsAppFactory, $pacing);
+            $this->reply($ai, $whatsAppFactory, $pacing, $images, $notifications);
         } catch (Throwable $e) {
             // Pas de getMessage() : une QueryException contient le SQL avec le texte du client.
             Log::error('ReplyToCustomer a échoué', [
@@ -120,7 +129,7 @@ class ReplyToCustomer implements ShouldQueue
         }
     }
 
-    private function reply(AIResponseService $ai, WhatsAppServiceFactory $whatsAppFactory, ReplyPacing $pacing): void
+    private function reply(AIResponseService $ai, WhatsAppServiceFactory $whatsAppFactory, ReplyPacing $pacing, CustomerImageService $imageService, NotificationService $notifications): void
     {
         $trigger = Message::find($this->messageId);
 
@@ -156,7 +165,16 @@ class ReplyToCustomer implements ShouldQueue
         $question = $batch->map(fn (Message $message) => trim((string) $message->content))->implode("\n");
 
         $startedAt = microtime(true);
-        $result = $ai->answer($business, $question, $conversation->id);
+
+        // Photos de la rafale, montrées ensemble à Claude (au plus MAX_PHOTOS).
+        $photos = $batch->filter(fn (Message $message) => ($message->metadata['type'] ?? null) === 'image')->values();
+        $images = $photos->take(self::MAX_PHOTOS)
+            ->map(fn (Message $photo) => $imageService->prepare($business, $photo))
+            ->filter()
+            ->values()
+            ->all();
+
+        $result = $ai->answer($business, $question, $conversation->id, $images, $photos->count() - count($images));
         $generationSeconds = microtime(true) - $startedAt;
 
         if (self::managerRepliedSince($conversation, $newest->created_at)) {
@@ -170,14 +188,26 @@ class ReplyToCustomer implements ShouldQueue
             ? ($result['answer'] ?? 'Merci pour votre message ! Je vérifie ça et je reviens vers vous très vite 😊')
             : (string) $result['answer'];
 
+        $paymentProof = ! empty($result['payment_proof']);
+        $order = $paymentProof ? $this->attachPaymentProof($conversation, $photos->first()) : null;
+
         if ($escalated) {
-            Escalation::create([
+            $escalation = Escalation::create([
                 'conversation_id' => $conversation->id,
-                'message_id' => $newest->id,
+                'message_id' => $paymentProof ? $photos->first()->id : $newest->id,
                 'business_id' => $business->id,
-                'customer_question' => $question,
+                'customer_question' => $paymentProof
+                    ? 'Preuve de paiement reçue'.($order !== null ? " pour la commande {$order->reference()}" : '')
+                    : $question,
+                // Une question avec photo n'est pas apprise : sa réponse dépend de l'image.
+                'reason' => $paymentProof ? Escalation::REASON_PAYMENT_PROOF : ($photos->isNotEmpty() ? Escalation::REASON_IMAGE : null),
                 'status' => 'pending',
             ]);
+
+            // Cloche et alerte WhatsApp à la création de l'escalade ; en plus, un e-mail pour vérifier le paiement.
+            if ($paymentProof) {
+                $notifications->emailMediaEscalation($escalation, repliedToCustomer: true);
+            }
         }
 
         Message::query()->whereKey($batch->modelKeys())->update(['status' => $escalated ? 'escalated' : 'answered_by_ai']);
@@ -190,7 +220,8 @@ class ReplyToCustomer implements ShouldQueue
             + ($escalated ? ['escalated' => true] : [])
             + ($result['tool_trace'] ?? [])
             + (! $escalated && $canned && ! $isVoice ? ['canned' => true] : [])
-            + ($batch->count() > 1 ? ['grouped_messages' => $batch->count()] : []);
+            + ($batch->count() > 1 ? ['grouped_messages' => $batch->count()] : [])
+            + ($paymentProof ? ['payment_proof' => array_filter(['order_id' => $order?->id])] : []);
 
         // Le délai d'écriture court depuis que le bot « lit » : le temps de génération en fait partie.
         $delay = max(0, (int) round($pacing->typingSeconds($answer) - $generationSeconds));
@@ -214,11 +245,42 @@ class ReplyToCustomer implements ShouldQueue
             'business_id' => $business->id,
             'conversation_id' => $conversation->id,
             'grouped_messages' => $batch->count(),
+            'photos' => $photos->count(),
+            'photos_shown' => count($images),
+            'payment_proof' => $paymentProof,
             'escalated' => $escalated,
             'answer_length' => mb_strlen($answer),
             'generation_seconds' => round($generationSeconds, 1),
             'send_delay_seconds' => $delay,
         ]);
+    }
+
+    /**
+     * Rattacher la capture du paiement à la commande en cours du client (la plus récente
+     * des ORDER_WINDOW_DAYS derniers jours, ni livrée ni annulée), s'il en a une.
+     */
+    private function attachPaymentProof(Conversation $conversation, ?Message $photo): ?Order
+    {
+        if ($photo === null) {
+            return null;
+        }
+
+        $order = Order::query()
+            ->where('conversation_id', $conversation->id)
+            ->whereIn('status', ['new', 'confirmed'])
+            ->where('created_at', '>=', now()->subDays(self::ORDER_WINDOW_DAYS))
+            ->latest()
+            ->first();
+
+        $order?->update(['payment_proof_message_id' => $photo->id]);
+
+        Log::info('ReplyToCustomer: preuve de paiement reçue', [
+            'conversation_id' => $conversation->id,
+            'message_id' => $photo->id,
+            'order_id' => $order?->id,
+        ]);
+
+        return $order;
     }
 
     /**

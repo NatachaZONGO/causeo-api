@@ -9,12 +9,37 @@ use Illuminate\Support\Facades\Http;
 use RuntimeException;
 
 /**
- * Médias reçus sur WhatsApp (messages vocaux) : GET /{media_id} donne une URL
+ * Médias reçus sur WhatsApp (vocaux, photos, documents…) : GET /{media_id} donne une URL
  * temporaire, à télécharger avec le même token. Rien n'est gardé : le fichier est
  * relu chez Meta à chaque besoin.
  */
 class WhatsAppMediaService
 {
+    /**
+     * Taille et type d'un média sans le télécharger (GET /{media_id}).
+     *
+     * @return array{mime_type: ?string, size: ?int}
+     *
+     * @throws RuntimeException si Meta refuse ou ne répond pas
+     */
+    public function info(Business $business, string $mediaId): array
+    {
+        try {
+            $info = $this->http($business)->get($this->url($mediaId));
+        } catch (ConnectionException $e) {
+            throw new RuntimeException('Connexion à Meta impossible.', 0, $e);
+        }
+
+        if (! $info->successful()) {
+            throw new RuntimeException("Média WhatsApp introuvable (HTTP {$info->status()}).");
+        }
+
+        return [
+            'mime_type' => is_string($info->json('mime_type')) ? $info->json('mime_type') : null,
+            'size' => is_numeric($info->json('file_size')) ? (int) $info->json('file_size') : null,
+        ];
+    }
+
     /**
      * Télécharger un média, au plus $maxBytes octets.
      *

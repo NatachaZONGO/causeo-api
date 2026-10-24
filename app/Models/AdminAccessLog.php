@@ -11,6 +11,9 @@ class AdminAccessLog extends Model
 {
     public const VOICE_MESSAGE_LISTENED = 'voice_message_listened';
 
+    /** Ouverture d'une photo, d'un document, d'une vidéo ou d'un autocollant. */
+    public const MEDIA_VIEWED = 'media_viewed';
+
     /** Ouverture d'une conversation (journalisée au plus une fois par période, voir ConversationController). */
     public const CONVERSATION_VIEWED = 'conversation_viewed';
 

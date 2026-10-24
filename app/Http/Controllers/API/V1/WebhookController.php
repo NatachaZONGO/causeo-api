@@ -15,11 +15,12 @@ use App\Models\Notification;
 use App\Services\AI\AIResponseService;
 use App\Services\AI\LearningService;
 use App\Services\AI\ManagerReplyService;
-use App\Services\AI\VoiceMessageResult;
 use App\Services\AI\VoiceMessageService;
 use App\Services\Billing\UsageService;
 use App\Services\NotificationService;
+use App\Services\WhatsApp\MediaMessage;
 use App\Services\WhatsApp\WhatsAppAccountService;
+use App\Services\WhatsApp\WhatsAppMediaService;
 use App\Services\WhatsApp\WhatsAppService;
 use App\Services\WhatsApp\WhatsAppServiceFactory;
 use Illuminate\Database\QueryException;
@@ -57,6 +58,7 @@ class WebhookController extends Controller
         private readonly VoiceMessageService $voiceMessages,
         private readonly WhatsAppServiceFactory $whatsAppFactory,
         private readonly NotificationService $notifications,
+        private readonly WhatsAppMediaService $media,
     ) {}
 
     /**
@@ -355,8 +357,8 @@ class WebhookController extends Controller
 
     /**
      * Enregistrer les échos (messages envoyés par le gérant depuis l'app
-     * WhatsApp Business) comme des réponses humaines dans la conversation.
-     * Seuls les échos texte sont pris en compte pour l'instant.
+     * WhatsApp Business) comme des réponses humaines dans la conversation :
+     * texte, vocal, photo, document, vidéo et autocollant.
      *
      * @param  array<string, mixed>  $value
      */
@@ -380,17 +382,22 @@ class WebhookController extends Controller
             foreach ($value['message_echoes'] ?? [] as $echo) {
                 $type = is_array($echo) ? ($echo['type'] ?? null) : null;
 
-                if (! in_array($type, ['text', 'audio'], true)) {
+                if (! in_array($type, ['text', 'audio', ...MediaMessage::TYPES], true)) {
                     continue;
                 }
 
-                // Vocal du gérant : gardé (réécoutable), sans transcription ni apprentissage.
+                // Vocal, photo, document… du gérant : gardé (consultable), sans analyse ni apprentissage.
                 $isAudio = $type === 'audio';
+                $media = in_array($type, MediaMessage::TYPES, true) ? MediaMessage::fromPayload($type, (array) ($echo[$type] ?? [])) : null;
                 $to = $echo['to'] ?? '';
                 $messageId = $echo['id'] ?? '';
-                $text = $isAudio ? self::VOICE_PLACEHOLDER : ($echo['text']['body'] ?? '');
+                $text = match (true) {
+                    $isAudio => self::VOICE_PLACEHOLDER,
+                    $media !== null => MediaMessage::content($type, $media),
+                    default => $echo['text']['body'] ?? '',
+                };
 
-                if ($to === '' || $messageId === '' || $text === '' || ($isAudio && empty($echo['audio']['id']))) {
+                if ($to === '' || $messageId === '' || $text === '' || ($isAudio && empty($echo['audio']['id'])) || ($type !== 'text' && ! $isAudio && $media === null)) {
                     continue;
                 }
 
@@ -410,14 +417,18 @@ class WebhookController extends Controller
                     'content' => $text,
                     'status' => 'answered_by_human',
                     'whatsapp_message_id' => $messageId,
-                    'metadata' => $isAudio ? $this->audioMetadata([
-                        'media_id' => (string) $echo['audio']['id'],
-                        'mime_type' => (string) ($echo['audio']['mime_type'] ?? 'audio/ogg'),
-                        'voice' => (bool) ($echo['audio']['voice'] ?? false),
-                    ]) : null,
+                    'metadata' => match (true) {
+                        $isAudio => $this->audioMetadata([
+                            'media_id' => (string) $echo['audio']['id'],
+                            'mime_type' => (string) ($echo['audio']['mime_type'] ?? 'audio/ogg'),
+                            'voice' => (bool) ($echo['audio']['voice'] ?? false),
+                        ]),
+                        $media !== null => MediaMessage::metadata($type, $media),
+                        default => null,
+                    },
                 ]);
 
-                if (! $isAudio) {
+                if ($type === 'text') {
                     $this->managerReplies->record($business, $message, ManagerReply::SOURCE_ECHO);
                 }
 
@@ -426,7 +437,7 @@ class WebhookController extends Controller
 
                 // Une erreur d'apprentissage ne doit pas bloquer les échos suivants.
                 try {
-                    $this->learningService->answerPendingEscalation($conversation, $text, learn: ! $isAudio);
+                    $this->learningService->answerPendingEscalation($conversation, $text, learn: $type === 'text');
                 } catch (Throwable $e) {
                     Log::error('WebhookController: apprentissage depuis un écho échoué', [
                         'business_id' => $business->id,
@@ -475,9 +486,10 @@ class WebhookController extends Controller
 
     /**
      * Traiter effectivement un message entrant : enregistrement, transcription d'un
-     * vocal, puis réponse programmée dans la file (ReplyToCustomer).
+     * vocal, document ou vidéo transmis au gérant, sinon réponse programmée dans la
+     * file (ReplyToCustomer), photos comprises.
      *
-     * @param  array{type?: string, from: string, message_id: string, text: string, customer_name: ?string, media_id?: string, mime_type?: string, voice?: bool}  $incoming
+     * @param  array{type?: string, from: string, message_id: string, text: string, customer_name: ?string, media_id?: string, mime_type?: string, voice?: bool, filename?: string, caption?: string}  $incoming
      */
     private function process(array $incoming, ?string $phoneNumberId): void
     {
@@ -489,7 +501,9 @@ class WebhookController extends Controller
             }
 
             $whatsApp = $this->whatsAppFactory->forBusiness($business);
-            $isVoice = ($incoming['type'] ?? 'text') === 'audio';
+            $type = $incoming['type'] ?? 'text';
+            $isVoice = $type === 'audio';
+            $isMedia = in_array($type, MediaMessage::TYPES, true);
 
             $conversation = Conversation::firstOrCreate(
                 [
@@ -511,10 +525,19 @@ class WebhookController extends Controller
                 $inboundMessage = $conversation->messages()->create([
                     'direction' => 'inbound',
                     'sender_type' => 'customer',
-                    'content' => $isVoice ? self::VOICE_PLACEHOLDER : $incoming['text'],
-                    'status' => 'pending',
+                    'content' => match (true) {
+                        $isVoice => self::VOICE_PLACEHOLDER,
+                        $isMedia => MediaMessage::content($type, $incoming),
+                        default => $incoming['text'],
+                    },
+                    // Un autocollant n'appelle ni réponse ni escalade.
+                    'status' => $type === 'sticker' ? MediaMessage::IGNORED_STATUS : 'pending',
                     'whatsapp_message_id' => $incoming['message_id'],
-                    'metadata' => $isVoice ? $this->audioMetadata($incoming) : null,
+                    'metadata' => match (true) {
+                        $isVoice => $this->audioMetadata($incoming),
+                        $isMedia => MediaMessage::metadata($type, $incoming),
+                        default => null,
+                    },
                 ]);
             } catch (QueryException $e) {
                 // Violation de l'index unique : un autre traitement du même
@@ -526,6 +549,16 @@ class WebhookController extends Controller
                 return;
             }
 
+            if ($type === 'sticker') {
+                $whatsApp->markAsRead($incoming['message_id']);
+
+                return;
+            }
+
+            if ($isMedia) {
+                $this->recordMediaSize($business, $inboundMessage);
+            }
+
             // Limite de réponses atteinte : le message reste enregistré (et non lu dans
             // l'app WhatsApp Business du gérant), mais l'IA n'est pas appelée.
             if (! $this->usage->allowsReply($business)) {
@@ -534,9 +567,22 @@ class WebhookController extends Controller
                 return;
             }
 
-            // « En train d'écrire » pendant le regroupement des messages, sauf pour un vocal :
-            // s'il n'est pas compris, le client ne reçoit pas forcément de réponse.
-            $whatsApp->markAsRead($incoming['message_id'], typingIndicator: ! $isVoice);
+            // « En train d'écrire » pendant le regroupement des messages, sauf pour ce qui va
+            // au gérant sans réponse assurée (vocal pas encore compris, document, vidéo).
+            $whatsApp->markAsRead($incoming['message_id'], typingIndicator: in_array($type, ['text', 'image'], true));
+
+            if ($type === 'document' || $type === 'video') {
+                $this->escalateMedia(
+                    $business, $conversation, $inboundMessage, $whatsApp, $incoming['from'],
+                    MediaMessage::escalationReason($type),
+                    MediaMessage::escalationText($type, $incoming),
+                    MediaMessage::FALLBACK_MESSAGES[$type],
+                    ['media_fallback' => $type],
+                    ['type' => $type, 'mime_type' => $incoming['mime_type'] ?? null],
+                );
+
+                return;
+            }
 
             if ($isVoice) {
                 $voice = $this->voiceMessages->handle($business, $incoming['media_id'], $incoming['mime_type']);
@@ -550,7 +596,14 @@ class WebhookController extends Controller
                 ]);
 
                 if (! $voice->isUsable()) {
-                    $this->escalateVoice($business, $conversation, $inboundMessage, $whatsApp, $incoming['from'], $voice);
+                    $this->escalateMedia(
+                        $business, $conversation, $inboundMessage, $whatsApp, $incoming['from'],
+                        $voice->escalationReason(),
+                        $voice->escalationText(),
+                        self::VOICE_FALLBACK_MESSAGE,
+                        ['voice_fallback' => $voice->status],
+                        ['voice_status' => $voice->status, 'language' => $voice->language, 'duration_seconds' => $voice->durationSeconds],
+                    );
 
                     return;
                 }
@@ -570,55 +623,83 @@ class WebhookController extends Controller
     }
 
     /**
-     * Vocal que le bot ne traite pas (autre langue, incompréhensible, trop long, non
-     * transcrit) : escalade avec le motif (cloche et alerte WhatsApp à sa création) et
-     * e-mail au gérant. Le bot ne répond au client que si le gérant l'a activé
-     * (voice_fallback_reply) ; il ne compte alors une unité que dans ce cas.
+     * Vocal non compris (autre langue, incompréhensible, trop long, non transcrit),
+     * document ou vidéo : escalade avec le motif (cloche et alerte WhatsApp à sa
+     * création) et e-mail au gérant. Le bot ne répond au client que si le gérant l'a
+     * activé (voice_fallback_reply, pour tous ces médias) ; il ne compte alors une
+     * unité que dans ce cas.
+     *
+     * @param  array<string, mixed>  $fallbackMetadata  metadata de la réponse au client
+     * @param  array<string, mixed>  $logContext
      */
-    private function escalateVoice(Business $business, Conversation $conversation, Message $inboundMessage, WhatsAppService $whatsApp, string $to, VoiceMessageResult $voice): void
-    {
+    private function escalateMedia(
+        Business $business,
+        Conversation $conversation,
+        Message $inboundMessage,
+        WhatsAppService $whatsApp,
+        string $to,
+        string $reason,
+        string $text,
+        string $defaultReply,
+        array $fallbackMetadata,
+        array $logContext,
+    ): void {
         $escalation = Escalation::create([
             'conversation_id' => $conversation->id,
             'message_id' => $inboundMessage->id,
             'business_id' => $business->id,
-            'customer_question' => $voice->escalationText(),
-            'reason' => $voice->escalationReason(),
+            'customer_question' => $text,
+            'reason' => $reason,
             'status' => 'pending',
         ]);
 
         $inboundMessage->update(['status' => 'escalated']);
 
-        $this->notifications->emailVoiceEscalation($escalation);
-
         $replied = $business->voice_fallback_reply;
 
+        $this->notifications->emailMediaEscalation($escalation, $replied);
+
         if ($replied) {
-            $text = trim((string) $business->voice_fallback_message) ?: self::VOICE_FALLBACK_MESSAGE;
-            $sent = $whatsApp->sendMessage($to, $text);
+            $reply = trim((string) $business->voice_fallback_message) ?: $defaultReply;
+            $sent = $whatsApp->sendMessage($to, $reply);
 
             $conversation->messages()->create([
                 'direction' => 'outbound',
                 'sender_type' => 'ai',
-                'content' => $text,
+                'content' => $reply,
                 'status' => 'sent',
                 'whatsapp_message_id' => data_get($sent, 'messages.0.id'),
-                'metadata' => [
-                    'escalated' => true,
-                    'voice_fallback' => $voice->status,
-                ],
+                'metadata' => ['escalated' => true] + $fallbackMetadata,
             ]);
 
             $business->increment('monthly_message_count');
             $this->usage->afterReply($business);
         }
 
-        Log::info('WebhookController: message vocal transmis au gérant.', [
+        Log::info('WebhookController: média transmis au gérant.', [
             'business_id' => $business->id,
-            'voice_status' => $voice->status,
-            'language' => $voice->language,
-            'duration_seconds' => $voice->durationSeconds,
+            'reason' => $reason,
             'replied_to_customer' => $replied,
-        ]);
+        ] + $logContext);
+    }
+
+    /**
+     * Taille du fichier (lue chez Meta sans le télécharger), pour l'affichage. Sans
+     * réponse de Meta, le message reste enregistré sans taille.
+     */
+    private function recordMediaSize(Business $business, Message $message): void
+    {
+        try {
+            $size = $this->media->info($business, (string) $message->metadata['media_id'])['size'];
+        } catch (Throwable $e) {
+            Log::info('WebhookController: taille du média inconnue.', ['message_id' => $message->id, 'exception' => $e::class]);
+
+            return;
+        }
+
+        if ($size !== null) {
+            $message->update(['metadata' => $message->metadata + ['size' => $size]]);
+        }
     }
 
     /**
