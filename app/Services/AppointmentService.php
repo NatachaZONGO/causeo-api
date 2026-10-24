@@ -7,6 +7,7 @@ use App\Models\Business;
 use App\Models\Conversation;
 use Carbon\CarbonImmutable;
 use Carbon\Exceptions\InvalidFormatException;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use InvalidArgumentException;
 
@@ -27,10 +28,16 @@ class AppointmentService
      */
     public function createFromAi(Business $business, Conversation $conversation, array $input, ?CarbonImmutable $today = null): Appointment
     {
-        $service = $this->string($input['service'] ?? null);
-        $requestedTime = $this->string($input['requested_time'] ?? null);
-        $customerName = $this->string($input['customer_name'] ?? null) ?? $conversation->customer_name;
+        // Colonnes string(255) : un texte plus long ferait échouer l'enregistrement.
+        $service = $this->string($input['service'] ?? null, 255);
+        $requestedTime = $this->string($input['requested_time'] ?? null, 255);
+        $customerName = $this->string($input['customer_name'] ?? null, 255) ?? $conversation->customer_name;
         $requestedDate = $this->string($input['requested_date'] ?? null);
+
+        // « 2026-10-10T15:00:00 » : seule la date compte, l'heure est dans requested_time.
+        if ($requestedDate !== null && preg_match('/^(\d{4}-\d{2}-\d{2})[T ]\d{1,2}:\d{2}/', $requestedDate, $matches) === 1) {
+            $requestedDate = $matches[1];
+        }
 
         $missing = array_keys(array_filter([
             'service' => $service === null,
@@ -53,8 +60,10 @@ class AppointmentService
             throw new InvalidArgumentException("Date invalide : « {$requestedDate} ». Utilise le format AAAA-MM-JJ.");
         }
 
-        $today ??= CarbonImmutable::now(config('app.timezone'))->startOfDay();
-        if ($date->lessThan($today)) {
+        // « Aujourd'hui » dans le fuseau de l'entreprise, comme la date du jour donnée à Claude.
+        $timezone = $business->localTimezone();
+        $today ??= CarbonImmutable::now($timezone)->startOfDay();
+        if ($date->format('Y-m-d') < $today->format('Y-m-d')) {
             throw new InvalidArgumentException("La date demandée ({$requestedDate}) est déjà passée. Demande au client une autre date.");
         }
 
@@ -80,6 +89,12 @@ class AppointmentService
             ->first(fn (Appointment $appointment) => Str::lower($appointment->service) === Str::lower($service));
 
         if ($duplicate !== null) {
+            Log::info('AppointmentService: demande identique déjà enregistrée, pas de doublon', [
+                'business_id' => $business->id,
+                'conversation_id' => $conversation->id,
+                'appointment_id' => $duplicate->id,
+            ]);
+
             return $duplicate;
         }
 
@@ -98,18 +113,32 @@ class AppointmentService
             'status' => 'requested',
         ]);
 
+        // Pas de données client dans les logs : la date interprétée et le fuseau suffisent à diagnostiquer.
+        Log::info('AppointmentService: demande de rendez-vous enregistrée', [
+            'business_id' => $business->id,
+            'conversation_id' => $conversation->id,
+            'appointment_id' => $appointment->id,
+            'requested_date' => $appointment->requested_date->format('Y-m-d'),
+            'today' => $today->format('Y-m-d'),
+            'timezone' => $timezone,
+        ]);
+
         $this->notificationService->notifyAppointment($appointment);
 
         return $appointment;
     }
 
-    private function string(mixed $value): ?string
+    private function string(mixed $value, ?int $maxLength = null): ?string
     {
         if (! is_scalar($value)) {
             return null;
         }
 
         $value = trim((string) $value);
+
+        if ($maxLength !== null) {
+            $value = mb_substr($value, 0, $maxLength);
+        }
 
         return $value === '' ? null : $value;
     }

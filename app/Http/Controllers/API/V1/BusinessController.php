@@ -30,7 +30,7 @@ class BusinessController extends Controller
      */
     public function store(Request $request, BillingService $billing): JsonResponse
     {
-        $data = $request->validate($this->rules(), $this->messages());
+        $data = $this->withTone($request->validate($this->rules(), $this->messages()));
 
         $data['country'] = $data['country'] ?? 'BF';
         $data['modules'] = array_key_exists('modules', $data)
@@ -74,7 +74,7 @@ class BusinessController extends Controller
     {
         $this->checkOwnership($business);
 
-        $data = $request->validate($this->rules(nullable: true), $this->messages());
+        $data = $this->withTone($request->validate($this->rules(nullable: true), $this->messages()));
 
         if (array_key_exists('modules', $data)) {
             $data['modules'] = $this->normalizeModules($data['modules']);
@@ -105,6 +105,23 @@ class BusinessController extends Controller
         return response()->json([
             'message' => 'L\'entreprise a été supprimée avec succès.',
         ]);
+    }
+
+    /**
+     * « tone » (vous | tu) est enregistré dans reply_style.address, où null vaut « vous ».
+     * Il prime sur un reply_style.address envoyé dans la même requête.
+     *
+     * @param  array<string, mixed>  $data
+     * @return array<string, mixed>
+     */
+    private function withTone(array $data): array
+    {
+        if (array_key_exists('tone', $data)) {
+            $data['reply_style'] = array_merge((array) ($data['reply_style'] ?? []), ['address' => $data['tone']]);
+            unset($data['tone']);
+        }
+
+        return $data;
     }
 
     /**
@@ -140,7 +157,9 @@ class BusinessController extends Controller
             'shipping_enabled' => ['sometimes', 'boolean'],
             'modules' => ['sometimes', 'array'],
             'modules.*' => ['string', Rule::in(Business::MODULES)],
-            // « Style de réponse » : null pour un réglage revient au profil appris.
+            // Tutoiement ou vouvoiement des clients (« vous » par défaut).
+            'tone' => ['sometimes', Rule::in(Business::TONES)],
+            // « Style de réponse » : null pour un réglage revient au profil appris (sauf address : « vous »).
             'reply_style' => ['sometimes', 'array:address,emojis,length,signature,learn_from_owner'],
             'reply_style.address' => ['nullable', Rule::in(Business::REPLY_STYLE_OPTIONS['address'])],
             'reply_style.emojis' => ['nullable', Rule::in(Business::REPLY_STYLE_OPTIONS['emojis'])],
@@ -192,6 +211,7 @@ class BusinessController extends Controller
             'modules.array' => 'Les modules doivent être une liste.',
             'modules.*.string' => 'Chaque module doit être une chaîne de caractères.',
             'modules.*.in' => 'Module inconnu. Modules disponibles : '.implode(', ', Business::MODULES).'.',
+            'tone.in' => 'Le ton doit être « vous » ou « tu ».',
             'reply_style.array' => 'Le style de réponse doit contenir address, emojis, length, signature ou learn_from_owner.',
             'reply_style.address.in' => 'Choisissez « tu » ou « vous ».',
             'reply_style.emojis.in' => 'Emojis : never, sometimes ou often.',

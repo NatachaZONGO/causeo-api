@@ -23,7 +23,11 @@ class FakeWhatsAppService extends WhatsAppService
         return ['messages' => [['id' => 'wamid.OUT'.count(self::$sent)]]];
     }
 
-    public function markAsRead(string $messageId): void
+    /** @var list<array{message_id: string, typing: bool}> */
+    public static array $read = [];
+
+    public function markAsRead(string $messageId, bool $typingIndicator = false): void
     {
+        self::$read[] = ['message_id' => $messageId, 'typing' => $typingIndicator];
     }
 }

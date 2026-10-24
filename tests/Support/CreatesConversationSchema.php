@@ -61,6 +61,7 @@ trait CreatesConversationSchema
             $table->text('content');
             $table->string('status')->nullable();
             $table->string('whatsapp_message_id')->nullable();
+            $table->float('confidence_score')->nullable();
             $table->json('metadata')->nullable();
             $table->timestamps();
         });

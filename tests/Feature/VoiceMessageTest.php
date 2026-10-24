@@ -77,7 +77,6 @@ class VoiceMessageTest extends TestCase
 
         $this->createConversationSchema();
         (require base_path('database/migrations/2026_10_12_100000_add_whatsapp_alerts_to_users.php'))->up();
-        Schema::table('messages', fn (Blueprint $table) => $table->float('confidence_score')->nullable());
         Schema::create('escalations', function (Blueprint $table) {
             $table->uuid('id')->primary();
             $table->uuid('conversation_id');

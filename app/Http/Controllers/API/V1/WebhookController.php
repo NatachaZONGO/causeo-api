@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\API\V1;
 
 use App\Http\Controllers\Controller;
+use App\Jobs\ReplyToCustomer;
 use App\Jobs\SendOwnerWhatsAppAlert;
 use App\Models\Business;
 use App\Models\BusinessMedia;
@@ -49,7 +50,6 @@ class WebhookController extends Controller
 
     public function __construct(
         private readonly WhatsAppService $whatsApp,
-        private readonly AIResponseService $ai,
         private readonly LearningService $learningService,
         private readonly WhatsAppAccountService $accounts,
         private readonly UsageService $usage,
@@ -474,8 +474,8 @@ class WebhookController extends Controller
     }
 
     /**
-     * Traiter effectivement un message entrant : génération de la réponse IA,
-     * envoi WhatsApp, escalade éventuelle.
+     * Traiter effectivement un message entrant : enregistrement, transcription d'un
+     * vocal, puis réponse programmée dans la file (ReplyToCustomer).
      *
      * @param  array{type?: string, from: string, message_id: string, text: string, customer_name: ?string, media_id?: string, mime_type?: string, voice?: bool}  $incoming
      */
@@ -534,7 +534,9 @@ class WebhookController extends Controller
                 return;
             }
 
-            $whatsApp->markAsRead($incoming['message_id']);
+            // « En train d'écrire » pendant le regroupement des messages, sauf pour un vocal :
+            // s'il n'est pas compris, le client ne reçoit pas forcément de réponse.
+            $whatsApp->markAsRead($incoming['message_id'], typingIndicator: ! $isVoice);
 
             if ($isVoice) {
                 $voice = $this->voiceMessages->handle($business, $incoming['media_id'], $incoming['mime_type']);
@@ -554,69 +556,11 @@ class WebhookController extends Controller
                 }
 
                 // Vocal en français et compris : exactement comme un message écrit.
-                $incoming['text'] = $voice->transcript;
+                $whatsApp->markAsRead($incoming['message_id'], typingIndicator: true);
             }
 
-            $result = $this->ai->answer($business, $incoming['text'], $conversation->id);
-
-            if ($result['should_escalate']) {
-                Escalation::create([
-                    'conversation_id' => $conversation->id,
-                    'message_id' => $inboundMessage->id,
-                    'business_id' => $business->id,
-                    'customer_question' => $incoming['text'],
-                    'status' => 'pending',
-                ]);
-
-                $inboundMessage->update(['status' => 'escalated']);
-
-                $waitingMessage = $result['answer']
-                    ?? 'Merci pour votre message ! Je vérifie ça et je reviens vers vous très vite 😊';
-
-                $sent = $whatsApp->sendMessage($incoming['from'], $waitingMessage);
-
-                $conversation->messages()->create([
-                    'direction' => 'outbound',
-                    'sender_type' => 'ai',
-                    'content' => $waitingMessage,
-                    'status' => 'sent',
-                    'confidence_score' => $result['confidence'],
-                    'whatsapp_message_id' => data_get($sent, 'messages.0.id'),
-                    'metadata' => [
-                        'context_used' => $result['context_used'],
-                        'escalated' => true,
-                    ] + ($result['tool_trace'] ?? []),
-                ]);
-            } else {
-                $sent = $whatsApp->sendMessage($incoming['from'], $result['answer']);
-
-                $conversation->messages()->create([
-                    'direction' => 'outbound',
-                    'sender_type' => 'ai',
-                    'content' => $result['answer'],
-                    'status' => 'sent',
-                    'confidence_score' => $result['confidence'],
-                    'whatsapp_message_id' => data_get($sent, 'messages.0.id'),
-                    'metadata' => [
-                        'context_used' => $result['context_used'],
-                    ] + ($result['tool_trace'] ?? [])
-                        // Un vocal compte toujours comme une unité, même avec une réponse toute faite.
-                        + (! empty($result['canned']) && ! $isVoice ? ['canned' => true] : []),
-                ]);
-
-                $inboundMessage->update(['status' => 'answered_by_ai']);
-            }
-
-            if (! empty($result['media_ids'])) {
-                $this->sendMediaFiles($whatsApp, $incoming['from'], $result['media_ids']);
-            }
-
-            $business->increment('monthly_message_count');
-
-            // Alertes à 80 % et 100 % de la limite mensuelle (une réponse toute faite ne compte pas).
-            if (empty($result['canned']) || $isVoice) {
-                $this->usage->afterReply($business);
-            }
+            // Réponse par la file, une fois que le client a fini d'écrire (jamais d'attente ici).
+            ReplyToCustomer::schedule($inboundMessage);
         } catch (Throwable $e) {
             Log::error('WebhookController::process a échoué', [
                 'whatsapp_message_id' => $incoming['message_id'] ?? null,
@@ -691,37 +635,6 @@ class WebhookController extends Controller
             'mime_type' => $incoming['mime_type'] ?? null,
             'voice' => $incoming['voice'] ?? false,
         ];
-    }
-
-    /**
-     * Envoyer au client les médias sélectionnés par l'IA.
-     *
-     * @param  array<int, string>  $mediaIds
-     */
-    private function sendMediaFiles(WhatsAppService $whatsApp, string $to, array $mediaIds): void
-    {
-        foreach ($mediaIds as $mediaId) {
-            $media = BusinessMedia::find($mediaId);
-
-            if ($media === null || empty($media->public_url)) {
-                continue;
-            }
-
-            if ($media->type === 'document') {
-                $extension = pathinfo((string) $media->file_path, PATHINFO_EXTENSION);
-                $filename = $media->title.($extension !== '' ? ".{$extension}" : '');
-                $response = $whatsApp->sendDocument($to, $media->public_url, $filename, $media->description);
-            } else {
-                $response = $whatsApp->sendImage($to, $media->public_url, $media->title);
-            }
-
-            Log::info('WebhookController: média envoyé au client', [
-                'media_id' => $media->id,
-                'type' => $media->type,
-                'to' => $to,
-                'whatsapp_message_id' => data_get($response, 'messages.0.id'),
-            ]);
-        }
     }
 
     /**

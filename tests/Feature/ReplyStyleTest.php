@@ -269,10 +269,10 @@ class ReplyStyleTest extends TestCase
         $this->assertStringContainsString('environ 9 mots', $stable['text']);
         // Les réglages explicites viennent après le profil et priment.
         $this->assertStringContainsString('priment sur le profil appris', $stable['text']);
-        $this->assertStringContainsString('Vouvoie toujours le client.', $stable['text']);
+        $this->assertStringContainsString("Vouvoie toujours le client, même s'il te tutoie.", $stable['text']);
         $this->assertStringContainsString("N'utilise aucun emoji.", $stable['text']);
         $this->assertStringContainsString('« Joyce »', $stable['text']);
-        $this->assertLessThan(strpos($stable['text'], 'Vouvoie toujours'), strpos($stable['text'], 'Tu tutoies, tu écris court'));
+        $this->assertLessThan(strrpos($stable['text'], 'Vouvoie toujours'), strpos($stable['text'], 'Tu tutoies, tu écris court'));
 
         $this->assertStringContainsString('Exemples de la façon dont le gérant écrit', $dynamic);
         $this->assertStringContainsString('Gérant : Oui, passe quand tu veux 🙏', $dynamic);
@@ -349,6 +349,58 @@ class ReplyStyleTest extends TestCase
         $this->assertContains($thanks['answer'], ['Avec plaisir !', 'De rien 🙏', 'Je t\'en prie !']);
         $this->assertDoesNotMatchRegularExpression('/vous|\*/u', $hello['answer']);
         Http::assertNothingSent();
+    }
+
+    // --- Vouvoiement ------------------------------------------------------------------------------
+
+    public function test_the_bot_says_vous_by_default_even_when_the_owner_and_the_customer_say_tu(): void
+    {
+        // Le gérant tutoie ses clients (profil appris) mais n'a rien choisi.
+        $this->business->forceFill(['style_profile' => self::PROFILE_JSON, 'style_profile_updated_at' => now()])->save();
+        $business = $this->business->fresh();
+        $this->assertSame('vous', $business->tone);
+
+        $this->service()->answer($business, 'Tu as le pagne bleu ?');
+
+        $stable = $this->sentRequest()['system'][0]['text'];
+        $this->assertStringContainsString("- Vouvoie toujours le client, même s'il te tutoie ou écrit de façon familière", $stable);
+        $this->assertStringContainsString("- Vouvoie toujours le client, même s'il te tutoie.", $stable);
+        $this->assertStringNotContainsString('Tutoie toujours', $stable);
+        $this->assertStringNotContainsString('tutoie les clients', $stable);
+        // La consigne vient après le profil appris, qui dit « Tu tutoies ».
+        $this->assertGreaterThan(strpos($stable, 'Tu tutoies, tu écris court'), strrpos($stable, 'Vouvoie toujours'));
+
+        $thanks = $this->service()->answer($business, 'Merci');
+        $this->assertContains($thanks['answer'], ['Avec plaisir !', 'De rien 🙏', 'Je vous en prie !']);
+    }
+
+    public function test_owner_chooses_the_tone_in_the_business_settings(): void
+    {
+        Sanctum::actingAs($this->owner);
+        $url = "/api/v1/businesses/{$this->business->id}";
+
+        $this->assertSame('vous', $this->business->toArray()['tone']);
+
+        $this->putJson($url, ['tone' => 'tu'])
+            ->assertOk()
+            ->assertJsonPath('business.tone', 'tu')
+            ->assertJsonPath('business.reply_style.address', 'tu');
+
+        $this->service()->answer($this->business->fresh(), 'Vous avez le pagne bleu ?');
+        $stable = $this->sentRequest()['system'][0]['text'];
+        $this->assertStringContainsString("- Tutoie toujours le client, même s'il te vouvoie.", $stable);
+        $this->assertStringNotContainsString('Vouvoie toujours', $stable);
+
+        // « tone » prime sur reply_style.address envoyé dans la même requête ; les autres réglages restent.
+        $this->putJson($url, ['tone' => 'vous', 'reply_style' => ['address' => 'tu', 'emojis' => 'never']])
+            ->assertOk()
+            ->assertJsonPath('business.tone', 'vous')
+            ->assertJsonPath('business.reply_style.address', 'vous')
+            ->assertJsonPath('business.reply_style.emojis', 'never');
+
+        $this->putJson($url, ['tone' => 'toi'])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(['tone' => 'Le ton doit être « vous » ou « tu ».']);
     }
 
     // --- Réglages (API) ---------------------------------------------------------------------------

@@ -23,6 +23,12 @@ class Business extends Model
     /** Modules activables par entreprise. */
     public const MODULES = ['orders', 'appointments'];
 
+    /** Tutoiement ou vouvoiement des clients (Mon entreprise) : « vous » sauf choix contraire du gérant. */
+    public const TONES = ['vous', 'tu'];
+
+    /** Fuseau horaire des entreprises (pas de colonne dédiée pour l'instant). */
+    public const DEFAULT_TIMEZONE = 'Africa/Ouagadougou';
+
     /** Réglages « Style de réponse » du gérant et leurs valeurs possibles (null : pas de choix). */
     public const REPLY_STYLE_OPTIONS = [
         'address' => ['tu', 'vous'],
@@ -85,6 +91,13 @@ class Business extends Model
     ];
 
     /**
+     * @var list<string>
+     */
+    protected $appends = [
+        'tone',
+    ];
+
+    /**
      * Get the attributes that should be cast.
      *
      * @return array<string, string>
@@ -140,6 +153,28 @@ class Business extends Model
             'signature' => $signature !== '' ? $signature : null,
             'learn_from_owner' => (bool) ($style['learn_from_owner'] ?? true),
         ];
+    }
+
+    /**
+     * Tutoiement ou vouvoiement imposé au bot : « tu » seulement si le gérant l'a choisi
+     * (reply_style.address), « vous » sinon, quel que soit le profil appris ou le client.
+     *
+     * @return Attribute<string, never>
+     */
+    protected function tone(): Attribute
+    {
+        return Attribute::get(fn () => $this->reply_style['address'] === 'tu' ? 'tu' : 'vous');
+    }
+
+    /**
+     * Fuseau horaire de l'entreprise : celui de l'attribut timezone s'il est valide,
+     * sinon Africa/Ouagadougou (GMT+0).
+     */
+    public function localTimezone(): string
+    {
+        $timezone = is_string($this->getAttribute('timezone')) ? trim($this->getAttribute('timezone')) : '';
+
+        return $timezone !== '' && in_array($timezone, timezone_identifiers_list(), true) ? $timezone : self::DEFAULT_TIMEZONE;
     }
 
     /** Le bot peut-il apprendre de la façon d'écrire du gérant (profil et exemples) ? */

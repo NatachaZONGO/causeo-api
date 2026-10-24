@@ -226,9 +226,11 @@ class WhatsAppService
     }
 
     /**
-     * Marquer un message entrant comme lu.
+     * Marquer un message entrant comme lu, avec l'indicateur « en train d'écrire » si
+     * demandé : il s'affiche chez le client jusqu'à notre réponse, 25 secondes au plus.
+     * https://developers.facebook.com/docs/whatsapp/cloud-api/typing-indicators
      */
-    public function markAsRead(string $messageId): void
+    public function markAsRead(string $messageId, bool $typingIndicator = false): void
     {
         $phoneNumberId = $this->phoneNumberId();
 
@@ -238,7 +240,7 @@ class WhatsAppService
                     'messaging_product' => 'whatsapp',
                     'status' => 'read',
                     'message_id' => $messageId,
-                ],
+                ] + ($typingIndicator ? ['typing_indicator' => ['type' => 'text']] : []),
             ]);
         } catch (GuzzleException $e) {
             Log::error('WhatsAppService::markAsRead a échoué', [

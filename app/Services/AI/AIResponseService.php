@@ -64,7 +64,7 @@ class AIResponseService
     private const STYLE_SECTIONS = [
         <<<'TEXT'
 - Tu écris comme le gérant écrirait lui-même à son client : simple, direct, chaleureux, jamais mécanique ni commercial.
-- Adapte la longueur et le registre au message du client : à un message court ou familier, réponds court et simplement ; à un message long ou formel, reste posé et un peu plus complet.
+- Adapte la longueur et le registre au message du client : à un message court ou familier, réponds court et simplement ; à un message long ou formel, reste posé et un peu plus complet. Le tutoiement ou le vouvoiement, lui, ne change jamais (voir les règles absolues).
 - Au plus un emoji par message, et pas dans chaque message, sauf si la façon d'écrire du gérant (plus bas) en dit autrement.
 TEXT,
         <<<'TEXT'
@@ -103,6 +103,15 @@ TEXT,
 - Si le client dit « Merci », « Ok merci », « C'est noté »… : réponds poliment (« Avec plaisir ! »), et propose ton aide pour autre chose. N'ajoute pas le marqueur JE_NE_SAIS_PAS dans ce cas.
 TEXT,
     ];
+
+    /** Consignes quand l'outil create_appointment n'est pas proposé (module inactif ou hors formule). */
+    private const NO_APPOINTMENT_INSTRUCTIONS = <<<'TEXT'
+# Demandes de rendez-vous ou de réservation
+Tu ne peux pas enregistrer de rendez-vous ni de réservation toi-même. Si le client veut prendre rendez-vous, réserver ou bloquer un créneau :
+- Ne dis jamais que le rendez-vous ou la réservation est noté, enregistré, pris, réservé ou confirmé, et ne fais pas de récapitulatif à confirmer.
+- Dis-lui simplement que tu transmets sa demande au gérant (avec la prestation, la date et l'heure souhaitées s'il les a données), qui reviendra vers lui pour la suite. C'est la seule exception à la règle qui interdit de parler de transmission.
+- Puis ajoute le marqueur JE_NE_SAIS_PAS, seul sur la dernière ligne.
+TEXT;
 
     /** Message d'attente envoyé quand une réponse est bloquée puis escaladée. */
     private const WAITING_MESSAGE = 'Je vérifie ça et je reviens vers vous très vite 😊';
@@ -148,10 +157,20 @@ TEXT,
         // Seuls les messages de la session en cours comptent : après une longue pause,
         // un ancien sujet ou un récapitulatif resté sans réponse est abandonné.
         $session = $this->sessionRows($conversationId);
-        $botRepliedInSession = $session->contains(fn (object $row) => $row->direction === 'outbound');
+        $lastBotMessage = $session->last(fn (object $row) => $row->direction === 'outbound');
 
-        $simple = $this->handleSimpleMessage($business, $question, $botRepliedInSession);
+        // Après une question du bot (« J'enregistre votre demande ? »), « Ok merci » ou
+        // « D'accord merci » répondent à cette question : seule l'IA peut appeler l'outil.
+        $awaitsAnswer = $lastBotMessage !== null && str_contains((string) $lastBotMessage->content, '?');
+
+        $simple = $this->handleSimpleMessage($business, $question, $lastBotMessage !== null, $awaitsAnswer);
         if ($simple !== null) {
+            Log::info('AIResponseService: réponse toute faite, sans appel à Claude', [
+                'business_id' => $business->id,
+                'conversation_id' => $conversationId,
+                'awaits_answer' => $awaitsAnswer,
+            ]);
+
             return $simple;
         }
 
@@ -180,10 +199,24 @@ TEXT,
                 $stablePrompt .= "\n\n".$this->orderInstructions($business);
                 $tools[] = $this->createOrderTool($business);
             }
-            if ($conversation !== null && $business->hasModule('appointments')) {
+            $appointmentsAvailable = $conversation !== null && $business->hasModule('appointments');
+            if ($appointmentsAvailable) {
                 $stablePrompt .= "\n\n".$this->appointmentInstructions($business);
                 $tools[] = $this->createAppointmentTool();
+            } else {
+                // Sans l'outil, une demande de rendez-vous va au gérant : jamais de « c'est noté ».
+                $stablePrompt .= "\n\n".self::NO_APPOINTMENT_INSTRUCTIONS;
             }
+
+            Log::info('AIResponseService: outils proposés', [
+                'business_id' => $business->id,
+                'conversation_id' => $conversationId,
+                'tools' => array_column($tools, 'name'),
+                // Activé par le gérant mais absent de la formule : l'outil n'est pas proposé.
+                'appointments_module' => $business->moduleEnabled('appointments')
+                    ? ($business->hasModule('appointments') ? 'active' : 'hors_formule')
+                    : 'desactive',
+            ]);
 
             $systemPrompt = $this->timeOfDayBlock($business);
 
@@ -275,24 +308,24 @@ TEXT,
             // Une réponse qui annonce une commande enregistrée (ou cite une référence)
             // sans appel réussi à create_order n'est jamais envoyée : un seul nouvel
             // essai avec une consigne de correction, puis escalade.
-            $violation = $this->unverifiedOrderClaim($text, $trace, $conversation);
+            $violation = $this->unverifiedOrderClaim($text, $trace, $conversation, $appointmentsAvailable);
 
             if ($violation !== null) {
-                Log::warning('AIResponseService: confirmation de commande non vérifiée bloquée', [
+                Log::warning('AIResponseService: annonce de commande ou de rendez-vous non vérifiée bloquée', [
                     'conversation_id' => $conversationId,
                     'reason' => $violation,
                     'text_length' => mb_strlen($text),
                 ]);
 
                 $request['messages'][] = ['role' => 'assistant', 'content' => $payload['content']];
-                $request['messages'][] = ['role' => 'user', 'content' => $this->orderClaimCorrection($violation)];
+                $request['messages'][] = ['role' => 'user', 'content' => $this->orderClaimCorrection($violation, $appointmentsAvailable)];
 
                 $payload = $this->converse($request, $business, $conversation, $trace);
                 $text = $this->extractText($payload);
-                $violation = $this->unverifiedOrderClaim($text, $trace, $conversation);
+                $violation = $this->unverifiedOrderClaim($text, $trace, $conversation, $appointmentsAvailable);
 
                 if ($violation !== null) {
-                    Log::warning('AIResponseService: confirmation de commande non vérifiée bloquée deux fois, escalade', [
+                    Log::warning('AIResponseService: annonce de commande ou de rendez-vous non vérifiée bloquée deux fois, escalade', [
                         'conversation_id' => $conversationId,
                         'reason' => $violation,
                         'text_length' => mb_strlen($text),
@@ -419,7 +452,7 @@ TEXT,
      *
      * @param  array{orders: array<int, array{id: string, reference: string}>, appointments: array<int, array{id: string, reference: string}>, tool_errors: array<int, string>, blocked_claim: bool, usage: array<string, int>}  $trace
      */
-    private function unverifiedOrderClaim(string $text, array $trace, ?Conversation $conversation): ?string
+    private function unverifiedOrderClaim(string $text, array $trace, ?Conversation $conversation, bool $appointmentsAvailable = true): ?string
     {
         $cited = $this->citedOrderReferences($text);
         $claimsOrder = $this->claimsOrderRecorded($text);
@@ -428,6 +461,11 @@ TEXT,
 
         if ($cited === [] && ! $claimsOrder && ! $claimsRequest && ! $claimsBooked) {
             return null;
+        }
+
+        // Sans l'outil, aucune demande ne peut avoir été enregistrée pendant cet échange.
+        if (! $appointmentsAvailable && ($claimsRequest || $claimsBooked) && ! $this->hasConfirmedAppointment($conversation)) {
+            return 'rendez-vous annoncé comme noté ou réservé alors que l\'assistant ne peut pas en enregistrer (module Rendez-vous inactif)';
         }
 
         $known = array_merge(
@@ -500,10 +538,27 @@ TEXT,
      */
     private function claimsAppointmentRequestRecorded(string $text): bool
     {
-        return $this->hasAffirmativeMatch(
+        $patterns = [
             '/\b(?:demandes?|rendez-vous|rdv|s[ée]ances?|r[ée]servations?)\b[^.!?\n]{0,60}?\b(?:enregistr[ée]+e?s?|prise en compte)\b/iu',
-            $text,
-        );
+            // « Votre rendez-vous est bien noté », « Rendez-vous pris pour samedi » ; pas « votre demande est
+            // notée », ni « les rendez-vous sont pris le samedi » ou « ce créneau est déjà pris ».
+            '/(?:^|[.!?]\s+|\b(?:votre|ta|ton|le|la|ce|cette)\s+)(?:rendez-vous|rdv|s[ée]ance|r[ée]servation)\b'
+                .'(?:(?!d[ée]j[àa])[^.!?\n]){0,40}?\b(?:not[ée]+e?|pris|prise|retenue?|inscrite?)\b/imu',
+            // « J'ai bien noté votre rendez-vous », « je note votre séance de samedi » (pas une question de récapitulatif).
+            '/\b(?:(?:j[\'’]ai|je vous ai|nous avons|on a)\s+(?:bien\s+|donc\s+)?(?:enregistr[ée]|not[ée]|inscrit|r[ée]serv[ée]|pris|retenu)'
+                .'|(?:je|nous)\s+(?:vous\s+)?(?:bien\s+|donc\s+)?(?:enregistre|note|inscris|notons|enregistrons|inscrivons))\s+'
+                .'(?:votre|le|la|ce|cette|un|une)\s+(?:demande\s+de\s+)?(?:rendez-vous|rdv|s[ée]ance|r[ée]servation|cr[ée]neau)\b(?![^.!?\n]*\?)/iu',
+            // « C'est noté pour samedi à 15h ».
+            '/\bc[\'’]est\s+(?:bien\s+|donc\s+)?not[ée]\s+pour\s+(?:le\s+|ce\s+)?(?:lundi|mardi|mercredi|jeudi|vendredi|samedi|dimanche|demain|apr[èe]s-demain|aujourd|ce\s+soir|\d)/iu',
+        ];
+
+        foreach ($patterns as $pattern) {
+            if ($this->hasAffirmativeMatch($pattern, $text)) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -513,13 +568,13 @@ TEXT,
     private function claimsAppointmentBooked(string $text): bool
     {
         $booked = $this->hasAffirmativeMatch(
-            '/\b(?:rendez-vous|rdv|s[ée]ances?|cr[ée]neaux?|cr[ée]neau|r[ée]servations?)\b[^.!?\n]{0,60}?\b(?:r[ée]serv|confirm|valid|bloqu|fix|cal)[ée]+e?s?\b/iu',
+            '/\b(?:rendez-vous|rdv|s[ée]ances?|cr[ée]neaux?|cr[ée]neau|r[ée]servations?)\b[^.!?\n]{0,60}?\b(?:r[ée]serv|confirm|valid|bloqu|fix|cal|programm|planifi)[ée]+e?s?\b/iu',
             $text,
         );
 
-        // « Je vous confirme le rendez-vous », sauf dans une question de récapitulatif.
+        // « Je vous confirme le rendez-vous », « je vous bloque le créneau », sauf dans une question de récapitulatif.
         return $booked || preg_match(
-            '/\b(?:je|nous)\s+(?:vous\s+)?(?:confirm|r[ée]serv|bloqu)\w*\s+(?:votre|le|la|ce|cette)\s+(?:rendez-vous|rdv|s[ée]ance|cr[ée]neau)\b(?![^.!?\n]*\?)/iu',
+            '/\b(?:je|nous)\s+(?:vous\s+)?(?:ai\s+|avons\s+)?(?:bien\s+)?(?:confirm|r[ée]serv|bloqu|cal|programm|planifi)\w*\s+(?:votre|le|la|ce|cette)\s+(?:rendez-vous|rdv|s[ée]ance|cr[ée]neau)\b(?![^.!?\n]*\?)/iu',
             $text,
         ) === 1;
     }
@@ -628,8 +683,15 @@ TEXT,
     /**
      * Consigne de correction envoyée à Claude quand sa réponse a été bloquée.
      */
-    private function orderClaimCorrection(string $reason): string
+    private function orderClaimCorrection(string $reason, bool $appointmentsAvailable = true): string
     {
+        if (! $appointmentsAvailable && str_contains($reason, 'module Rendez-vous inactif')) {
+            return "[Message système, pas du client : ne le mentionne pas dans ta réponse] Ta réponse précédente n'a pas été envoyée ({$reason}). "
+                ."Tu ne peux pas enregistrer de rendez-vous : ne dis jamais qu'un rendez-vous ou une réservation est noté, enregistré, pris, réservé ou confirmé. "
+                ."Dis au client que tu transmets sa demande au gérant, qui reviendra vers lui, puis ajoute JE_NE_SAIS_PAS seul sur la dernière ligne. "
+                .'Réécris ta réponse au client en conséquence.';
+        }
+
         return "[Message système, pas du client : ne le mentionne pas dans ta réponse] Ta réponse précédente n'a pas été envoyée ({$reason}). "
             ."N'annonce une commande ou une demande de rendez-vous comme enregistrée qu'après un appel réussi à l'outil correspondant "
             ."dans cet échange (create_order ou create_appointment) : si le client a clairement confirmé le récapitulatif complet "
@@ -718,6 +780,13 @@ TEXT,
             $result = ['type' => 'tool_result', 'tool_use_id' => $block['id']];
             $tool = $block['name'];
 
+            Log::info("AIResponseService: appel de l'outil {$tool} reçu", [
+                'business_id' => $business->id,
+                'conversation_id' => $conversation?->id,
+                'available' => isset($available[$tool]),
+                'fields' => array_keys((array) ($block['input'] ?? [])),
+            ]);
+
             if ($conversation === null || ! isset($available[$tool])) {
                 $trace['tool_errors'][] = "Outil inconnu : {$tool}.";
                 $results[] = $result + ['content' => "Outil inconnu : {$tool}.", 'is_error' => true];
@@ -767,7 +836,7 @@ TEXT,
             } catch (InvalidArgumentException $e) {
                 $trace['tool_errors'][] = $e->getMessage();
 
-                Log::info("AIResponseService: {$tool} refusé", [
+                Log::warning("AIResponseService: {$tool} refusé", [
                     'business_id' => $business->id,
                     'conversation_id' => $conversation->id,
                     'error' => $e->getMessage(),
@@ -775,6 +844,23 @@ TEXT,
                 ]);
 
                 $results[] = $result + ['content' => $e->getMessage(), 'is_error' => true];
+            } catch (\Throwable $e) {
+                // Erreur technique (base de données…) : Claude doit le savoir, sinon il annonce
+                // une demande enregistrée ; la réponse entière n'est pas perdue pour autant.
+                // Pas de getMessage() : une QueryException contient les valeurs du client.
+                $trace['tool_errors'][] = "Erreur technique de {$tool}.";
+
+                Log::error("AIResponseService: {$tool} a échoué (erreur technique)", [
+                    'business_id' => $business->id,
+                    'conversation_id' => $conversation->id,
+                    'exception' => $e::class,
+                    'fields' => array_keys($input),
+                ]);
+
+                $results[] = $result + [
+                    'content' => "Erreur technique : rien n'a été enregistré. N'annonce aucun enregistrement ; dis au client que tu vérifies et ajoute JE_NE_SAIS_PAS seul sur la dernière ligne.",
+                    'is_error' => true,
+                ];
             }
         }
 
@@ -1162,7 +1248,8 @@ PROMPT;
         return "# Exemples de la façon dont le gérant écrit\n"
             ."Réponses écrites par le gérant lui-même à des questions proches. Imite leur ton, leur longueur, "
             ."leur registre et leurs formules. Elles servent au ton, PAS aux faits : prix, disponibilités, délais "
-            ."et conditions ont pu changer ; ne reprends un fait que s'il figure dans le contexte fourni avec la question.\n"
+            ."et conditions ont pu changer ; ne reprends un fait que s'il figure dans le contexte fourni avec la question. "
+            ."Garde le tutoiement ou le vouvoiement fixé dans les règles absolues, même si le gérant fait autrement dans ces exemples.\n"
             .$lines;
     }
 
@@ -1182,19 +1269,12 @@ PROMPT;
     }
 
     /**
-     * Tutoiement ou vouvoiement : le réglage du gérant, sinon son profil appris, sinon « vous ».
+     * Tutoiement ou vouvoiement : « tu » seulement si le gérant l'a choisi (Business::tone),
+     * jamais d'après son profil appris ni d'après la façon d'écrire du client.
      */
     private function addressOf(Business $business): string
     {
-        $style = $business->reply_style;
-
-        if ($style['address'] !== null) {
-            return $style['address'];
-        }
-
-        $learned = $style['learn_from_owner'] ? ($business->style_profile['address'] ?? null) : null;
-
-        return $learned === 'tu' ? 'tu' : 'vous';
+        return $business->tone;
     }
 
     /**
@@ -1209,11 +1289,16 @@ PROMPT;
     {
         $rows = $session->values();
 
-        // Le message entrant courant est déjà en base : on le retire s'il est en dernier.
-        if ($rows->isNotEmpty()) {
-            $last = $rows->last();
-            if ($last->direction === 'inbound' && trim((string) $last->content) === trim($currentQuestion)) {
-                $rows = $rows->slice(0, -1)->values();
+        // Les messages entrants courants sont déjà en base : on retire les derniers messages du
+        // client qui forment la question (plusieurs quand ils ont été regroupés, voir ReplyToCustomer).
+        $trailing = [];
+        for ($i = $rows->count() - 1; $i >= 0 && $rows[$i]->direction === 'inbound'; $i--) {
+            array_unshift($trailing, trim((string) $rows[$i]->content));
+
+            if (implode("\n", $trailing) === trim($currentQuestion)) {
+                $rows = $rows->slice(0, $i)->values();
+
+                break;
             }
         }
 
@@ -1260,7 +1345,7 @@ PROMPT;
      *
      * @return array{answer: ?string, confidence: float, should_escalate: bool, context_used: array<int, mixed>}|null
      */
-    private function handleSimpleMessage(Business $business, string $question, bool $inConversation = false): ?array
+    private function handleSimpleMessage(Business $business, string $question, bool $inConversation = false, bool $awaitsAnswer = false): ?array
     {
         $normalized = $this->normalize($question);
 
@@ -1326,6 +1411,12 @@ PROMPT;
             }
         }
 
+        // Le bot vient de poser une question (récapitulatif à confirmer…) : « Ok merci »,
+        // « Parfait merci » ou « Oui » y répondent, l'IA doit les traiter.
+        if ($awaitsAnswer && ($isThanks || $isAffirmation)) {
+            return null;
+        }
+
         // Courtes et sans mise en forme, au tutoiement ou au vouvoiement du gérant.
         $tu = $this->addressOf($business) === 'tu';
 
@@ -1378,13 +1469,7 @@ PROMPT;
      */
     private function businessTimezone(Business $business): string
     {
-        $tz = is_string($business->timezone ?? null) ? trim($business->timezone) : '';
-
-        if ($tz !== '' && in_array($tz, timezone_identifiers_list(), true)) {
-            return $tz;
-        }
-
-        return 'Africa/Ouagadougou';
+        return $business->localTimezone();
     }
 
     /**
@@ -1604,6 +1689,10 @@ PROMPT;
 
         [$personnalite, $langue, $style, $merci] = $this->legacyStyle ? self::LEGACY_STYLE_SECTIONS : self::STYLE_SECTIONS;
 
+        $adresse = $this->addressOf($business) === 'tu'
+            ? "- Tutoie toujours le client, même s'il te vouvoie."
+            : "- Vouvoie toujours le client, même s'il te tutoie ou écrit de façon familière, et même si le gérant tutoie dans ses propres messages.";
+
         $prompt = <<<PROMPT
 {$identite}
 
@@ -1614,6 +1703,7 @@ Tu discutes avec un client sur WhatsApp. Tu réponds au nom de {$business->name}
 
 # Règles absolues
 {$langue}
+{$adresse}
 - Ne te présente pas de toi-même comme une intelligence artificielle, un robot ou un programme. Mais si le client demande sincèrement s'il parle à une IA ou à un robot, ne le nie JAMAIS : reconnais-le simplement et avec naturel, puis propose ton aide.
 - N'invente JAMAIS d'information : prix, stock, disponibilité, horaires, produits, services, délais, villes desservies, conditions, promotions. Utilise uniquement ce qui est écrit dans le contexte fourni plus bas dans la conversation.
 - Si une information manque dans le contexte, ne la confirme pas et ne l'infirme pas non plus : ne dis ni « oui » ni « non » (par exemple, si une ville n'est pas mentionnée, ne dis pas que vous y livrez, ni que vous n'y livrez pas). Applique alors la règle d'escalade ci-dessous.
@@ -1670,12 +1760,6 @@ PROMPT;
         $profile = $style['learn_from_owner'] ? $business->style_profile : null;
         if (is_array($profile) && ! empty($profile['instructions'])) {
             $reperes = array_filter([
-                match ($profile['address'] ?? null) {
-                    'tu' => 'tutoie les clients',
-                    'vous' => 'vouvoie les clients',
-                    'mixte' => 'tutoie ou vouvoie selon le client',
-                    default => null,
-                },
                 ! empty($profile['median_words']) ? "réponses d'environ {$profile['median_words']} mots" : null,
                 ! empty($profile['greetings']) ? 'salutations : '.implode(', ', $profile['greetings']) : null,
                 ! empty($profile['closings']) ? 'formules de fin : '.implode(', ', $profile['closings']) : null,
@@ -1686,17 +1770,14 @@ PROMPT;
             ]);
 
             $block .= "\n\n# Façon d'écrire du gérant (apprise de ses propres réponses)\n"
-                ."Écris comme lui. Ce profil décrit son style, pas des faits.\n"
+                ."Écris comme lui. Ce profil décrit son style, pas des faits. Il ne change jamais le tutoiement ou le vouvoiement fixé dans les règles absolues.\n"
                 .trim((string) $profile['instructions'])
                 .($reperes !== [] ? "\nRepères : ".implode(' ; ', $reperes).'.' : '');
         }
 
+        // Toujours présent, après le profil appris : celui-ci a pu relever un gérant qui tutoie.
         $settings = array_filter([
-            match ($style['address']) {
-                'tu' => '- Tutoie toujours le client.',
-                'vous' => '- Vouvoie toujours le client.',
-                default => null,
-            },
+            $this->addressOf($business) === 'tu' ? '- Tutoie toujours le client.' : "- Vouvoie toujours le client, même s'il te tutoie.",
             match ($style['emojis']) {
                 'never' => "- N'utilise aucun emoji.",
                 'sometimes' => '- Un emoji au plus, et pas dans chaque message.',

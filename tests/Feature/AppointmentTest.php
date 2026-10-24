@@ -435,6 +435,161 @@ class AppointmentTest extends TestCase
             ->assertJsonPath('business.modules', ['orders', 'appointments']);
     }
 
+    // --- Cas qui faisaient perdre des demandes -----------------------------------------------------
+
+    /**
+     * « Ok merci » après « J'enregistre votre demande ? » recevait la réponse toute faite
+     * « Avec plaisir ! », sans appel à Claude : la demande n'était jamais enregistrée.
+     */
+    public function test_ok_merci_after_the_recap_is_a_confirmation_handled_by_claude(): void
+    {
+        $this->seedRecapConversation(confirmation: 'Ok merci');
+        Http::fake(['api.anthropic.com/*' => Http::sequence()
+            ->push($this->toolUseResponse($this->validInput()))
+            ->push($this->textResponse('Votre demande est enregistrée, le créneau vous sera confirmé très vite.')),
+        ]);
+
+        $result = $this->service()->answer($this->business, 'Ok merci', $this->conversationId);
+
+        $this->assertSame('Votre demande est enregistrée, le créneau vous sera confirmé très vite.', $result['answer']);
+        $this->assertArrayNotHasKey('canned', $result);
+        $this->assertSame('Tresses', Appointment::sole()->service);
+    }
+
+    public function test_thanks_without_a_pending_question_keep_the_canned_reply(): void
+    {
+        DB::table('messages')->insert([
+            ['id' => (string) Str::uuid(), 'conversation_id' => $this->conversationId, 'direction' => 'inbound', 'content' => 'Vous ouvrez le samedi ?', 'created_at' => now()->subMinutes(3), 'updated_at' => now()->subMinutes(3)],
+            ['id' => (string) Str::uuid(), 'conversation_id' => $this->conversationId, 'direction' => 'outbound', 'content' => 'Oui, de 9h à 19h.', 'created_at' => now()->subMinutes(2), 'updated_at' => now()->subMinutes(2)],
+        ]);
+        Http::fake();
+
+        $result = $this->service()->answer($this->business, 'Ok merci', $this->conversationId);
+
+        $this->assertTrue($result['canned']);
+        Http::assertNothingSent();
+    }
+
+    /**
+     * Annonces d'un rendez-vous « noté » ou « pris » sans appel à create_appointment, que la
+     * protection serveur laissait passer (seuls « enregistré » et « réservé » étaient repérés).
+     */
+    #[\PHPUnit\Framework\Attributes\DataProvider('unrecordedClaims')]
+    public function test_noted_claims_without_the_tool_are_blocked(string $claim): void
+    {
+        $this->seedRecapConversation();
+        Http::fake(['api.anthropic.com/*' => Http::sequence()
+            ->push($this->textResponse($claim))
+            ->push($this->textResponse('Tresses, samedi 10 octobre à 15h. J\'enregistre votre demande ?')),
+        ]);
+
+        $result = $this->service()->answer($this->business, 'oui', $this->conversationId);
+
+        $this->assertSame('Tresses, samedi 10 octobre à 15h. J\'enregistre votre demande ?', $result['answer']);
+        Http::assertSentCount(2);
+        $this->assertSame(0, Appointment::count());
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function unrecordedClaims(): array
+    {
+        return [
+            'c\'est noté pour' => ['Parfait, c\'est noté pour samedi à 15h 👍'],
+            'rendez-vous noté' => ['Votre rendez-vous est bien noté pour samedi.'],
+            'j\'ai enregistré' => ['J\'ai bien enregistré votre rendez-vous de samedi.'],
+            'je note' => ['Je note votre rendez-vous pour samedi 15h.'],
+            'rendez-vous pris' => ['Très bien. Rendez-vous pris pour samedi à 15h !'],
+            'je vous ai réservé' => ['Je vous ai réservé le créneau de 15h samedi.'],
+            'séance programmée' => ['Votre séance est programmée samedi à 15h.'],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('harmlessReplies')]
+    public function test_replies_that_do_not_announce_a_booking_are_sent(string $reply): void
+    {
+        Http::fake(['api.anthropic.com/*' => Http::response($this->textResponse($reply))]);
+
+        $result = $this->service()->answer($this->business, 'Je veux des tresses samedi', $this->conversationId);
+
+        $this->assertSame($reply, $result['answer']);
+        Http::assertSentCount(1);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function harmlessReplies(): array
+    {
+        return [
+            'créneau déjà pris' => ['Désolé, ce créneau est déjà pris. 16h vous irait ?'],
+            'horaires' => ['Les rendez-vous sont pris du mardi au samedi, de 9h à 19h.'],
+            'question de récapitulatif' => ['Tresses samedi 10 octobre à 15h : je note votre rendez-vous ?'],
+            'je note' => ['Très bien, je note.'],
+        ];
+    }
+
+    public function test_without_the_module_the_request_goes_to_the_owner_and_never_looks_recorded(): void
+    {
+        $this->business->update(['modules' => []]);
+        Http::fake(['api.anthropic.com/*' => Http::sequence()
+            ->push($this->textResponse('C\'est noté pour samedi à 15h !'))
+            ->push($this->textResponse("Je transmets votre demande pour samedi à 15h au gérant, qui reviendra vers vous.\nJE_NE_SAIS_PAS")),
+        ]);
+
+        $result = $this->service()->answer($this->business, 'Je veux des tresses samedi à 15h', $this->conversationId);
+
+        $this->assertSame('Je transmets votre demande pour samedi à 15h au gérant, qui reviendra vers vous.', $result['answer']);
+        $this->assertTrue($result['should_escalate']);
+        $this->assertSame(0, Appointment::count());
+
+        $requests = Http::recorded()->map(fn (array $pair) => $pair[0]->data());
+        $this->assertArrayNotHasKey('tools', $requests[0]);
+        $this->assertStringContainsString('# Demandes de rendez-vous ou de réservation', $this->systemPrompt($requests[0]));
+        $this->assertStringContainsString('tu transmets sa demande au gérant', $this->systemPrompt($requests[0]));
+        $correction = collect($requests[1]['messages'])->last()['content'];
+        $this->assertStringContainsString('module Rendez-vous inactif', $correction);
+        $this->assertStringContainsString('JE_NE_SAIS_PAS', $correction);
+        $this->assertStringNotContainsString('create_appointment', $correction);
+    }
+
+    public function test_module_outside_the_plan_behaves_like_a_disabled_module(): void
+    {
+        $this->assignPlan($this->business->id, \App\Models\Plan::FREE);
+        Http::fake(['api.anthropic.com/*' => Http::sequence()
+            ->push($this->textResponse('Votre rendez-vous est bien pris pour samedi.'))
+            ->push($this->textResponse('Votre séance est réservée.')),
+        ]);
+
+        $result = $this->service()->answer($this->business->fresh(), 'Je veux des tresses samedi à 15h', $this->conversationId);
+
+        $this->assertSame('Je vérifie ça et je reviens vers vous très vite 😊', $result['answer']);
+        $this->assertTrue($result['should_escalate']);
+        $this->assertStringContainsString('# Demandes de rendez-vous ou de réservation', $this->systemPrompt(Http::recorded()[0][0]->data()));
+    }
+
+    public function test_today_is_the_business_local_day_and_iso_datetimes_are_accepted(): void
+    {
+        // 2 h UTC le 9 octobre : il est encore 22 h le 8 octobre à New York.
+        $this->travelTo('2026-10-09 02:00:00');
+        $this->business->setAttribute('timezone', 'America/New_York');
+
+        $appointment = app(AppointmentService::class)->createFromAi($this->business, $this->conversation(), ['requested_date' => '2026-10-08T18:30:00'] + $this->validInput());
+
+        $this->assertSame('2026-10-08', $appointment->requested_date->format('Y-m-d'));
+
+        $this->business->setAttribute('timezone', null);
+        $this->assertRejected(['requested_date' => '2026-10-08'], 'est déjà passée');
+    }
+
+    public function test_too_long_texts_are_cut_instead_of_failing_the_insert(): void
+    {
+        $appointment = app(AppointmentService::class)->createFromAi($this->business, $this->conversation(), ['service' => str_repeat('Tresses ', 50)] + $this->validInput());
+
+        $this->assertSame(255, mb_strlen($appointment->service));
+    }
+
     /**
      * @param  array<string, mixed>  $overrides
      */
@@ -531,12 +686,12 @@ class AppointmentTest extends TestCase
         return new FixedContextAIResponseService(self::CONTEXT);
     }
 
-    private function seedRecapConversation(): void
+    private function seedRecapConversation(string $confirmation = 'oui'): void
     {
         $messages = [
             ['inbound', 'Je veux des tresses samedi à 15h. Je suis Awa Ouédraogo.'],
             ['outbound', "Récapitulatif :\nTresses, samedi 10 octobre à 15h : 15 000 FCFA\nJ'enregistre votre demande ?"],
-            ['inbound', 'oui'],
+            ['inbound', $confirmation],
         ];
 
         foreach ($messages as $index => [$direction, $content]) {

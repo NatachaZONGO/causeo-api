@@ -135,6 +135,11 @@ class NotificationService
                     'appointment_id' => $appointment->id,
                 ],
             ]);
+
+            Log::info('NotificationService: demande de rendez-vous notifiée au gérant', [
+                'business_id' => $appointment->business_id,
+                'appointment_id' => $appointment->id,
+            ]);
         } catch (Throwable $e) {
             // Une notification manquée ne doit pas annuler la demande.
             Log::error('NotificationService::notifyAppointment a échoué', [

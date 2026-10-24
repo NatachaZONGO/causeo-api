@@ -71,6 +71,19 @@ return [
         ],
     ],
 
+    // Rythme des réponses WhatsApp du bot (secondes). Les messages du client sont regroupés :
+    // chaque nouveau message relance l'attente (debounce), au plus max_wait après le premier.
+    // Puis la réponse part après un délai « en train d'écrire » : typing_base + 1 s par
+    // typing_chars_per_second caractères, ± typing_jitter, plafonné à typing_max.
+    'reply_pacing' => [
+        'debounce_seconds' => (int) env('AI_REPLY_DEBOUNCE_SECONDS', 8),
+        'max_wait_seconds' => (int) env('AI_REPLY_MAX_WAIT_SECONDS', 30),
+        'typing_base_seconds' => (float) env('AI_REPLY_TYPING_BASE_SECONDS', 3),
+        'typing_chars_per_second' => (int) env('AI_REPLY_TYPING_CHARS_PER_SECOND', 40),
+        'typing_jitter_seconds' => (float) env('AI_REPLY_TYPING_JITTER_SECONDS', 1.5),
+        'typing_max_seconds' => (int) env('AI_REPLY_TYPING_MAX_SECONDS', 20),
+    ],
+
     'gemini' => [
         'api_key' => env('GEMINI_API_KEY'),
         'model' => env('GEMINI_MODEL', 'gemini-2.0-flash'),
