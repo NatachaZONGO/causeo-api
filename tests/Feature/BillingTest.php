@@ -45,6 +45,7 @@ class BillingTest extends TestCase
             '2026_09_06_003335_create_subscriptions_table.php',
             '2026_10_09_100000_create_plans_table.php',
             '2026_10_09_120000_create_plan_prices_table.php',
+            '2026_10_12_100000_add_whatsapp_alerts_to_users.php',
         ] as $migration) {
             (require base_path("database/migrations/{$migration}"))->up();
         }
@@ -370,6 +371,33 @@ class BillingTest extends TestCase
         $this->getJson('/api/v1/admin/businesses?is_active=0')->assertJsonCount(1, 'data')->assertJsonPath('data.0.id', $inactive->id);
         $this->getJson('/api/v1/admin/businesses?is_active=1')->assertJsonCount(1, 'data')->assertJsonPath('data.0.id', $active->id);
         $this->getJson('/api/v1/admin/businesses')->assertJsonCount(2, 'data')->assertJsonPath('data.0.user.name', 'Gérant');
+    }
+
+    public function test_admin_list_shows_whether_owner_whatsapp_alerts_are_active(): void
+    {
+        $active = $this->onboard($this->makeUser());
+        $active->user->forceFill([
+            'notification_phone' => '+22670112233',
+            'whatsapp_alerts_enabled' => true,
+            'whatsapp_alerts_consented_at' => now(),
+        ])->save();
+        $withoutConsent = $this->onboard($this->makeUser());
+        $withoutConsent->user->forceFill(['notification_phone' => '+22670998877', 'whatsapp_alerts_enabled' => true])->save();
+        $inactive = $this->onboard($this->makeUser());
+        Sanctum::actingAs(User::forceCreate(['name' => 'Admin', 'email' => 'admin@example.test', 'password' => 'x', 'country' => 'BF', 'is_admin' => true]));
+
+        $list = collect($this->getJson('/api/v1/admin/businesses')->assertOk()->json('data'))->keyBy('id');
+        $this->assertTrue($list[$active->id]['whatsapp_alerts_active']);
+        $this->assertFalse($list[$withoutConsent->id]['whatsapp_alerts_active']);
+        $this->assertFalse($list[$inactive->id]['whatsapp_alerts_active']);
+        // Le numéro d'alerte du gérant reste privé.
+        $this->assertArrayNotHasKey('notification_phone', $list[$active->id]['user']);
+
+        $this->getJson('/api/v1/admin/businesses?whatsapp_alerts=1')->assertJsonCount(1, 'data')->assertJsonPath('data.0.id', $active->id);
+        $this->assertEqualsCanonicalizing(
+            [$withoutConsent->id, $inactive->id],
+            collect($this->getJson('/api/v1/admin/businesses?whatsapp_alerts=0')->json('data'))->pluck('id')->all(),
+        );
     }
 
     public function test_billing_endpoint_is_private(): void

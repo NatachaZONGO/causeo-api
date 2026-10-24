@@ -14,6 +14,7 @@ use App\Models\Subscription;
 use App\Models\User;
 use App\Services\Billing\BillingService;
 use App\Services\Conversations\ConversationListQuery;
+use App\Services\WhatsApp\OwnerAlertService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -21,6 +22,9 @@ use Illuminate\Validation\Rule;
 
 class AdminDashboardController extends Controller
 {
+    /** Colonnes du gérant lues pour savoir si ses alertes WhatsApp sont actives, jamais renvoyées. */
+    private const ALERT_COLUMNS = ['notification_phone', 'whatsapp_alerts_enabled', 'whatsapp_alerts_consented_at'];
+
     /**
      * Statistiques globales de la plateforme.
      */
@@ -62,7 +66,7 @@ class AdminDashboardController extends Controller
     public function businesses(Request $request): JsonResponse
     {
         $query = Business::query()
-            ->with(['user:id,name,email', 'subscription.plan'])
+            ->with(['user:id,name,email,'.implode(',', self::ALERT_COLUMNS), 'subscription.plan'])
             ->withCount([
                 'conversations',
                 'documents',
@@ -78,6 +82,17 @@ class AdminDashboardController extends Controller
             $query->where('is_active', $request->boolean('is_active'));
         }
 
+        // Alertes WhatsApp du gérant : mêmes conditions que OwnerAlertService::ownerAccepts.
+        if ($request->has('whatsapp_alerts')) {
+            $active = fn ($q) => $q->where('whatsapp_alerts_enabled', true)
+                ->whereNotNull('whatsapp_alerts_consented_at')
+                ->whereNotNull('notification_phone')
+                ->where('notification_phone', '<>', '');
+            $request->boolean('whatsapp_alerts')
+                ? $query->whereHas('user', $active)
+                : $query->whereDoesntHave('user', $active);
+        }
+
         if ($request->filled('search')) {
             $search = $request->input('search');
             $query->where(function ($q) use ($search) {
@@ -90,8 +105,13 @@ class AdminDashboardController extends Controller
 
         $businesses->getCollection()->transform(function (Business $business) {
             $business->monthly_message_count = (int) $business->monthly_message_count;
+            $alertsActive = OwnerAlertService::ownerAccepts($business->user);
+            $business->user?->makeHidden(self::ALERT_COLUMNS);
 
-            return $business->toArray() + ['billing' => $this->billingSummary($business)];
+            return $business->toArray() + [
+                'billing' => $this->billingSummary($business),
+                'whatsapp_alerts_active' => $alertsActive,
+            ];
         });
 
         return response()->json($businesses);
