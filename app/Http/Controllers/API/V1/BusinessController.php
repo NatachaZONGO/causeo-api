@@ -30,7 +30,7 @@ class BusinessController extends Controller
      */
     public function store(Request $request, BillingService $billing): JsonResponse
     {
-        $data = $this->withTone($request->validate($this->rules(), $this->messages()));
+        $data = $this->normalizeInput($request->validate($this->rules(), $this->messages()));
 
         $data['country'] = $data['country'] ?? 'BF';
         $data['modules'] = array_key_exists('modules', $data)
@@ -74,7 +74,7 @@ class BusinessController extends Controller
     {
         $this->checkOwnership($business);
 
-        $data = $this->withTone($request->validate($this->rules(nullable: true), $this->messages()));
+        $data = $this->normalizeInput($request->validate($this->rules(nullable: true), $this->messages()));
 
         if (array_key_exists('modules', $data)) {
             $data['modules'] = $this->normalizeModules($data['modules']);
@@ -108,14 +108,19 @@ class BusinessController extends Controller
     }
 
     /**
-     * « tone » (vous | tu) est enregistré dans reply_style.address, où null vaut « vous ».
+     * Couleur de marque en majuscules. « tone » (vous | tu) est enregistré dans
+     * reply_style.address, où null vaut « vous ».
      * Il prime sur un reply_style.address envoyé dans la même requête.
      *
      * @param  array<string, mixed>  $data
      * @return array<string, mixed>
      */
-    private function withTone(array $data): array
+    private function normalizeInput(array $data): array
     {
+        if (isset($data['brand_color'])) {
+            $data['brand_color'] = strtoupper($data['brand_color']);
+        }
+
         if (array_key_exists('tone', $data)) {
             $data['reply_style'] = array_merge((array) ($data['reply_style'] ?? []), ['address' => $data['tone']]);
             unset($data['tone']);
@@ -169,6 +174,8 @@ class BusinessController extends Controller
             // Réponse au client quand son vocal n'est pas compris, ou pour un document ou une vidéo (désactivée par défaut).
             'voice_fallback_reply' => ['sometimes', 'boolean'],
             'voice_fallback_message' => ['nullable', 'string', 'max:300'],
+            // Couleur de marque (#RRGGBB) ; le texte à poser dessus est calculé (brand_text_color).
+            'brand_color' => ['nullable', 'string', 'regex:/^#[0-9A-Fa-f]{6}$/'],
         ];
     }
 
@@ -221,6 +228,8 @@ class BusinessController extends Controller
             'voice_fallback_reply.boolean' => 'La réponse aux vocaux non compris, documents et vidéos doit être activée ou désactivée (vrai ou faux).',
             'voice_fallback_message.string' => 'Le message de réponse aux vocaux, documents et vidéos doit être un texte.',
             'voice_fallback_message.max' => 'Le message de réponse aux vocaux, documents et vidéos ne doit pas dépasser 300 caractères.',
+            'brand_color.regex' => 'La couleur doit être au format hexadécimal #RRGGBB, par exemple #0F766E.',
+            'brand_color.string' => 'La couleur doit être au format hexadécimal #RRGGBB, par exemple #0F766E.',
             'reply_style.learn_from_owner.boolean' => '« Apprendre de ma façon d\'écrire » doit être activé ou désactivé (vrai ou faux).',
         ];
     }

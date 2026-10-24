@@ -374,6 +374,66 @@ class ReplyStyleTest extends TestCase
         $this->assertContains($thanks['answer'], ['Avec plaisir !', 'De rien 🙏', 'Je vous en prie !']);
     }
 
+    /**
+     * Cas de NEEB-RATA MARKET : des consignes du gérant rédigées en « tu » (« Tu es
+     * l'assistant… propose-lui… ») passaient pour prioritaires et le bot tutoyait.
+     */
+    public function test_a_reply_that_says_tu_is_rewritten_with_vous(): void
+    {
+        // Colonne absente du schéma de test : attribut posé sans enregistrer.
+        $business = $this->business->fresh()->setAttribute('ai_instructions', "Tu es l'assistant de la boutique. Propose-lui de réserver l'article.");
+        $this->claudeReplies = ['Parfait ! Quelle taille portes-tu ?', 'Parfait ! Quelle taille portez-vous ?'];
+
+        $result = $this->service()->answer($business, 'Je veux une chemise');
+
+        $this->assertSame('Parfait ! Quelle taille portez-vous ?', $result['answer']);
+        $requests = Http::recorded()->map(fn (array $pair) => $pair[0]->data())->values();
+        $this->assertCount(2, $requests);
+        $this->assertStringContainsString('Réécris exactement la même réponse en le vouvoyant', collect($requests[1]['messages'])->last()['content']);
+
+        $system = $this->systemPrompt($requests[0]);
+        $this->assertStringContainsString("des consignes rédigées en « tu » s'adressent à toi, pas au client", $system);
+        $this->assertStringEndsWith('jamais « tu », « te », « ton » ou « ta ».', $requests[0]['system'][1]['text']);
+    }
+
+    public function test_the_first_reply_is_kept_if_the_rewrite_still_says_tu(): void
+    {
+        $this->claudeReplies = ['Ça te plaît ?', "T'as vu la couleur ?"];
+
+        $this->assertSame('Ça te plaît ?', $this->service()->answer($this->business->fresh(), 'Je veux une chemise')['answer']);
+        Http::assertSentCount(2);
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('repliesWithoutTu')]
+    public function test_replies_with_vous_are_sent_without_rewrite(string $reply): void
+    {
+        $this->claudeReplies = [$reply];
+
+        $this->assertSame($reply, $this->service()->answer($this->business->fresh(), 'Vous avez la chemise ?')['answer']);
+        Http::assertSentCount(1);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function repliesWithoutTu(): array
+    {
+        return [
+            'vouvoiement' => ['Oui, la chemise est à 17 500 F. Quelle taille portez-vous ?'],
+            'mots contenant ta, te, tu' => ['Nous sommes à Karpala, la boutique est ouverte : venez tester la tunique en coton.'],
+            'citation du client' => ['Vous parlez du modèle « tu vas adorer » ? Il est à 12 000 F.'],
+        ];
+    }
+
+    public function test_with_tu_chosen_nothing_is_rewritten(): void
+    {
+        $this->business->update(['reply_style' => ['address' => 'tu']]);
+        $this->claudeReplies = ['Quelle taille portes-tu ?'];
+
+        $this->assertSame('Quelle taille portes-tu ?', $this->service()->answer($this->business->fresh(), 'Je veux une chemise')['answer']);
+        Http::assertSentCount(1);
+    }
+
     public function test_owner_chooses_the_tone_in_the_business_settings(): void
     {
         Sanctum::actingAs($this->owner);

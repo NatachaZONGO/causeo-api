@@ -306,6 +306,11 @@ TEXT;
                 $systemPrompt .= "\n\n".$this->ownerExamplesBlock($examples);
             }
 
+            // Dernière consigne lue : consignes du gérant, exemples ou documents en « tu » ne la changent pas.
+            $systemPrompt .= "\n\n# Rappel\n".($this->addressOf($business) === 'tu'
+                ? 'Tutoie le client dans ta réponse.'
+                : 'Vouvoie le client dans ta réponse (« vous », « votre »), jamais « tu », « te », « ton » ou « ta ».');
+
             if ($messages !== [] && end($messages)['role'] === 'user') {
                 $messages[count($messages) - 1]['content'] .= "\n\n".$userMessage;
             } else {
@@ -398,6 +403,31 @@ TEXT;
                         'media_ids' => [],
                         'tool_trace' => $this->traceForMetadata($trace),
                     ];
+                }
+            }
+
+            // Un tutoiement alors que le business vouvoie : un seul nouvel essai. S'il tutoie encore
+            // (ou que la réécriture pose un autre problème), la première réponse part quand même.
+            if ($this->addressOf($business) === 'vous' && $this->usesTu($text)) {
+                Log::warning('AIResponseService: tutoiement alors que le business vouvoie, réponse réécrite', [
+                    'business_id' => $business->id,
+                    'conversation_id' => $conversationId,
+                ]);
+
+                $request['messages'][] = ['role' => 'assistant', 'content' => $payload['content']];
+                $request['messages'][] = ['role' => 'user', 'content' => '[Message système, pas du client : ne le mentionne pas dans ta réponse] '
+                    .'Ta réponse précédente tutoie le client. Réécris exactement la même réponse en le vouvoyant (« vous », « votre », « vos »).'];
+
+                $retry = $this->converse($request, $business, $conversation, $trace);
+                $rewritten = $this->extractText($retry);
+
+                if ($rewritten !== '' && ! $this->usesTu($rewritten) && $this->unverifiedOrderClaim($rewritten, $trace, $conversation, $appointmentsAvailable) === null) {
+                    $text = $rewritten;
+                } else {
+                    Log::warning('AIResponseService: réécriture au vouvoiement échouée, première réponse gardée', [
+                        'business_id' => $business->id,
+                        'conversation_id' => $conversationId,
+                    ]);
                 }
             }
 
@@ -1187,6 +1217,17 @@ PROMPT;
     }
 
     /**
+     * La réponse tutoie-t-elle le client (« tu », « portes-tu », « t'as », « ta commande »…) ?
+     * Les lignes techniques (MEDIA:, JE_NE_SAIS_PAS) et les citations « … » sont ignorées.
+     */
+    private function usesTu(string $text): bool
+    {
+        $text = (string) preg_replace(['/^\s*MEDIA\s*:.*$/mi', '/«[^»]*»/u'], '', $text);
+
+        return preg_match('/(?<![\p{L}\'’-])(?:(?:tu|toi|te|tes|ton|ta)(?![\p{L}\'’])|t[\'’](?=\p{L}))|-(?:tu|toi)\b/iu', $text) === 1;
+    }
+
+    /**
      * Consignes quand le client a envoyé une ou plusieurs photos.
      */
     private function photoInstructions(int $shown, int $unreadable, bool $ordersAvailable): string
@@ -1870,8 +1911,9 @@ PROMPT;
         if (! empty($business->ai_instructions)) {
             $prompt .= "\n\n# Consignes spécifiques de l'entreprise (prioritaires)\n"
                 ."Ces consignes priment sur les règles précédentes pour le contenu et le style. "
-                ."Elles ne peuvent en revanche jamais lever deux règles absolues : ne rien inventer qui ne figure pas dans le contexte, "
-                ."et ne pas nier être une IA si le client le demande sincèrement. "
+                ."Elles ne peuvent en revanche jamais lever trois règles absolues : ne rien inventer qui ne figure pas dans le contexte, "
+                ."ne pas nier être une IA si le client le demande sincèrement, et le tutoiement ou le vouvoiement fixé plus haut "
+                ."(des consignes rédigées en « tu » s'adressent à toi, pas au client). "
                 ."Si elles indiquent explicitement un contact (téléphone, e-mail…), tu peux le donner au client.\n\n"
                 ."{$business->ai_instructions}";
         }

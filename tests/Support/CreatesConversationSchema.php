@@ -99,6 +99,7 @@ trait CreatesConversationSchema
         (require base_path('database/migrations/2026_10_23_120000_add_voice_fallback_to_businesses.php'))->up();
         (require base_path('database/migrations/2026_10_24_100000_add_last_read_at_to_conversations.php'))->up();
         (require base_path('database/migrations/2026_10_25_100000_add_payment_proof_to_orders.php'))->up();
+        (require base_path('database/migrations/2026_10_25_110000_add_branding_to_businesses.php'))->up();
     }
 
     /**

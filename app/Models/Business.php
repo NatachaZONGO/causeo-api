@@ -15,6 +15,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\HasOne;
+use Illuminate\Support\Facades\Storage;
 
 class Business extends Model
 {
@@ -25,6 +26,12 @@ class Business extends Model
 
     /** Tutoiement ou vouvoiement des clients (Mon entreprise) : « vous » sauf choix contraire du gérant. */
     public const TONES = ['vous', 'tu'];
+
+    /** Disque des logos (bucket media de Supabase, public). */
+    public const LOGO_DISK = 'supabase_media';
+
+    /** Texte foncé posé sur une couleur de marque claire. */
+    public const DARK_TEXT = '#111827';
 
     /** Fuseau horaire des entreprises (pas de colonne dédiée pour l'instant). */
     public const DEFAULT_TIMEZONE = 'Africa/Ouagadougou';
@@ -79,6 +86,8 @@ class Business extends Model
         'reply_style',
         'voice_fallback_reply',
         'voice_fallback_message',
+        'brand_color',
+        'logo_path',
     ];
 
     /**
@@ -88,6 +97,8 @@ class Business extends Model
      */
     protected $hidden = [
         'whatsapp_token',
+        // Chemin interne dans le bucket : seule l'URL publique (logo_url) est renvoyée.
+        'logo_path',
     ];
 
     /**
@@ -95,6 +106,8 @@ class Business extends Model
      */
     protected $appends = [
         'tone',
+        'logo_url',
+        'brand_text_color',
     ];
 
     /**
@@ -164,6 +177,56 @@ class Business extends Model
     protected function tone(): Attribute
     {
         return Attribute::get(fn () => $this->reply_style['address'] === 'tu' ? 'tu' : 'vous');
+    }
+
+    /**
+     * URL publique du logo téléversé (bucket media) ; à défaut, l'ancienne colonne
+     * logo_url (adresse externe saisie à la main), sinon null.
+     *
+     * @return Attribute<?string, never>
+     */
+    protected function logoUrl(): Attribute
+    {
+        return Attribute::get(fn (?string $value) => ! empty($this->getAttribute('logo_path'))
+            ? Storage::disk(self::LOGO_DISK)->url($this->getAttribute('logo_path'))
+            : ($value ?: null));
+    }
+
+    /**
+     * Couleur du texte posé sur brand_color, la plus lisible des deux (contraste WCAG) :
+     * blanc ou gris très foncé. Null sans couleur de marque.
+     *
+     * @return Attribute<?string, never>
+     */
+    protected function brandTextColor(): Attribute
+    {
+        return Attribute::get(function (): ?string {
+            $color = $this->getAttribute('brand_color');
+
+            if (! is_string($color) || preg_match('/^#[0-9A-Fa-f]{6}$/', $color) !== 1) {
+                return null;
+            }
+
+            $luminance = self::relativeLuminance($color);
+
+            // Contraste avec le blanc (luminance 1) et avec #111827.
+            $withWhite = 1.05 / ($luminance + 0.05);
+            $withDark = ($luminance + 0.05) / (self::relativeLuminance(self::DARK_TEXT) + 0.05);
+
+            return $withWhite >= $withDark ? '#FFFFFF' : self::DARK_TEXT;
+        });
+    }
+
+    /** Luminance relative d'une couleur #RRGGBB (WCAG 2.x). */
+    private static function relativeLuminance(string $hex): float
+    {
+        $channels = array_map(function (string $pair): float {
+            $value = hexdec($pair) / 255;
+
+            return $value <= 0.03928 ? $value / 12.92 : (($value + 0.055) / 1.055) ** 2.4;
+        }, str_split(substr($hex, 1), 2));
+
+        return 0.2126 * $channels[0] + 0.7152 * $channels[1] + 0.0722 * $channels[2];
     }
 
     /**
