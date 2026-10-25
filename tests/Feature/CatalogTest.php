@@ -377,6 +377,31 @@ class CatalogTest extends TestCase
         $this->assertSame('low_stock', Notification::where('type', 'stock')->sole()->data['level']);
     }
 
+    public function test_order_lines_with_a_variant_link_to_their_product(): void
+    {
+        $product = $this->product('Robe wax Awa', 12500, [['options' => ['taille' => 'M'], 'stock_quantity' => 3]]);
+        $variant = $product->variants->first();
+        $this->askForOrder([
+            ['variant_id' => $variant->id, 'name' => 'Robe', 'quantity' => 1, 'unit_price' => 12500],
+            ['name' => 'Ceinture', 'quantity' => 1, 'unit_price' => 2000],
+        ], 'Votre commande est enregistrée ✅');
+        $order = Order::sole();
+
+        Sanctum::actingAs($this->owner);
+        $this->getJson("/api/v1/orders/{$order->id}")->assertOk()
+            ->assertJsonPath('order.items.0.product_id', $product->id)
+            ->assertJsonMissingPath('order.items.1.product_id');
+        $this->getJson("/api/v1/businesses/{$this->business->id}/orders")->assertJsonPath('data.0.items.0.product_id', $product->id);
+        $this->patchJson("/api/v1/orders/{$order->id}/status", ['status' => 'confirmed'])->assertJsonPath('order.items.0.product_id', $product->id);
+
+        // Rien n'est enregistré : la commande garde ses lignes d'origine.
+        $this->assertArrayNotHasKey('product_id', $order->fresh()->items[0]);
+
+        // Article supprimé : la ligne reste sans lien.
+        $product->delete();
+        $this->getJson("/api/v1/orders/{$order->id}")->assertJsonMissingPath('order.items.0.product_id');
+    }
+
     public function test_an_out_of_stock_variant_is_refused(): void
     {
         $product = $this->product('Robe wax Awa', 12500, [['options' => ['taille' => 'M'], 'stock_quantity' => 0]]);

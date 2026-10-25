@@ -5,6 +5,7 @@ namespace App\Http\Controllers\API\V1;
 use App\Http\Controllers\Controller;
 use App\Models\Business;
 use App\Models\Order;
+use App\Models\ProductVariant;
 use App\Services\Catalog\CatalogService;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Relations\HasMany;
@@ -40,6 +41,8 @@ class OrderController extends Controller
             ->latest()
             ->paginate(20);
 
+        $this->linkProducts($orders->getCollection()->all());
+
         return response()->json($orders);
     }
 
@@ -52,6 +55,7 @@ class OrderController extends Controller
 
         $this->checkOwnership($order->business);
         $this->checkOrdersModule($order->business);
+        $this->linkProducts([$order]);
 
         return response()->json([
             'order' => $order,
@@ -85,10 +89,38 @@ class OrderController extends Controller
             app(CatalogService::class)->reserveAgain($order, auth()->id());
         }
 
+        $this->linkProducts([$order]);
+
         return response()->json([
             'message' => 'Le statut de la commande a été mis à jour.',
             'order' => $order,
         ]);
+    }
+
+    /**
+     * Catalogue : chaque ligne avec variant_id reçoit le product_id de son article, pour
+     * l'ouvrir depuis la commande (rien n'est enregistré). Une variante supprimée depuis
+     * n'a plus d'article : la ligne reste sans lien.
+     *
+     * @param  list<Order>  $orders
+     */
+    private function linkProducts(array $orders): void
+    {
+        $variantIds = collect($orders)->flatMap(fn (Order $order) => array_column((array) $order->items, 'variant_id'))->filter()->unique();
+        if ($variantIds->isEmpty()) {
+            return;
+        }
+
+        $productIds = ProductVariant::query()->whereIn('id', $variantIds->all())->pluck('product_id', 'id');
+
+        foreach ($orders as $order) {
+            $order->setRawAttributes(array_merge($order->getAttributes(), ['items' => json_encode(array_map(
+                fn (array $item) => isset($item['variant_id'], $productIds[$item['variant_id']])
+                    ? $item + ['product_id' => $productIds[$item['variant_id']]]
+                    : $item,
+                (array) $order->items,
+            ))]), sync: false);
+        }
     }
 
     /**
