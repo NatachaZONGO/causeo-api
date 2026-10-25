@@ -1,0 +1,7 @@
+# Sauvegarde de la base de production, chaque nuit à 3 h (heure du serveur : UTC, comme
+# Ouagadougou). Installé dans /etc/cron.d/ par setup.sh, une fois /etc/causeo-backup.env en
+# place. Journal : /var/log/causeo-backup.log.
+SHELL=/bin/sh
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+0 3 * * * root /usr/local/sbin/causeo-backup >> /var/log/causeo-backup.log 2>&1

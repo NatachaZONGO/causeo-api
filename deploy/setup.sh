@@ -21,7 +21,8 @@
 #                   temps de vérifier que deploy se connecte par clé ; relancer ensuite sans).
 #
 # Ne fait PAS : copier le .env, déployer le code (deploy.sh), activer le planificateur
-# (scheduler.sh). Voir deploy/MIGRATION.md.
+# (scheduler.sh), écrire les réglages de sauvegarde (/etc/causeo-backup.env, voir
+# SAUVEGARDES.md). Voir deploy/MIGRATION.md.
 
 set -euo pipefail
 
@@ -38,6 +39,7 @@ CI_DASHBOARD_PUBLIC_KEY="${CI_DASHBOARD_PUBLIC_KEY:-}"
 GITHUB_HOST_KEY="github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"
 
 PHP_VERSION=8.2
+PG_CLIENT_MAJOR=17 # pg_dump de la sauvegarde : au moins la version de la base Supabase
 NODE_MAJOR=22 # Angular 21 demande Node 20.19+ ou 22.12+
 DEPLOY_USER=deploy
 API_DIR=/var/www/causeo-api
@@ -369,6 +371,27 @@ fi
 install -m 755 "$SOURCE_DIR/scheduler.sh" /usr/local/sbin/causeo-scheduler
 install -m 644 "$SOURCE_DIR/cron/causeo-scheduler" /usr/local/share/causeo-scheduler.cron
 systemctl enable --now cron >/dev/null
+
+# --- Sauvegarde de la base ----------------------------------------------------------------
+
+log "Sauvegarde de la base (pg_dump ${PG_CLIENT_MAJOR}, age, rclone)"
+# pg_dump doit être au moins de la version de la base Supabase : dépôt officiel PostgreSQL.
+if [[ ! -f /etc/apt/sources.list.d/pgdg.list ]]; then
+    install -d -m 755 /usr/share/postgresql-common/pgdg
+    curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc
+    echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(. /etc/os-release && echo "$VERSION_CODENAME")-pgdg main" \
+        > /etc/apt/sources.list.d/pgdg.list
+    apt-get update -q
+fi
+apt-get install -y -q "postgresql-client-${PG_CLIENT_MAJOR}" age rclone
+install -m 755 "$SOURCE_DIR/backup.sh" /usr/local/sbin/causeo-backup
+install -d -m 700 /var/backups/causeo
+# La tâche de 3 h n'est installée qu'une fois les réglages en place (voir SAUVEGARDES.md).
+if [[ -f /etc/causeo-backup.env ]]; then
+    install_file "$SOURCE_DIR/cron/causeo-backup" /etc/cron.d/causeo-backup || true
+else
+    warn "Pas encore de /etc/causeo-backup.env : sauvegarde quotidienne non planifiée (voir SAUVEGARDES.md)."
+fi
 
 # --- Pare-feu -----------------------------------------------------------------------------
 
