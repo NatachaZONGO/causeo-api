@@ -68,7 +68,8 @@ période **1 jour**, tolérance **2 heures**, alertes par e-mail. Copier son URL
 ## 2. Installation sur le VPS
 
 À faire une fois, en SSH, **après le déploiement** du commit qui ajoute ces fichiers
-(`/var/www/causeo-api/deploy/backup.sh` doit exister).
+(`/var/www/causeo-api/deploy/backup.sh` doit exister). Version pas à pas, une commande à la
+fois, avec le résultat attendu : [deploy/SAUVEGARDES-INSTALLATION.md](deploy/SAUVEGARDES-INSTALLATION.md).
 
 ```bash
 ssh deploy@<ip-du-vps>
