@@ -136,7 +136,8 @@ seulement) et `winget install FiloSottile.age`, depuis Git Bash.
    ```
 
    Le script vérifie l'empreinte, refuse de viser la production, demande confirmation,
-   vide le schéma public de causeo-dev, restaure, puis affiche le nombre de businesses,
+   place l'extension `vector` dans le schéma de la sauvegarde (`public` : voir
+   DEVELOPPEMENT.md, « pgvector »), vide le schéma public de causeo-dev, restaure, puis affiche le nombre de businesses,
    conversations, messages et commandes, et la date du dernier message : elle doit être
    celle de la nuit de la sauvegarde.
 3. Facultatif : lancer l'API sur causeo-dev et ouvrir le dashboard pour vérifier.
@@ -160,7 +161,10 @@ lisibles dans l'application WhatsApp Business des gérants.
 
 2. **Choisir la base cible** :
    - le même projet Supabase s'il existe encore ;
-   - sinon un nouveau projet (Frankfurt, pgvector activé : voir DEVELOPPEMENT.md), puis
+   - sinon un nouveau projet (Frankfurt). `vector` n'a pas à être activé à la main : le
+     script de restauration le crée dans `public`, ou l'y déplace si Supabase l'a mis dans
+     `extensions`. Sinon la restauration échouerait (`type "public.vector" does not exist`),
+     la sauvegarde ne contenant que le schéma public (voir DEVELOPPEMENT.md, « pgvector »). Puis
      changer `DB_HOST`, `DB_USERNAME`, `DB_PASSWORD` dans `/var/www/causeo-api/.env`, et
      remplacer l'identifiant de production dans `app/Support/ProductionGuard.php` (et dans
      `deploy/restore.sh`) par celui du nouveau projet.

@@ -20,8 +20,9 @@ sur la base de production : de vrais clients utilisent Causeo.
    - mot de passe de la base : en générer un et le garder (gestionnaire de mots de passe) ;
    - région : **Central EU (Frankfurt)**, comme la production ;
    - formule : **Free**.
-2. **pgvector** : *Database → Extensions*, activer `vector`. Les migrations lancent aussi
-   `CREATE EXTENSION IF NOT EXISTS vector`, mais l'activer à la main évite toute surprise.
+2. **pgvector** : rien à faire, les migrations installent `vector` dans le schéma `public`
+   (voir « pgvector » au paragraphe 3). Pour l'activer à la main (*Database → Extensions*),
+   choisir le schéma **`public`**, pas `extensions` proposé par défaut.
 3. **Stockage** : *Storage → New bucket*, créer :
    - `documents` : **privé** (documents envoyés par les gérants) ;
    - `media` : **public** (images du catalogue, logos).
@@ -82,6 +83,33 @@ La commande (refusée en production et sans PostgreSQL) :
 
 Sans `--fresh`, elle applique seulement les nouvelles migrations et remplace les données de
 démonstration (les autres données de la base sont gardées).
+
+### pgvector
+
+Les colonnes `vector(1536)` (documents, médias, réponses apprises, catalogue) attendent le
+type dans le schéma **`public`** : le search_path du Session pooler se limite à `public`.
+Or un projet Supabase neuf installe l'extension dans `extensions` (choix par défaut de
+*Database → Extensions*), et la migration `document_chunks` échouait alors avec
+`type "vector" does not exist`.
+
+Les migrations (`App\Support\Pgvector`, SQL dans `database/sql/pgvector.sql`) :
+
+- créent l'extension dans `public` si elle est absente ;
+- la laissent telle quelle si elle y est déjà : c'est le cas de la production, où rien ne change ;
+- la déplacent dans `public` si elle est ailleurs. Si Supabase refuse le déplacement, elles
+  la suppriment et la recréent dans `public`, ce que PostgreSQL n'accepte que si aucune
+  colonne ne l'utilise encore (cas d'un projet neuf).
+
+Si la migration s'arrête sur « L'extension vector est dans le schéma « extensions » … »,
+des colonnes l'utilisent déjà dans ce schéma : sur causeo-dev, le plus simple est de
+désactiver `vector` dans *Database → Extensions* (ce qui supprime ces colonnes), de la
+réactiver dans le schéma `public`, puis de relancer `php artisan causeo:dev-setup --fresh`.
+
+Pour vérifier le schéma (*SQL Editor*) :
+
+```sql
+SELECT n.nspname FROM pg_extension e JOIN pg_namespace n ON n.oid = e.extnamespace WHERE e.extname = 'vector';
+```
 
 ### Données de démonstration
 

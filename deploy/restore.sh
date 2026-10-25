@@ -62,10 +62,13 @@ log "Déchiffrement"
 age --decrypt --identity "$AGE_IDENTITY" --output "$DUMP" "$BACKUP"
 pg_restore --list "$DUMP" > "$WORK_DIR/toc.full"
 
-# pgvector : le type est créé dans le même schéma qu'en production (public ou extensions).
+# pgvector : le type est créé dans le même schéma qu'en production (public ou extensions),
+# ou déplacé s'il est ailleurs (un projet Supabase neuf l'installe dans extensions).
 vector_schema="$(pg_restore --schema-only --file=- "$DUMP" | grep -m1 -oE '\b(extensions|public)\.vector\b' | cut -d. -f1 || true)"
 log "Extension vector (schéma ${vector_schema:-public})"
-psql "$TARGET_DATABASE_URL" -X -v ON_ERROR_STOP=1 -q -c "CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA ${vector_schema:-public}"
+psql "$TARGET_DATABASE_URL" -X -v ON_ERROR_STOP=1 -q \
+    -c "SET causeo.vector_schema = '${vector_schema:-public}'" \
+    -f "$(dirname "${BASH_SOURCE[0]}")/../database/sql/pgvector.sql"
 
 # Le schéma public existe déjà dans la cible : ne pas le supprimer ni le recréer.
 grep -vE ' SCHEMA - public | COMMENT - SCHEMA public ' "$WORK_DIR/toc.full" > "$WORK_DIR/toc.list"
