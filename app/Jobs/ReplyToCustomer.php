@@ -10,9 +10,11 @@ use App\Models\Message;
 use App\Models\Order;
 use App\Services\AI\AIResponseService;
 use App\Services\AI\CustomerImageService;
+use App\Services\Conversations\QuotedMessageService;
 use App\Services\Conversations\ReplyPacing;
 use App\Services\NotificationService;
 use App\Services\WhatsApp\WhatsAppServiceFactory;
+use App\Support\EmojiStyle;
 use Carbon\CarbonInterface;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -102,7 +104,7 @@ class ReplyToCustomer implements ShouldQueue
             ->values();
     }
 
-    public function handle(AIResponseService $ai, WhatsAppServiceFactory $whatsAppFactory, ReplyPacing $pacing, CustomerImageService $images, NotificationService $notifications): void
+    public function handle(AIResponseService $ai, WhatsAppServiceFactory $whatsAppFactory, ReplyPacing $pacing, CustomerImageService $images, NotificationService $notifications, QuotedMessageService $quotedMessages): void
     {
         // Une seule réponse en préparation par conversation : l'autre job réessaie un peu plus tard
         // (s'il a déjà repris ce message, il n'y aura plus rien à faire).
@@ -115,7 +117,7 @@ class ReplyToCustomer implements ShouldQueue
         }
 
         try {
-            $this->reply($ai, $whatsAppFactory, $pacing, $images, $notifications);
+            $this->reply($ai, $whatsAppFactory, $pacing, $images, $notifications, $quotedMessages);
         } catch (Throwable $e) {
             // Pas de getMessage() : une QueryException contient le SQL avec le texte du client.
             Log::error('ReplyToCustomer a échoué', [
@@ -129,7 +131,7 @@ class ReplyToCustomer implements ShouldQueue
         }
     }
 
-    private function reply(AIResponseService $ai, WhatsAppServiceFactory $whatsAppFactory, ReplyPacing $pacing, CustomerImageService $imageService, NotificationService $notifications): void
+    private function reply(AIResponseService $ai, WhatsAppServiceFactory $whatsAppFactory, ReplyPacing $pacing, CustomerImageService $imageService, NotificationService $notifications, QuotedMessageService $quotedMessages): void
     {
         $trigger = Message::find($this->messageId);
 
@@ -174,7 +176,13 @@ class ReplyToCustomer implements ShouldQueue
             ->values()
             ->all();
 
-        $result = $ai->answer($business, $question, $conversation->id, $images, $photos->count() - count($images));
+        $unreadable = $photos->count() - count($images);
+
+        // Messages auxquels le client répond (citation) : décrits à l'assistant, photos citées comprises.
+        $quoted = $quotedMessages->forBatch($business, $conversation, $batch);
+        $images = array_slice([...$images, ...$quoted['images']], 0, self::MAX_PHOTOS);
+
+        $result = $ai->answer($business, $question, $conversation->id, $images, $unreadable, $quoted['quotes']);
         $generationSeconds = microtime(true) - $startedAt;
 
         if (self::managerRepliedSince($conversation, $newest->created_at)) {
@@ -184,9 +192,9 @@ class ReplyToCustomer implements ShouldQueue
         }
 
         $escalated = (bool) $result['should_escalate'];
-        $answer = $escalated
+        $answer = EmojiStyle::apply($business, $escalated
             ? ($result['answer'] ?? 'Merci pour votre message ! Je vérifie ça et je reviens vers vous très vite 😊')
-            : (string) $result['answer'];
+            : (string) $result['answer']);
 
         $paymentProof = ! empty($result['payment_proof']);
         $order = $paymentProof ? $this->attachPaymentProof($conversation, $photos->first()) : null;

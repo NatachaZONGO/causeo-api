@@ -30,4 +30,14 @@ class FakeWhatsAppService extends WhatsAppService
     {
         self::$read[] = ['message_id' => $messageId, 'typing' => $typingIndicator];
     }
+
+    /** @var list<string> adresses des images envoyées */
+    public static array $images = [];
+
+    public function sendImage(string $to, string $imageUrl, ?string $caption = null): array
+    {
+        self::$images[] = $imageUrl;
+
+        return ['messages' => [['id' => 'wamid.IMG-OUT'.count(self::$images)]]];
+    }
 }

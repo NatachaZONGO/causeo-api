@@ -71,7 +71,7 @@ class SendCustomerReply implements ShouldBeEncrypted, ShouldQueue
         $whatsApp = $whatsAppFactory->forBusiness($business);
         $sent = $whatsApp->sendMessage($conversation->customer_phone, $this->answer);
 
-        $conversation->messages()->create([
+        $reply = $conversation->messages()->create([
             'direction' => 'outbound',
             'sender_type' => 'ai',
             'content' => $this->answer,
@@ -82,7 +82,12 @@ class SendCustomerReply implements ShouldBeEncrypted, ShouldQueue
         ]);
 
         if ($this->mediaIds !== []) {
-            $this->sendMediaFiles($whatsApp, $conversation->customer_phone);
+            $sentMedia = $this->sendMediaFiles($whatsApp, $conversation->customer_phone);
+
+            // Le client peut répondre en citant une de ces photos : QuotedMessageService la retrouve ici.
+            if ($sentMedia !== []) {
+                $reply->update(['metadata' => ($reply->metadata ?? []) + ['sent_media' => $sentMedia]]);
+            }
         }
 
         $business->increment('monthly_message_count');
@@ -101,16 +106,23 @@ class SendCustomerReply implements ShouldBeEncrypted, ShouldQueue
     }
 
     /**
-     * Envoyer au client les médias sélectionnés par l'IA.
+     * Envoyer au client les médias sélectionnés par l'IA, chaque fichier une seule fois.
+     *
+     * @return list<array{media_id: string, whatsapp_message_id: string}>
      */
-    private function sendMediaFiles(WhatsAppService $whatsApp, string $to): void
+    private function sendMediaFiles(WhatsAppService $whatsApp, string $to): array
     {
-        foreach ($this->mediaIds as $mediaId) {
+        $sent = [];
+        $urls = [];
+
+        foreach (array_unique($this->mediaIds) as $mediaId) {
             $media = BusinessMedia::find($mediaId);
 
-            if ($media === null || empty($media->public_url)) {
+            if ($media === null || empty($media->public_url) || in_array($media->public_url, $urls, true)) {
                 continue;
             }
+
+            $urls[] = $media->public_url;
 
             if ($media->type === 'document') {
                 $extension = pathinfo((string) $media->file_path, PATHINFO_EXTENSION);
@@ -125,6 +137,12 @@ class SendCustomerReply implements ShouldBeEncrypted, ShouldQueue
                 'type' => $media->type,
                 'whatsapp_message_id' => data_get($response, 'messages.0.id'),
             ]);
+
+            if (! empty(data_get($response, 'messages.0.id'))) {
+                $sent[] = ['media_id' => $media->id, 'whatsapp_message_id' => (string) data_get($response, 'messages.0.id')];
+            }
         }
+
+        return $sent;
     }
 }

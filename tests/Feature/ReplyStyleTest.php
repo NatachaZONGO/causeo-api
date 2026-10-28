@@ -11,6 +11,7 @@ use App\Services\AI\AIResponseService;
 use App\Services\AI\ManagerReplyService;
 use App\Services\AI\StyleProfileService;
 use App\Services\Embedding\EmbeddingService;
+use App\Support\EmojiStyle;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
@@ -270,7 +271,7 @@ class ReplyStyleTest extends TestCase
         // Les réglages explicites viennent après le profil et priment.
         $this->assertStringContainsString('priment sur le profil appris', $stable['text']);
         $this->assertStringContainsString("Vouvoie toujours le client, même s'il te tutoie.", $stable['text']);
-        $this->assertStringContainsString("N'utilise aucun emoji.", $stable['text']);
+        $this->assertStringContainsString("N'utilise pas d'emoji. Tout au plus un 👋, rarement, pour saluer.", $stable['text']);
         $this->assertStringContainsString('« Joyce »', $stable['text']);
         $this->assertLessThan(strrpos($stable['text'], 'Vouvoie toujours'), strpos($stable['text'], 'Tu tutoies, tu écris court'));
 
@@ -349,6 +350,39 @@ class ReplyStyleTest extends TestCase
         $this->assertContains($thanks['answer'], ['Avec plaisir !', 'De rien 🙏', 'Je t\'en prie !']);
         $this->assertDoesNotMatchRegularExpression('/vous|\*/u', $hello['answer']);
         Http::assertNothingSent();
+    }
+
+    // --- Emojis -----------------------------------------------------------------------------------
+
+    public function test_no_emoji_by_default_except_one_wave_to_greet(): void
+    {
+        $this->assertSame('never', $this->business->reply_style['emojis']);
+
+        $this->service()->answer($this->business->fresh(), 'Vous avez le pagne bleu ?');
+        $prompt = $this->sentRequest()['system'][0]['text'];
+        $this->assertStringContainsString("- Pas d'emoji, sauf si les réglages du gérant (plus bas) en prévoient.", $prompt);
+        $this->assertStringContainsString("N'utilise pas d'emoji. Tout au plus un 👋, rarement, pour saluer.", $prompt);
+        $this->assertStringNotContainsString('très vite 😊', $prompt);
+
+        // Les messages envoyés au client sont nettoyés, sans casser la ponctuation française.
+        $business = $this->business->fresh();
+        $this->assertSame("Merci, j'ai bien reçu votre capture. Le responsable va vérifier.", EmojiStyle::apply($business, "Merci, j'ai bien reçu votre capture 🙏 Le responsable va vérifier."));
+        $this->assertSame('Parfait. Il vous faut autre chose ?', EmojiStyle::apply($business, 'Parfait 👍 Il vous faut autre chose ?'));
+        $this->assertSame('Super ! Elle est disponible.', EmojiStyle::apply($business, 'Super 😊😊 ! Elle est disponible.'));
+        $this->assertSame('Bonsoir 👋 Comment puis-je vous aider ?', EmojiStyle::apply($business, 'Bonsoir 👋👋 Comment puis-je vous aider ? ❤️'));
+        $this->assertSame('Je vérifie ça et je reviens vers vous très vite', EmojiStyle::apply($business, 'Je vérifie ça et je reviens vers vous très vite 😊'));
+    }
+
+    public function test_the_owner_can_still_choose_sometimes_or_often(): void
+    {
+        foreach (['sometimes' => 'Un emoji au plus', 'often' => 'Utilise volontiers un ou deux emojis'] as $choice => $rule) {
+            $this->business->update(['reply_style' => ['emojis' => $choice]]);
+
+            $this->service()->answer($this->business->fresh(), 'Vous avez le pagne bleu ?');
+
+            $this->assertStringContainsString($rule, $this->sentRequest()['system'][0]['text']);
+            $this->assertSame('Oui 😊', EmojiStyle::apply($this->business->fresh(), 'Oui 😊'));
+        }
     }
 
     // --- Vouvoiement ------------------------------------------------------------------------------
@@ -469,7 +503,7 @@ class ReplyStyleTest extends TestCase
     {
         Sanctum::actingAs($this->owner);
         $this->assertSame(
-            ['address' => null, 'emojis' => null, 'length' => null, 'signature' => null, 'learn_from_owner' => true],
+            ['address' => null, 'emojis' => 'never', 'length' => null, 'signature' => null, 'learn_from_owner' => true],
             $this->business->reply_style,
         );
 

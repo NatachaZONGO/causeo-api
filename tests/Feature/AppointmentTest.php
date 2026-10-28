@@ -321,7 +321,7 @@ class AppointmentTest extends TestCase
         $appointment = $this->makeAppointment('requested');
         $this->addInboundMessage(now()->subHours(3));
         $this->expectWhatsAppMessage(
-            "Bonne nouvelle 😊 Votre rendez-vous « Tresses » du samedi 10 octobre à 15h est confirmé. À bientôt chez Belle Coiffure !",
+            "Bonne nouvelle. Votre rendez-vous « Tresses » du samedi 10 octobre à 15h est confirmé. À bientôt chez Belle Coiffure !",
             ['messages' => [['id' => 'wamid.1']]],
         );
 

@@ -361,6 +361,71 @@ class CatalogTest extends TestCase
         $this->assertStringNotContainsString('# Catalogue et stock', $this->systemPrompt($request));
     }
 
+    /**
+     * Cas réel (Joyce) : « une robe de soirée longue noire » a reçu le prix d'un document
+     * (35 000 FCFA) au lieu de l'article du catalogue (15 000 FCFA, tailles S à XL).
+     */
+    public function test_the_catalog_prevails_over_a_document_for_articles_and_prices(): void
+    {
+        $this->product('Robe de soiree', 15000, [
+            ['options' => ['taille' => 'S']], ['options' => ['taille' => 'M']],
+            ['options' => ['taille' => 'L']], ['options' => ['taille' => 'XL']],
+        ], 'Robes');
+        Http::fake(['api.anthropic.com/*' => Http::response($this->text('Oui, la robe de soirée est à 15 000 FCFA. Quelle taille souhaitez-vous : S, M, L ou XL ?'))]);
+
+        (new FixedContextAIResponseService('Robe de soirée longue noire : 35 000 FCFA. Livraison à Ouagadougou : 1 000 FCFA.'))
+            ->answer($this->business, 'Bonsoir, vous avez une robe de soirée longue noire ?', $this->conversationId);
+
+        $request = Http::recorded()[0][0]->data();
+        $userMessage = collect($request['messages'])->last()['content'];
+
+        // Le catalogue est consulté avant la réponse et passe avant les documents.
+        $catalogStart = strpos($userMessage, 'Catalogue (fait foi), articles qui correspondent à ce message :');
+        $documentsStart = strpos($userMessage, 'Documents (informations générales ; pour les articles, les prix, les variantes et la disponibilité, seul le catalogue fait foi) :');
+        $this->assertNotFalse($catalogStart);
+        $this->assertNotFalse($documentsStart);
+        $this->assertLessThan($documentsStart, $catalogStart);
+        $this->assertStringContainsString('35 000 FCFA', substr($userMessage, $documentsStart));
+
+        $results = json_decode(explode("\n", substr($userMessage, $catalogStart))[1], true)['results'];
+        $this->assertSame(['Robe de soiree'], array_column($results, 'name'));
+        $this->assertSame([15000, 15000, 15000, 15000], array_map('intval', array_column($results[0]['variants'], 'price')));
+        $this->assertSame(['S', 'M', 'L', 'XL'], array_column(array_column($results[0]['variants'], 'options'), 'taille'));
+
+        $system = $this->systemPrompt($request);
+        $this->assertStringContainsString('Les documents ne servent qu\'aux informations générales', $system);
+        $this->assertStringContainsString('Si un document et le catalogue donnent des prix différents, seul le prix du catalogue compte.', $system);
+        $this->assertStringContainsString('« Je ne trouve pas cet article dans notre catalogue »', $system);
+        $this->assertStringContainsString('Les articles et leurs prix viennent uniquement du catalogue, jamais d\'un document.', $system);
+    }
+
+    public function test_an_article_missing_from_the_catalog_is_not_sold_from_a_document(): void
+    {
+        $this->product('Robe de soiree', 15000, [['options' => ['taille' => 'M']]], 'Robes');
+        Http::fake(['api.anthropic.com/*' => Http::response($this->text('Je ne trouve pas cet article dans notre catalogue.'))]);
+
+        (new FixedContextAIResponseService('Sac à main en cuir : 20 000 FCFA.'))
+            ->answer($this->business, 'Vous avez des sacs à main en cuir ?', $this->conversationId);
+
+        $userMessage = collect(Http::recorded()[0][0]->data()['messages'])->last()['content'];
+        $this->assertStringContainsString('Catalogue (fait foi) : aucun article ne correspond à ce message.', $userMessage);
+        $this->assertStringContainsString('sans jamais vendre un article ou un prix trouvé seulement dans les documents', $userMessage);
+    }
+
+    public function test_the_assistant_never_chooses_an_option_and_asks_one_question_at_a_time(): void
+    {
+        $this->product('Robe de soiree', 15000, [['options' => ['taille' => 'S']], ['options' => ['taille' => 'XL']]]);
+        Http::fake(['api.anthropic.com/*' => Http::response($this->text('Quelle taille souhaitez-vous : S ou XL ?'))]);
+
+        $this->service()->answer($this->business, 'Je veux la robe de soirée', $this->conversationId);
+
+        $system = $this->systemPrompt(Http::recorded()[0][0]->data());
+        $this->assertStringContainsString('Ne choisis JAMAIS une taille, une couleur, une quantité ou une autre option à la place du client', $system);
+        $this->assertStringContainsString('pas de « en taille S, c\'est bien ça ? » s\'il n\'a parlé d\'aucune taille', $system);
+        $this->assertStringContainsString('« Quelle taille souhaitez-vous : S, M, L ou XL ? »', $system);
+        $this->assertStringContainsString('Pose une seule question par message, jamais une liste de questions', $system);
+    }
+
     public function test_an_order_with_variant_id_uses_the_catalog_price_and_takes_the_stock(): void
     {
         $product = $this->product('Robe wax Awa', 12500, [['options' => ['taille' => 'M'], 'stock_quantity' => 3]]);

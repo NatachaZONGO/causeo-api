@@ -16,11 +16,13 @@ use App\Models\Order;
 use App\Models\User;
 use App\Services\AI\AIResponseService;
 use App\Services\Billing\UsageService;
+use App\Services\WhatsApp\MediaMessage;
 use App\Services\WhatsApp\WhatsAppServiceFactory;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Schema;
@@ -137,6 +139,7 @@ class MediaMessageTest extends TestCase
 
         FakeWhatsAppService::$sent = [];
         FakeWhatsAppService::$read = [];
+        FakeWhatsAppService::$images = [];
         $this->app->instance(WhatsAppServiceFactory::class, new FakeWhatsAppServiceFactory);
         $this->app->instance(AIResponseService::class, new FixedContextAIResponseService(self::CONTEXT));
 
@@ -164,6 +167,7 @@ class MediaMessageTest extends TestCase
                     'usage' => ['input_tokens' => 1600, 'output_tokens' => 40],
                 ]),
                 str_starts_with($url, self::GRAPH.'CAUSEO-PHONE-ID/messages') => Http::response(['messages' => [['id' => 'wamid.ALERT']]]),
+                str_starts_with($url, 'https://scontent.xx.fbcdn.net/') => Http::response($this->jpeg(300, 300), 200, ['Content-Type' => 'image/jpeg']),
                 default => Http::response(['error' => ['message' => "URL inattendue : {$url}"]], 500),
             };
         });
@@ -289,7 +293,7 @@ class MediaMessageTest extends TestCase
         $this->receive('wamid.PAY', 'image', ['id' => 'MEDIA-1', 'mime_type' => 'image/jpeg']);
 
         // Jamais la confirmation écrite par Claude : un message fixe.
-        $this->assertSame(["Merci, j'ai bien reçu votre capture 🙏 Le responsable va vérifier le paiement et revient vers vous très vite."], FakeWhatsAppService::$sent);
+        $this->assertSame(["Merci, j'ai bien reçu votre capture. Le responsable va vérifier le paiement et revient vers vous très vite."], FakeWhatsAppService::$sent);
 
         $photo = Message::where('whatsapp_message_id', 'wamid.PAY')->sole();
         $this->assertSame('escalated', $photo->status);
@@ -319,7 +323,7 @@ class MediaMessageTest extends TestCase
 
         $this->receive('wamid.PAY', 'image', ['id' => 'MEDIA-1', 'mime_type' => 'image/jpeg']);
 
-        $this->assertSame(["Merci, j'ai bien reçu ta capture 🙏 Le responsable va vérifier le paiement et revient vers toi très vite."], FakeWhatsAppService::$sent);
+        $this->assertSame(["Merci, j'ai bien reçu ta capture. Le responsable va vérifier le paiement et revient vers toi très vite."], FakeWhatsAppService::$sent);
         $this->assertSame('Preuve de paiement reçue', Escalation::sole()->customer_question);
     }
 
@@ -438,7 +442,204 @@ class MediaMessageTest extends TestCase
         $this->assertSame([], $this->claudeRequests());
     }
 
+    // --- Photos envoyées par l'assistant ----------------------------------------------------------
+
+    public function test_the_same_photo_is_sent_only_once_in_a_reply(): void
+    {
+        [$robe, $copy, $shirt] = $this->sendableMedia();
+        $this->claudeAnswer = "Voici la robe wax Awa et la chemise.\nMEDIA:{$robe},{$copy},{$robe},{$shirt}";
+
+        $this->receiveRaw(['id' => 'wamid.1', 'type' => 'text', 'text' => ['body' => 'Montrez-moi la robe wax et la chemise']]);
+
+        // La copie (même fichier téléversé deux fois) et l'identifiant répété ne partent pas.
+        $this->assertSame(['https://cdn.test/robe.jpg', 'https://cdn.test/chemise.jpg'], FakeWhatsAppService::$images);
+        $this->assertSame(['Voici la robe wax Awa et la chemise.'], FakeWhatsAppService::$sent);
+        $this->assertSame([
+            ['media_id' => $robe, 'whatsapp_message_id' => 'wamid.IMG-OUT1'],
+            ['media_id' => $shirt, 'whatsapp_message_id' => 'wamid.IMG-OUT2'],
+        ], Message::where('direction', 'outbound')->sole()->metadata['sent_media']);
+    }
+
+    public function test_two_photos_of_the_same_catalog_article_are_sent_once(): void
+    {
+        $this->business->update(['modules' => ['orders', 'catalog']]);
+        [$robe, , $shirt] = $this->sendableMedia();
+        app(\App\Services\Catalog\CatalogService::class)->saveProduct($this->business->fresh(), ['name' => 'Chemise en lin', 'base_price' => 9000, 'media_ids' => [$robe, $shirt]], null, [['options' => ['taille' => 'L']]]);
+        $this->claudeAnswer = "La voici.\nMEDIA:{$robe},{$shirt}";
+
+        $this->receiveRaw(['id' => 'wamid.1', 'type' => 'text', 'text' => ['body' => 'Une photo de la chemise ?']]);
+
+        $this->assertSame(['https://cdn.test/robe.jpg'], FakeWhatsAppService::$images);
+    }
+
+    // --- Réponses citées -------------------------------------------------------------------------
+
+    public function test_a_reply_quoting_a_photo_sent_by_the_assistant_names_the_catalog_article(): void
+    {
+        $this->business->update(['modules' => ['orders', 'catalog']]);
+        [$robe] = $this->sendableMedia();
+        app(\App\Services\Catalog\CatalogService::class)->saveProduct($this->business->fresh(), ['name' => 'Robe de soiree', 'base_price' => 15000, 'media_ids' => [$robe]], null, [['options' => ['taille' => 'M']]]);
+        $this->claudeAnswer = "La voici.\nMEDIA:{$robe}";
+        $this->receiveRaw(['id' => 'wamid.1', 'type' => 'text', 'text' => ['body' => 'Une photo de la robe de soirée ?']]);
+        $this->assertSame(['https://cdn.test/robe.jpg'], FakeWhatsAppService::$images);
+
+        $this->travel(1)->minutes();
+        $this->claudeAnswer = 'Elle est à 15 000 FCFA.';
+        $this->receiveRaw([
+            'id' => 'wamid.2', 'type' => 'text', 'text' => ['body' => 'Combien ?'],
+            'context' => ['from' => '22625000000', 'id' => 'wamid.IMG-OUT1'],
+        ]);
+
+        $inbound = Message::where('whatsapp_message_id', 'wamid.2')->sole();
+        $this->assertSame(['reply_to' => 'wamid.IMG-OUT1'], $inbound->metadata);
+
+        $request = last($this->claudeRequests());
+        $userMessage = end($request['messages'])['content'];
+        $this->assertStringContainsString("Le client répond à la photo « Robe wax Awa » que tu lui as envoyée, qui montre l'article du catalogue « Robe de soiree ».\n\nQuestion du client : Combien ?", $userMessage);
+        // Le nom de l'article guide la recherche dans le catalogue.
+        $this->assertStringContainsString('"name":"Robe de soiree"', $userMessage);
+        $this->assertStringContainsString('# Message cité', $this->systemPrompt($request));
+        $this->assertSame('Elle est à 15 000 FCFA.', last(FakeWhatsAppService::$sent));
+    }
+
+    public function test_a_reply_quoting_an_assistant_message_or_a_customer_photo_is_described(): void
+    {
+        $conversation = Conversation::create(['business_id' => $this->business->id, 'customer_phone' => self::CUSTOMER]);
+        $conversation->messages()->create([
+            'direction' => 'inbound', 'sender_type' => 'customer', 'content' => MediaMessage::PLACEHOLDERS['image'], 'status' => 'answered_by_ai',
+            'whatsapp_message_id' => 'wamid.PHOTO', 'metadata' => ['type' => 'image', 'media_id' => 'MEDIA-7', 'mime_type' => 'image/jpeg'],
+        ]);
+        $conversation->messages()->create([
+            'direction' => 'outbound', 'sender_type' => 'ai', 'content' => 'La robe wax Awa existe en 38, 40 et 42.', 'status' => 'sent', 'whatsapp_message_id' => 'wamid.OUT9',
+        ]);
+        $this->files['MEDIA-7'] = ['image/jpeg', $this->jpeg(200, 200)];
+
+        $this->receiveRaw(['id' => 'wamid.3', 'type' => 'text', 'text' => ['body' => 'Je prends la 40'], 'context' => ['from' => '22625000000', 'id' => 'wamid.OUT9']]);
+        $this->travel(1)->minutes();
+        $this->receiveRaw(['id' => 'wamid.4', 'type' => 'text', 'text' => ['body' => 'Et celle-ci ?'], 'context' => ['from' => self::CUSTOMER, 'id' => 'wamid.PHOTO']]);
+
+        [$first, $second] = $this->claudeRequests();
+        $this->assertStringContainsString('Le client répond à ce message que tu lui as envoyé : « La robe wax Awa existe en 38, 40 et 42. ».', end($first['messages'])['content']);
+
+        // La photo citée du client est de nouveau montrée à l'assistant.
+        [$image, $text] = end($second['messages'])['content'];
+        $this->assertSame('image', $image['type']);
+        $this->assertStringContainsString("Le client cite une photo qu'il a envoyée (cette photo est jointe au message).", $text['text']);
+    }
+
+    public function test_a_reply_to_a_status_asks_which_article_and_logs_the_payload_without_numbers(): void
+    {
+        Log::spy();
+
+        $this->receiveRaw([
+            'id' => 'wamid.5', 'type' => 'text', 'text' => ['body' => 'Il est à combien ? Appelez-moi au 70 11 22 33'],
+            'context' => ['from' => '22625000000', 'id' => 'wamid.STATUS-1'],
+        ]);
+
+        $userMessage = end($this->claudeRequests()[0]['messages'])['content'];
+        $this->assertStringContainsString('Le client répond à un message que tu ne vois pas (probablement un statut WhatsApp de la boutique', $userMessage);
+        $this->assertStringContainsString('demande-lui poliment quel article l\'intéresse, en lui proposant de t\'envoyer son nom ou une photo', $userMessage);
+
+        Log::shouldHaveReceived('info')->withArgs(function (string $message, array $context = []): bool {
+            if (! str_contains($message, 'contenu inconnu')) {
+                return false;
+            }
+
+            $payload = json_encode($context['payload']);
+            $this->assertSame(['message_cite_introuvable'], $context['reasons']);
+            $this->assertSame('wamid.STATUS-1', $context['payload']['context']['id']);
+            $this->assertStringNotContainsString(self::CUSTOMER, $payload);
+            $this->assertStringNotContainsString('22625000000', $payload);
+            $this->assertStringNotContainsString('70 11 22 33', $payload);
+
+            return true;
+        })->once();
+    }
+
+    public function test_a_message_from_a_post_or_an_ad_uses_its_text_and_image(): void
+    {
+        $this->receiveRaw([
+            'id' => 'wamid.6', 'type' => 'text', 'text' => ['body' => 'Bonjour, je suis intéressée'],
+            'referral' => [
+                'source_type' => 'post', 'source_url' => 'https://fb.me/abc', 'headline' => 'Nouvelle collection', 'body' => 'Robe wax Awa, 12 500 FCFA',
+                'media_type' => 'image', 'image_url' => 'https://scontent.xx.fbcdn.net/v/robe.jpg',
+            ],
+        ]);
+
+        $this->assertSame('post', Message::where('whatsapp_message_id', 'wamid.6')->sole()->metadata['referral']['source_type']);
+
+        [$image, $text] = end($this->claudeRequests()[0]['messages'])['content'];
+        $this->assertSame('image', $image['type']);
+        $this->assertStringContainsString("Le client écrit depuis une publication ou une publicité de la boutique (titre « Nouvelle collection », texte « Robe wax Awa, 12 500 FCFA »). L'image de cette publication est jointe au message.", $text['text']);
+    }
+
+    public function test_an_image_outside_meta_servers_is_never_downloaded(): void
+    {
+        $this->receiveRaw([
+            'id' => 'wamid.7', 'type' => 'text', 'text' => ['body' => 'Bonjour'],
+            'referral' => ['source_type' => 'ad', 'headline' => 'Promo', 'image_url' => 'https://evil.test/x.jpg'],
+        ]);
+
+        Http::assertNotSent(fn (Request $request) => str_contains($request->url(), 'evil.test'));
+        $this->assertIsString(end($this->claudeRequests()[0]['messages'])['content']);
+    }
+
     // --- Outils -------------------------------------------------------------------------------------
+
+    /**
+     * Médias envoyables : la robe, sa copie (même fichier téléversé deux fois) et une chemise.
+     * L'assistant les voit tous comme pertinents.
+     *
+     * @return list<string>
+     */
+    private function sendableMedia(): array
+    {
+        DB::table('business_media')->update(['public_url' => 'https://cdn.test/robe.jpg', 'mime_type' => 'image/jpeg', 'file_size' => 1000]);
+        $robe = DB::table('business_media')->value('id');
+        $ids = [$robe];
+
+        foreach ([['Robe wax Awa (copie)', 'robe-2.jpg', 1000], ['Chemise en lin', 'chemise.jpg', 2000]] as [$title, $file, $size]) {
+            $ids[] = $id = (string) Str::uuid();
+            DB::table('business_media')->insert([
+                'id' => $id, 'business_id' => $this->business->id, 'type' => 'image', 'title' => $title, 'file_path' => $file,
+                'public_url' => "https://cdn.test/{$file}", 'mime_type' => 'image/jpeg', 'file_size' => $size, 'keywords' => '[]',
+                'created_at' => now(), 'updated_at' => now(),
+            ]);
+        }
+
+        $this->app->instance(AIResponseService::class, new class(self::CONTEXT) extends FixedContextAIResponseService
+        {
+            public function findRelevantMedia(Business $business, string $question, int $limit = 3): \Illuminate\Support\Collection
+            {
+                return $business->media()->active()->orderBy('created_at')->get();
+            }
+        });
+
+        return $ids;
+    }
+
+    /**
+     * Message entrant tel que l'envoie Meta (texte, contexte de citation, referral…).
+     *
+     * @param  array<string, mixed>  $message
+     */
+    private function receiveRaw(array $message): void
+    {
+        $this->postJson('/api/webhook/whatsapp', [
+            'object' => 'whatsapp_business_account',
+            'entry' => [[
+                'id' => 'WABA-1',
+                'changes' => [[
+                    'field' => 'messages',
+                    'value' => [
+                        'metadata' => ['phone_number_id' => 'PNID-JOYCE'],
+                        'contacts' => [['profile' => ['name' => 'Awa'], 'wa_id' => self::CUSTOMER]],
+                        'messages' => [['from' => self::CUSTOMER] + $message],
+                    ],
+                ]],
+            ]],
+        ])->assertOk();
+    }
 
     /**
      * @param  array<string, mixed>  $media

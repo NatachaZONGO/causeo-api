@@ -240,7 +240,7 @@ class ReplyPacingTest extends TestCase
         $this->assertSame("Vous livrez à Bobo ?\nEt à Koudougou ?", $escalation->customer_question);
         $this->assertSame(Message::where('whatsapp_message_id', 'wamid.2')->value('id'), $escalation->message_id);
         $this->assertSame(['escalated', 'escalated'], Message::where('direction', 'inbound')->orderBy('created_at')->pluck('status')->all());
-        $this->assertSame(['Je vérifie ça et je reviens vers vous très vite 😊'], FakeWhatsAppService::$sent);
+        $this->assertSame(['Je vérifie ça et je reviens vers vous très vite'], FakeWhatsAppService::$sent);
     }
 
     public function test_without_a_fake_queue_the_reply_goes_out_in_the_same_flow(): void

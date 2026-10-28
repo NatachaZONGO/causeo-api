@@ -17,12 +17,14 @@ use App\Services\AI\LearningService;
 use App\Services\AI\ManagerReplyService;
 use App\Services\AI\VoiceMessageService;
 use App\Services\Billing\UsageService;
+use App\Services\Conversations\QuotedMessageService;
 use App\Services\NotificationService;
 use App\Services\WhatsApp\MediaMessage;
 use App\Services\WhatsApp\WhatsAppAccountService;
 use App\Services\WhatsApp\WhatsAppMediaService;
 use App\Services\WhatsApp\WhatsAppService;
 use App\Services\WhatsApp\WhatsAppServiceFactory;
+use App\Support\EmojiStyle;
 use Illuminate\Database\QueryException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -59,6 +61,7 @@ class WebhookController extends Controller
         private readonly WhatsAppServiceFactory $whatsAppFactory,
         private readonly NotificationService $notifications,
         private readonly WhatsAppMediaService $media,
+        private readonly QuotedMessageService $quotedMessages,
     ) {}
 
     /**
@@ -111,7 +114,16 @@ class WebhookController extends Controller
 
         $incoming = $this->whatsApp->parseIncomingMessage($payload);
 
+        // Message brut, pour journaliser une réponse à un contenu inconnu (statut WhatsApp…).
+        $raw = data_get($payload, 'entry.0.changes.0.value.messages.0');
+        $raw = is_array($raw) ? $raw : [];
+
         if ($incoming === null || $incoming['message_id'] === '') {
+            // Type non pris en charge (« unsupported »…) : seul le journal le garde.
+            if (! empty($raw['context']) || ! empty($raw['referral'])) {
+                $this->quotedMessages->logIfUnknown(null, $raw);
+            }
+
             return $this->acknowledge();
         }
 
@@ -131,7 +143,7 @@ class WebhookController extends Controller
         $phoneNumberId = data_get($payload, 'entry.0.changes.0.value.metadata.phone_number_id');
 
         // Traitement lourd (IA + envois WhatsApp) exécuté après l'envoi de la réponse 200.
-        dispatch(function () use ($incoming, $phoneNumberId): void {
+        dispatch(function () use ($incoming, $phoneNumberId, $raw): void {
             // Sous php-fpm, il tourne dans le processus de la requête, une fois la réponse
             // partie (fastcgi_finish_request) : la limite des requêtes ordinaires ne suffit pas.
             if (! app()->runningInConsole()) {
@@ -139,7 +151,7 @@ class WebhookController extends Controller
                 set_time_limit(self::BACKGROUND_TIME_LIMIT);
             }
 
-            $this->process($incoming, $phoneNumberId);
+            $this->process($incoming, $phoneNumberId, $raw);
         })->afterResponse();
 
         return $this->acknowledge();
@@ -489,9 +501,10 @@ class WebhookController extends Controller
      * vocal, document ou vidéo transmis au gérant, sinon réponse programmée dans la
      * file (ReplyToCustomer), photos comprises.
      *
-     * @param  array{type?: string, from: string, message_id: string, text: string, customer_name: ?string, media_id?: string, mime_type?: string, voice?: bool, filename?: string, caption?: string}  $incoming
+     * @param  array{type?: string, from: string, message_id: string, text: string, customer_name: ?string, media_id?: string, mime_type?: string, voice?: bool, filename?: string, caption?: string, reply_to?: string, referral?: array<string, mixed>}  $incoming
+     * @param  array<string, mixed>  $raw  messages[0] du webhook, tel que reçu
      */
-    private function process(array $incoming, ?string $phoneNumberId): void
+    private function process(array $incoming, ?string $phoneNumberId, array $raw = []): void
     {
         try {
             $business = $this->connectedBusiness($phoneNumberId);
@@ -521,6 +534,9 @@ class WebhookController extends Controller
                 'is_active' => true,
             ]);
 
+            // Message cité ou publication d'origine : décrits à l'assistant au moment de répondre (ReplyToCustomer).
+            $quote = QuotedMessageService::metadata($incoming);
+
             try {
                 $inboundMessage = $conversation->messages()->create([
                     'direction' => 'inbound',
@@ -533,11 +549,11 @@ class WebhookController extends Controller
                     // Un autocollant n'appelle ni réponse ni escalade.
                     'status' => $type === 'sticker' ? MediaMessage::IGNORED_STATUS : 'pending',
                     'whatsapp_message_id' => $incoming['message_id'],
-                    'metadata' => match (true) {
+                    'metadata' => (match (true) {
                         $isVoice => $this->audioMetadata($incoming),
                         $isMedia => MediaMessage::metadata($type, $incoming),
-                        default => null,
-                    },
+                        default => [],
+                    } + $quote) ?: null,
                 ]);
             } catch (QueryException $e) {
                 // Violation de l'index unique : un autre traitement du même
@@ -547,6 +563,10 @@ class WebhookController extends Controller
                 ]);
 
                 return;
+            }
+
+            if (! empty($raw['context']) || ! empty($raw['referral'])) {
+                $this->quotedMessages->logIfUnknown($conversation, $raw, $business->id);
             }
 
             if ($type === 'sticker') {
@@ -591,7 +611,7 @@ class WebhookController extends Controller
                 // que le bot réponde ou non.
                 $inboundMessage->update([
                     'content' => $voice->transcript ?? self::VOICE_PLACEHOLDER,
-                    'metadata' => $this->audioMetadata($incoming) + $voice->metadata()
+                    'metadata' => $this->audioMetadata($incoming) + $voice->metadata() + $quote
                         + ($voice->usage !== null ? ['ai_usage' => ['transcription' => $voice->usage]] : []),
                 ]);
 
@@ -793,6 +813,9 @@ class WebhookController extends Controller
 
         // Traitement IA
         $result = app(AIResponseService::class)->answer($business, $data['text'], $conversation->id);
+        if ($result['answer']) {
+            $result['answer'] = EmojiStyle::apply($business, $result['answer']);
+        }
 
         // Sauvegarder la réponse
         if ($result['answer']) {

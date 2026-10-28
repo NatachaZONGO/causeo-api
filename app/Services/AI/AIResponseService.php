@@ -70,7 +70,7 @@ class AIResponseService
         <<<'TEXT'
 - Tu écris comme le gérant écrirait lui-même à son client : simple, direct, chaleureux, jamais mécanique ni commercial.
 - Adapte la longueur et le registre au message du client : à un message court ou familier, réponds court et simplement ; à un message long ou formel, reste posé et un peu plus complet. Le tutoiement ou le vouvoiement, lui, ne change jamais (voir les règles absolues).
-- Au plus un emoji par message, et pas dans chaque message, sauf si la façon d'écrire du gérant (plus bas) en dit autrement.
+- Pas d'emoji, sauf si les réglages du gérant (plus bas) en prévoient.
 TEXT,
         <<<'TEXT'
 - Réponds dans la langue du client (en français s'il écrit en français), de façon fluide et humaine.
@@ -137,12 +137,17 @@ TEXT;
     /** Consignes quand le catalogue est disponible (outil search_catalog). */
     private const CATALOG_INSTRUCTIONS = <<<'TEXT'
 # Catalogue et stock
-Le catalogue de la boutique se consulte avec l'outil search_catalog. Il fait foi pour les articles, les prix et la disponibilité : il prime sur les documents du contexte et sur l'historique.
-1. Dès que le client parle d'un article, d'un prix, d'une taille, d'une couleur ou d'une disponibilité, appelle search_catalog (avec les filtres utiles) avant de répondre.
-2. N'annonce que ce que renvoie l'outil : le nom, le prix et la disponibilité (« disponible », « dernières pièces », « en rupture »). Ne donne jamais un nombre de pièces en stock.
-3. En rupture : dis-le simplement et propose une autre variante disponible du même article, ou un article proche renvoyé par l'outil.
-4. Si l'outil ne renvoie rien, l'article n'est pas au catalogue : ne l'invente pas ; pose une question pour préciser, ou applique la règle d'escalade.
+Le catalogue de la boutique se consulte avec l'outil search_catalog. Il fait foi pour les articles, les prix, les variantes (tailles, couleurs…) et la disponibilité : il prime toujours sur les documents, les réponses apprises et l'historique. Les documents ne servent qu'aux informations générales (horaires, adresse, livraison, paiement, conditions, politique de retour…).
+1. Avec la question, tu reçois le résultat d'une première recherche dans le catalogue. Dès que le client parle d'un article, d'un prix, d'une taille, d'une couleur ou d'une disponibilité, appuie-toi sur ce résultat, ou appelle search_catalog (avec les filtres utiles) s'il ne suffit pas, avant de répondre.
+2. N'annonce que ce que renvoie le catalogue : le nom, le prix et la disponibilité (« disponible », « dernières pièces », « en rupture »). Ne donne jamais un nombre de pièces en stock.
+3. Un article, un prix ou une variante qui figure dans un document mais pas au catalogue ne se vend pas : ne le propose pas et ne donne pas ce prix. Si un document et le catalogue donnent des prix différents, seul le prix du catalogue compte.
+4. Si l'article demandé n'est pas au catalogue, dis-le simplement (« Je ne trouve pas cet article dans notre catalogue ») et propose les articles proches que renvoie le catalogue (même catégorie, même usage). S'il n'y en a aucun, ou si la demande reste floue, applique la règle d'escalade.
+5. En rupture : dis-le simplement et propose une autre variante disponible du même article, ou un article proche renvoyé par le catalogue.
+6. Ne choisis JAMAIS une taille, une couleur, une quantité ou une autre option à la place du client, et ne fais pas comme s'il l'avait donnée (pas de « en taille S, c'est bien ça ? » s'il n'a parlé d'aucune taille). Demande-la, en une seule question, avec les options disponibles du catalogue : « Quelle taille souhaitez-vous : S, M, L ou XL ? ».
 TEXT;
+
+    /** Résultats du catalogue envoyés avec la question, au plus. */
+    private const CATALOG_PREFETCH_LIMIT = 5;
 
     /** Outil de recherche dans le catalogue (module « catalog »). */
     private const SEARCH_CATALOG_TOOL = [
@@ -199,12 +204,14 @@ TEXT;
      * Générer une réponse à la question d'un client pour une entreprise donnée.
      *
      * Photos du client : blocs image déjà préparés (CustomerImageService), montrés à Claude
-     * avec la question ; $unreadableImages photos n'ont pas pu l'être.
+     * avec la question ; $unreadableImages photos n'ont pas pu l'être. Messages cités : ceux
+     * auxquels le client répond (QuotedMessageService), décrits avant sa question.
      *
      * @param  list<array<string, mixed>>  $images
+     * @param  list<array{note: string, search?: ?string}>  $quotes
      * @return array{answer: ?string, confidence: float, should_escalate: bool, context_used: array<int, mixed>, media_ids: array<int, string>, payment_proof?: bool}
      */
-    public function answer(Business $business, string $question, ?string $conversationId = null, array $images = [], int $unreadableImages = 0): array
+    public function answer(Business $business, string $question, ?string $conversationId = null, array $images = [], int $unreadableImages = 0, array $quotes = []): array
     {
         $conversation = $conversationId !== null ? Conversation::find($conversationId) : null;
         $withPhotos = $images !== [] || $unreadableImages > 0;
@@ -218,7 +225,8 @@ TEXT;
         // « D'accord merci » répondent à cette question : seule l'IA peut appeler l'outil.
         $awaitsAnswer = $lastBotMessage !== null && str_contains((string) $lastBotMessage->content, '?');
 
-        $simple = $withPhotos ? null : $this->handleSimpleMessage($business, $question, $lastBotMessage !== null, $awaitsAnswer);
+        // Une réponse à un message cité dépend de ce message : pas de réponse toute faite.
+        $simple = $withPhotos || $quotes !== [] ? null : $this->handleSimpleMessage($business, $question, $lastBotMessage !== null, $awaitsAnswer);
         if ($simple !== null) {
             Log::info('AIResponseService: réponse toute faite, sans appel à Claude', [
                 'business_id' => $business->id,
@@ -235,13 +243,15 @@ TEXT;
         try {
             // Avec une photo, la légende guide la recherche ; sans légende, on cherche le catalogue
             // (prix, articles), et tous les médias du business servent de catalogue illustré.
-            $searchText = $withPhotos ? $this->withoutPhotoPlaceholders($question) : $question;
+            // Le message cité précise la demande (« Combien ? » en réponse à la photo d'une robe).
+            $searchText = trim(($withPhotos ? $this->withoutPhotoPlaceholders($question) : $question)
+                ."\n".implode("\n", array_filter(array_column($quotes, 'search'))));
             $context = $withPhotos
                 ? $this->findRelevantContext($business, $searchText !== '' ? $searchText : self::PHOTO_CONTEXT_QUERY, self::PHOTO_CONTEXT_LIMIT)
-                : $this->findRelevantContext($business, $question);
+                : $this->findRelevantContext($business, $searchText);
             $hasContext = $context->isNotEmpty();
 
-            $media = $withPhotos ? $this->catalogMedia($business) : $this->findRelevantMedia($business, $question);
+            $media = $withPhotos ? $this->catalogMedia($business) : $this->findRelevantMedia($business, $searchText);
 
             $messages = $this->buildConversationHistory($session, $conversation, $question);
 
@@ -308,12 +318,27 @@ TEXT;
                     .'Cette ligne est technique : elle ne doit jamais apparaître dans une phrase adressée au client.';
             }
 
+            // Le catalogue fait foi : son résultat précède les documents, qui ne servent alors
+            // qu'aux informations générales (une ancienne liste de prix ne doit pas l'emporter).
+            $catalogBlock = $catalogAvailable && $searchText !== '' ? $this->catalogBlock($business, $searchText, $conversationId) : '';
+            $quotesBlock = $quotes !== [] ? implode("\n", array_column($quotes, 'note'))."\n\n" : '';
+
+            if ($quotes !== []) {
+                $systemPrompt .= "\n\n# Message cité\n"
+                    ."Le client répond à un message précis, décrit juste avant sa question. Réponds en en tenant compte : "
+                    ."« Combien ? » en réponse à la photo d'un article porte sur cet article.";
+            }
+
             if ($hasContext) {
                 $contextText = $context
                     ->map(fn ($item) => '- '.$item->content)
                     ->implode("\n");
 
-                $userMessage = "Contexte :\n{$contextText}\n\nQuestion du client : {$question}";
+                $contextLabel = $catalogAvailable
+                    ? 'Documents (informations générales ; pour les articles, les prix, les variantes et la disponibilité, seul le catalogue fait foi) :'
+                    : 'Contexte :';
+
+                $userMessage = "{$catalogBlock}{$contextLabel}\n{$contextText}\n\n{$quotesBlock}Question du client : {$question}";
             } else {
                 $systemPrompt .= "\n\n# Aucune information trouvée dans la base documentaire\n"
                     ."Aucune information spécifique n'a été trouvée dans la base documentaire. "
@@ -323,10 +348,10 @@ TEXT;
                     ."Si le client pose une question technique ou spécifique sur un produit / service / prix / horaire "
                     .($catalogAvailable ? "que l'outil search_catalog ne trouve pas non plus (appelle-le d'abord pour tout article ou prix), " : '')
                     ."que tu ne connais pas, ne confirme rien et n'infirme rien : réponds par un message d'attente court, "
-                    ."par exemple « Je vérifie ça et je reviens vers vous très vite 😊 », sans mentionner d'équipe, "
+                    ."par exemple « Je vérifie ça et je reviens vers vous très vite », sans mentionner d'équipe, "
                     ."de responsable ni de transmission, puis ajoute JE_NE_SAIS_PAS seul sur la dernière ligne.";
 
-                $userMessage = $question;
+                $userMessage = ($catalogBlock.$quotesBlock) !== '' ? "{$catalogBlock}{$quotesBlock}Question du client : {$question}" : $question;
             }
 
             // Photos des articles du catalogue : la photo du client peut y être reconnue.
@@ -480,7 +505,7 @@ TEXT;
             if ($media->isNotEmpty() && preg_match('/^\s*MEDIA\s*:\s*(.+)$/mi', $text, $matches)) {
                 $requested = array_filter(array_map('trim', explode(',', $matches[1])));
                 $validIds = $media->pluck('id')->all();
-                $mediaIds = array_values(array_intersect($requested, $validIds));
+                $mediaIds = $this->distinctMedia($business, $media, array_values(array_unique(array_intersect($requested, $validIds))));
 
                 $text = trim(preg_replace('/^\s*MEDIA\s*:.*$/mi', '', $text) ?? $text);
             }
@@ -1138,17 +1163,17 @@ Modes de remise proposés par la boutique (n'en propose jamais d'autre) :
 {$modes}
 
 Tu peux enregistrer une commande avec l'outil create_order. Procède ainsi :
-1. Collecte les informations manquantes, sans redemander ce que le client a déjà donné : les articles (nom, options comme la taille ou la couleur si elles existent, quantité), le nom du client, le mode de remise et le mode de paiement. Si le client n'a pas dit comment il souhaite recevoir sa commande, demande-le-lui en citant uniquement les modes proposés ci-dessus. Ne propose que des articles, options, villes et modes de paiement présents dans le contexte ; sinon, applique la règle d'escalade.
+1. Collecte les informations manquantes, sans redemander ce que le client a déjà donné : les articles (nom, options comme la taille ou la couleur si elles existent, quantité), le nom du client, le mode de remise et le mode de paiement. Pose une seule question par message, jamais une liste de questions : la suivante viendra après sa réponse. Ne choisis jamais une option ou une quantité à sa place : demande-la. Si le client n'a pas dit comment il souhaite recevoir sa commande, demande-le-lui en citant uniquement les modes proposés ci-dessus. Ne propose que des articles, options, villes et modes de paiement présents dans le contexte ; sinon, applique la règle d'escalade.
 2. Selon le mode de remise : pour une livraison, demande la ville et l'adresse ; pour une expédition, demande la ville de destination ; pour un retrait en boutique, ne demande pas d'adresse, mais donne au client l'adresse et les horaires de la boutique figurant dans les informations générales (ne les invente pas s'ils n'y figurent pas).
 3. Utilise uniquement les prix du contexte, ou ceux d'un récapitulatif déjà fait dans cette conversation. N'invente JAMAIS un prix absent : dans ce cas, n'enregistre pas la commande et applique la règle d'escalade. Si le contexte indique des frais de livraison ou d'expédition pour la ville du client, ajoute-les comme une ligne « Frais de livraison » (quantité 1). Ne facture JAMAIS de frais de livraison pour un retrait en boutique.
 4. Fais un récapitulatif clair : chaque article avec sa quantité et son prix unitaire, le total (somme des quantités × prix unitaires), le mode de remise et le paiement. Termine en demandant une confirmation explicite, par exemple « Je confirme la commande ? ».
 5. N'appelle create_order qu'après un « oui » clair du client à ce récapitulatif. Si le client modifie quelque chose, refais le récapitulatif et redemande confirmation. N'appelle jamais l'outil deux fois pour la même commande.
-6. Une fois l'outil exécuté, confirme la commande au client : donne la référence et le total renvoyés par l'outil, puis un court récapitulatif (articles et quantités, mode de remise, paiement). Termine par une phrase neutre, par exemple « Nous revenons vers vous très vite pour finaliser la livraison et le paiement 😊 » (ou « le retrait et le paiement » pour un retrait). Ne décris JAMAIS une procédure qui ne figure pas dans le contexte : pas d'appel d'un conseiller, pas d'heure ou de jour de livraison, pas de modalités de paiement (numéro, lien, moment du paiement) que le contexte n'indique pas.
+6. Une fois l'outil exécuté, confirme la commande au client : donne la référence et le total renvoyés par l'outil, puis un court récapitulatif (articles et quantités, mode de remise, paiement). Termine par une phrase neutre, par exemple « Nous revenons vers vous très vite pour finaliser la livraison et le paiement » (ou « le retrait et le paiement » pour un retrait). Ne décris JAMAIS une procédure qui ne figure pas dans le contexte : pas d'appel d'un conseiller, pas d'heure ou de jour de livraison, pas de modalités de paiement (numéro, lien, moment du paiement) que le contexte n'indique pas.
 7. N'annonce jamais une commande comme enregistrée si l'outil ne l'a pas confirmé dans ce même échange ; s'il renvoie une erreur, demande au client l'information manquante.
 8. La référence d'une commande vient uniquement du résultat de l'outil create_order. N'invente jamais de référence et ne réutilise jamais celle d'une commande précédente pour une nouvelle demande : chaque nouvelle commande passe par un nouveau récapitulatif, une nouvelle confirmation et un nouvel appel à l'outil.
 9. Si un récapitulatif attend encore une réponse du client et qu'il demande autre chose (un autre article, une autre ville, un autre mode de remise…), demande-lui d'abord s'il souhaite ajouter cela à sa commande en cours ou remplacer sa commande, puis refais le récapitulatif en conséquence.
 10. Les notes « [Note système …] » de l'historique sont internes : elles indiquent si une commande a réellement été enregistrée. Ne les recopie jamais au client.
-PROMPT.($withCatalog ? "\n11. Pour un article du catalogue, mets dans la ligne le variant_id renvoyé par search_catalog (la variante choisie : taille, couleur…). N'enregistre jamais une variante en rupture." : '');
+PROMPT.($withCatalog ? "\n11. Pour un article du catalogue, mets dans la ligne le variant_id renvoyé par search_catalog (la variante choisie par le client : taille, couleur…). N'enregistre jamais une variante en rupture. Les articles et leurs prix viennent uniquement du catalogue, jamais d'un document." : '');
     }
 
     /**
@@ -1315,6 +1340,82 @@ PROMPT.($withCatalog ? "\n11. Pour un article du catalogue, mets dans la ligne l
 3. Si rien ne correspond clairement, ou au moindre doute, dis-le simplement et pose une seule question pour préciser (nom de l'article, taille, couleur…), ou applique la règle d'escalade. N'invente jamais un article, un prix ou une disponibilité, et ne devine pas un prix d'après la photo.
 4. Ne décris pas la photo au client : réponds à ce qu'il cherche.
 PROMPT;
+    }
+
+    /**
+     * Médias à envoyer, sans doublon : un même fichier (même adresse, même chemin, ou même
+     * type et même taille au octet près : la photo téléversée deux fois) ou une autre photo
+     * du même article du catalogue ne part qu'une fois dans une réponse.
+     *
+     * @param  Collection<int, \App\Models\BusinessMedia>  $media
+     * @param  list<string>  $ids
+     * @return list<string>
+     */
+    private function distinctMedia(Business $business, Collection $media, array $ids): array
+    {
+        $productByMedia = [];
+        if (count($ids) > 1 && $business->hasModule('catalog')) {
+            foreach ($business->products()->whereNotNull('media_ids')->get(['id', 'media_ids']) as $product) {
+                foreach ((array) $product->media_ids as $mediaId) {
+                    $productByMedia[$mediaId] ??= $product->id;
+                }
+            }
+        }
+
+        $seen = [];
+        $kept = [];
+
+        foreach ($ids as $id) {
+            $item = $media->firstWhere('id', $id);
+            $keys = array_filter([
+                "id:{$id}",
+                ! empty($item?->public_url) ? "url:{$item->public_url}" : null,
+                ! empty($item?->file_path) ? "file:{$item->file_path}" : null,
+                (int) ($item?->file_size ?? 0) > 0 ? "size:{$item->mime_type}:{$item->file_size}" : null,
+                isset($productByMedia[$id]) ? "product:{$productByMedia[$id]}" : null,
+            ]);
+
+            if (array_intersect($keys, $seen) !== []) {
+                continue;
+            }
+
+            $seen = [...$seen, ...$keys];
+            $kept[] = $id;
+        }
+
+        if (count($kept) < count($ids)) {
+            Log::info('AIResponseService: médias en double retirés de la réponse', [
+                'business_id' => $business->id,
+                'requested' => count($ids),
+                'sent' => count($kept),
+            ]);
+        }
+
+        return $kept;
+    }
+
+    /**
+     * Recherche dans le catalogue faite avant d'appeler Claude, avec le message du client :
+     * les articles, prix et variantes qui font foi sont sous ses yeux avant les documents.
+     */
+    private function catalogBlock(Business $business, string $searchText, ?string $conversationId): string
+    {
+        $found = $this->catalog->search($business, $searchText, [], self::CATALOG_PREFETCH_LIMIT);
+
+        Log::info('AIResponseService: catalogue consulté avec la question', [
+            'business_id' => $business->id,
+            'conversation_id' => $conversationId,
+            'results' => count($found),
+        ]);
+
+        if ($found === []) {
+            return "Catalogue (fait foi) : aucun article ne correspond à ce message. S'il porte sur un article, "
+                ."celui-ci n'est pas au catalogue : appelle search_catalog avec d'autres mots (catégorie, usage) pour proposer des articles proches, "
+                ."sans jamais vendre un article ou un prix trouvé seulement dans les documents.\n\n";
+        }
+
+        return "Catalogue (fait foi), articles qui correspondent à ce message :\n"
+            .json_encode(['results' => $found], JSON_UNESCAPED_UNICODE)."\n\n";
     }
 
     /**
@@ -1981,8 +2082,8 @@ Tu discutes avec un client sur WhatsApp. Tu réponds au nom de {$business->name}
 - Si une information manque dans le contexte, ne la confirme pas et ne l'infirme pas non plus : ne dis ni « oui » ni « non » (par exemple, si une ville n'est pas mentionnée, ne dis pas que vous y livrez, ni que vous n'y livrez pas). Applique alors la règle d'escalade ci-dessous.
 - Ne promets JAMAIS un service qui ne figure pas dans le contexte : par exemple prévenir le client d'un retour en stock, mettre un article de côté au-delà des règles indiquées, faire une remise, livrer à un endroit ou dans un délai non mentionné.
 - Ne renvoie JAMAIS le client vers un numéro de téléphone, une adresse e-mail, un site ou un autre canal de contact, et surtout pas vers le numéro WhatsApp de cette conversation : c'est ici que le client obtient sa réponse. Seule exception : un contact indiqué explicitement dans les consignes spécifiques de l'entreprise, que tu peux alors donner tel quel.
-- Escalade : si tu ne trouves pas l'information dans le contexte ou si la demande dépasse ce que le contexte permet, NE dis PAS « je ne sais pas ». Réponds par un message d'attente court et naturel, avec tes propres mots, par exemple : « Je vérifie ça et je reviens vers vous très vite 😊 » ou « Laissez-moi vérifier ce point, je vous réponds rapidement ». Ne mentionne ni équipe, ni responsable, ni collègue, ni transmission de la demande. Puis, tout à la fin de ton message, sur une nouvelle ligne, ajoute le marqueur technique JE_NE_SAIS_PAS, seul sur cette dernière ligne. Ce marqueur ne doit jamais apparaître dans une phrase adressée au client.
-- Si le contexte invite le client à « contacter la boutique », à « nous écrire », à « appeler » ou à s'adresser à un conseiller pour obtenir une information, cela signifie que cette information n'est pas disponible : tu es déjà le canal de contact du client. Ne recopie JAMAIS cette consigne au client. Réponds par le message d'attente (« Je vérifie ça et je reviens vers vous très vite 😊 ») et ajoute le marqueur JE_NE_SAIS_PAS, comme pour toute escalade.
+- Escalade : si tu ne trouves pas l'information dans le contexte ou si la demande dépasse ce que le contexte permet, NE dis PAS « je ne sais pas ». Réponds par un message d'attente court et naturel, avec tes propres mots, par exemple : « Je vérifie ça et je reviens vers vous très vite » ou « Laissez-moi vérifier ce point, je vous réponds rapidement ». Ne mentionne ni équipe, ni responsable, ni collègue, ni transmission de la demande. Puis, tout à la fin de ton message, sur une nouvelle ligne, ajoute le marqueur technique JE_NE_SAIS_PAS, seul sur cette dernière ligne. Ce marqueur ne doit jamais apparaître dans une phrase adressée au client.
+- Si le contexte invite le client à « contacter la boutique », à « nous écrire », à « appeler » ou à s'adresser à un conseiller pour obtenir une information, cela signifie que cette information n'est pas disponible : tu es déjà le canal de contact du client. Ne recopie JAMAIS cette consigne au client. Réponds par le message d'attente (« Je vérifie ça et je reviens vers vous très vite ») et ajoute le marqueur JE_NE_SAIS_PAS, comme pour toute escalade.
 
 # Suite de conversation
 - Si la conversation est déjà en cours (il y a un historique de messages), ne resalue PAS le client. Pas de « Bonjour », pas de « Bienvenue », pas de formule d'accueil. Va directement à la réponse. Les salutations ne se font qu'au premier message d'un échange.
@@ -2052,7 +2153,7 @@ PROMPT;
         $settings = array_filter([
             $this->addressOf($business) === 'tu' ? '- Tutoie toujours le client.' : "- Vouvoie toujours le client, même s'il te tutoie.",
             match ($style['emojis']) {
-                'never' => "- N'utilise aucun emoji.",
+                'never' => "- N'utilise pas d'emoji. Tout au plus un 👋, rarement, pour saluer.",
                 'sometimes' => '- Un emoji au plus, et pas dans chaque message.',
                 'often' => "- Utilise volontiers un ou deux emojis par message, quand c'est naturel.",
                 default => null,

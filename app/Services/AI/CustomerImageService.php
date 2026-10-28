@@ -6,6 +6,7 @@ use App\Models\Business;
 use App\Models\Message;
 use App\Services\WhatsApp\MediaMessage;
 use App\Services\WhatsApp\WhatsAppMediaService;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 use Throwable;
 
@@ -62,6 +63,49 @@ class CustomerImageService
         }
 
         return [
+            'type' => 'image',
+            'source' => ['type' => 'base64', 'media_type' => $mimeType, 'data' => base64_encode($body)],
+        ];
+    }
+
+    /**
+     * Bloc image pour Claude à partir d'une adresse publique de Meta (image d'une publication
+     * ou d'une publicité dont vient le client : messages[].referral.image_url), ou null.
+     * Seuls les serveurs de Meta sont appelés : le webhook ne doit pas faire télécharger
+     * n'importe quelle adresse au serveur.
+     *
+     * @return array{type: 'image', source: array{type: 'base64', media_type: string, data: string}}|null
+     */
+    public function fromUrl(string $url): ?array
+    {
+        $host = strtolower((string) parse_url($url, PHP_URL_HOST));
+
+        if (parse_url($url, PHP_URL_SCHEME) !== 'https' || preg_match('/(^|\.)(fbcdn\.net|fbsbx\.com|cdninstagram\.com|whatsapp\.net)$/', $host) !== 1) {
+            Log::info('CustomerImageService: image hors des serveurs de Meta ignorée.', ['host' => $host]);
+
+            return null;
+        }
+
+        try {
+            $response = Http::timeout(10)->get($url);
+        } catch (Throwable $e) {
+            Log::warning('CustomerImageService: téléchargement de l\'image impossible.', ['host' => $host, 'exception' => $e::class]);
+
+            return null;
+        }
+
+        $mimeType = strtolower(trim(explode(';', (string) $response->header('Content-Type'))[0]));
+        $body = $response->body();
+
+        if (! $response->successful() || ! in_array($mimeType, MediaMessage::ANALYZABLE_IMAGE_TYPES, true) || strlen($body) > self::MAX_BYTES) {
+            Log::info('CustomerImageService: image illisible, trop lourde ou d\'un format non pris en charge.', ['host' => $host, 'status' => $response->status(), 'mime_type' => $mimeType]);
+
+            return null;
+        }
+
+        [$body, $mimeType] = $this->resize($body, $mimeType);
+
+        return $body === null ? null : [
             'type' => 'image',
             'source' => ['type' => 'base64', 'media_type' => $mimeType, 'data' => base64_encode($body)],
         ];

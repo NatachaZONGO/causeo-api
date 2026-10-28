@@ -188,9 +188,10 @@ class WhatsAppService
      *
      * @param  array<string, mixed>  $payload
      * Messages texte, audio (notes vocales comprises), image, document, vidéo et autocollant ;
-     * les autres types sont ignorés.
+     * les autres types sont ignorés. reply_to : identifiant du message auquel le client répond
+     * (context.id) ; referral : publication ou publicité d'où il écrit (voir QuotedMessageService).
      *
-     * @return array{type: string, from: string, message_id: string, text: string, customer_name: ?string, media_id?: string, mime_type?: string, voice?: bool, filename?: string, caption?: string}|null
+     * @return array{type: string, from: string, message_id: string, text: string, customer_name: ?string, media_id?: string, mime_type?: string, voice?: bool, filename?: string, caption?: string, reply_to?: string, referral?: array<string, mixed>}|null
      */
     public function parseIncomingMessage(array $payload): ?array
     {
@@ -210,6 +211,14 @@ class WhatsAppService
             'text' => $message['text']['body'] ?? '',
             'customer_name' => $value['contacts'][0]['profile']['name'] ?? null,
         ];
+
+        if (! empty($message['context']['id'])) {
+            $incoming['reply_to'] = (string) $message['context']['id'];
+        }
+
+        if (is_array($message['referral'] ?? null) && $message['referral'] !== []) {
+            $incoming['referral'] = $message['referral'];
+        }
 
         if (in_array($type, MediaMessage::TYPES, true)) {
             $media = MediaMessage::fromPayload($type, (array) ($message[$type] ?? []));

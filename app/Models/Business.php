@@ -154,7 +154,7 @@ class Business extends Model
 
     /**
      * @param  array<string, mixed>  $style
-     * @return array{address: ?string, emojis: ?string, length: ?string, signature: ?string, learn_from_owner: bool}
+     * @return array{address: ?string, emojis: string, length: ?string, signature: ?string, learn_from_owner: bool}
      */
     public static function normalizeReplyStyle(array $style): array
     {
@@ -163,7 +163,8 @@ class Business extends Model
 
         return [
             'address' => $option('address'),
-            'emojis' => $option('emojis'),
+            // Sans choix du gérant : pas d'emoji (voir App\Support\EmojiStyle).
+            'emojis' => $option('emojis') ?? 'never',
             'length' => $option('length'),
             'signature' => $signature !== '' ? $signature : null,
             'learn_from_owner' => (bool) ($style['learn_from_owner'] ?? true),

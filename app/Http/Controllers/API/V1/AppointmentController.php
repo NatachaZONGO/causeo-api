@@ -7,6 +7,7 @@ use App\Models\Appointment;
 use App\Models\Business;
 use App\Services\WhatsApp\WhatsAppNotConnectedException;
 use App\Services\WhatsApp\WhatsAppServiceFactory;
+use App\Support\EmojiStyle;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Http\JsonResponse;
@@ -164,9 +165,9 @@ class AppointmentController extends Controller
     {
         $when = $appointment->requested_date->locale('fr')->isoFormat('dddd D MMMM')." à {$appointment->requested_time}";
 
-        return $appointment->status === 'confirmed'
+        return EmojiStyle::apply($appointment->business, $appointment->status === 'confirmed'
             ? "Bonne nouvelle 😊 Votre rendez-vous « {$appointment->service} » du {$when} est confirmé. À bientôt chez {$appointment->business->name} !"
-            : "Nous sommes désolés, nous ne pouvons pas vous recevoir pour « {$appointment->service} » le {$when}. N'hésitez pas à nous proposer un autre créneau.";
+            : "Nous sommes désolés, nous ne pouvons pas vous recevoir pour « {$appointment->service} » le {$when}. N'hésitez pas à nous proposer un autre créneau.");
     }
 
     private function statusMessage(string $status, bool $notified, ?string $skippedReason): string
