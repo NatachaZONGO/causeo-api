@@ -77,21 +77,6 @@ class AssistantHandoffTest extends TestCase
 
         $this->createConversationSchema();
         (require base_path('database/migrations/2026_10_12_100000_add_whatsapp_alerts_to_users.php'))->up();
-        // La vraie migration utilise pgvector : même table sans la colonne d'embedding.
-        Schema::create('business_media', function (Blueprint $table) {
-            $table->uuid('id')->primary();
-            $table->uuid('business_id');
-            $table->string('type');
-            $table->string('title');
-            $table->text('description')->nullable();
-            $table->string('file_path');
-            $table->string('public_url')->nullable();
-            $table->string('mime_type')->nullable();
-            $table->integer('file_size')->nullable();
-            $table->json('keywords');
-            $table->boolean('is_active')->default(true);
-            $table->timestamps();
-        });
 
         $this->owner = User::forceCreate([
             'name' => 'Gérant', 'email' => 'neeb@example.test', 'password' => 'x',
@@ -261,13 +246,23 @@ class AssistantHandoffTest extends TestCase
 
     public function test_a_claim_about_an_old_order_is_short_and_invents_nothing(): void
     {
-        $this->claudeAnswers = ["Je suis vraiment désolée pour l'attente. Je transmets votre demande au responsable, qui revient vers vous rapidement. "
-            ."Encore toutes nos excuses. Votre confection est sûrement prête. Merci de votre patience.\nHORS_VENTE: réclamation"];
-
         $this->receive('wamid.1', "Bonsoir, j'ai déposé un pagne pour une confection il y a deux semaines, c'est prêt ?");
 
-        $this->assertSame(["Je suis vraiment désolée pour l'attente. Je transmets votre demande au responsable, qui revient vers vous rapidement. Encore toutes nos excuses."], FakeWhatsAppService::$sent);
+        // Reconnue sans appel à Claude : une phrase, puis escalade.
+        $this->assertSame([self::HANDOFF], FakeWhatsAppService::$sent);
         $this->assertSame(Escalation::REASON_PAST_ORDER, Escalation::sole()->reason);
+        $this->assertSame([], $this->claudeRequests());
+    }
+
+    public function test_a_complaint_is_short_and_apologizes_once(): void
+    {
+        $this->claudeAnswers = ["Je suis vraiment désolée pour ce souci. Je transmets votre message au responsable, qui revient vers vous rapidement. "
+            ."Encore toutes nos excuses. Nous allons vous rembourser. Merci de votre patience.\nHORS_VENTE: plainte"];
+
+        $this->receive('wamid.1', 'La robe que vous m\'avez livrée hier est déchirée, je suis très déçue.');
+
+        $this->assertSame(["Je suis vraiment désolée pour ce souci. Je transmets votre message au responsable, qui revient vers vous rapidement. Encore toutes nos excuses."], FakeWhatsAppService::$sent);
+        $this->assertSame(Escalation::REASON_COMPLAINT, Escalation::sole()->reason);
         $this->assertStringContainsString('reclamation ou plainte : 2 ou 3 phrases au plus. Des excuses une seule fois au plus', $this->claudeRequests()[0]['system'][0]['text']);
     }
 
@@ -354,7 +349,6 @@ class AssistantHandoffTest extends TestCase
     public function test_a_status_reply_gets_one_capture_question_then_goes_to_the_owner(): void
     {
         $question = "Pouvez-vous m'envoyer une capture de l'article ?";
-        $this->claudeAnswers = ["{$question}\nPRECISION", "{$question}\nPRECISION"];
 
         $this->receiveRaw([
             'id' => 'wamid.1', 'type' => 'text', 'text' => ['body' => "C'est combien ?"],
@@ -367,7 +361,8 @@ class AssistantHandoffTest extends TestCase
         $this->travel(1)->minutes();
         $this->receive('wamid.2', 'Regardez mon premier écrit');
 
-        $this->assertStringContainsString('# Capture déjà demandée', $this->claudeRequests()[1]['system'][1]['text']);
+        // Ni la question ni la relance ne passent par Claude : rien n'est deviné d'après l'historique.
+        $this->assertSame([], $this->claudeRequests());
         $this->assertSame([$question, self::HANDOFF], FakeWhatsAppService::$sent);
         $escalation = Escalation::sole();
         $this->assertSame(Escalation::REASON_STATUS_REPLY, $escalation->reason);

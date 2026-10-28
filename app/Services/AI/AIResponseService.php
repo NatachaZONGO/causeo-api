@@ -8,6 +8,7 @@ use App\Models\Conversation;
 use App\Models\Escalation;
 use App\Models\Order;
 use App\Models\ProductVariant;
+use App\Models\StatusPost;
 use App\Services\Embedding\EmbeddingService;
 use App\Services\AppointmentService;
 use App\Services\Catalog\CatalogService;
@@ -147,6 +148,8 @@ Le catalogue de la boutique se consulte avec l'outil search_catalog. Il fait foi
 4. Si l'article demandé n'est pas au catalogue, dis-le simplement (« Je ne trouve pas cet article dans notre catalogue ») et propose les articles proches que renvoie le catalogue (même catégorie, même usage). S'il n'y en a aucun, ou si la demande reste floue, applique la règle d'escalade.
 5. En rupture : dis-le simplement et propose une autre variante disponible du même article, ou un article proche renvoyé par le catalogue.
 6. Ne choisis JAMAIS une taille, une couleur, une quantité ou une autre option à la place du client, et ne fais pas comme s'il l'avait donnée (pas de « en taille S, c'est bien ça ? » s'il n'a parlé d'aucune taille). Demande-la, en une seule question, avec les options disponibles du catalogue : « Quelle taille souhaitez-vous : S, M, L ou XL ? ».
+7. Les prix, les tailles, les couleurs et les disponibilités ne viennent JAMAIS de l'historique de la conversation : tes réponses précédentes peuvent être fausses. Avant de citer un prix ou de récapituler une commande, appelle search_catalog (ou appuie-toi sur le résultat du catalogue reçu avec la question), même si le prix figure déjà plus haut.
+8. Une option (taille, couleur…) n'est retenue que si le CLIENT l'a écrite lui-même dans un de ses messages ; jamais parce qu'elle apparaît dans une de tes réponses.
 TEXT;
 
     /** Résultats du catalogue envoyés avec la question, au plus. */
@@ -190,6 +193,20 @@ TEXT;
         'personnel' => Escalation::REASON_PERSONAL,
     ];
 
+    /** Seule question posée quand le client répond à un statut sans statut du jour enregistré. */
+    private const STATUS_CAPTURE_QUESTION_TU = "Peux-tu m'envoyer une capture de l'article ?";
+
+    /** Réclamation sur une commande ou une prestation passée (texte normalisé, voir isPastOrderClaim). */
+    private const PAST_ORDER_PATTERNS = [
+        '/\b(j ai|jai|on a|avais|avait|deja|ai)( \w+){0,3} depose/',
+        '/\bdeposee?s?\b.*\b(habits?|tenues?|pagnes?|tissus?|robes?|vetements?|boubous?|complets?|chemises?|pantalons?|couture)\b/',
+        '/\b(habits?|tenues?|pagnes?|tissus?|robes?|vetements?|boubous?|complets?|chemises?|pantalons?)\b.*\bdeposee?s?\b/',
+        '/\brecuperer (mon|ma|mes|le|la|les)\b/',
+        '/\b(ma|mon|mes) (retouches?|confections?|couture|ancienne commande|commande d avant|tenue|habits?|tissus?)\b/',
+        '/\b(c est|cest|est ce|toujours pas|pas encore) (deja )?pret/',
+        '/\bdepuis (des|deux|trois|plusieurs|un|une) (semaines?|jours|mois)\b/',
+    ];
+
     /** Demandes de précision consécutives restées sans succès avant de passer la main au gérant. */
     private const MAX_CLARIFICATIONS = 2;
 
@@ -221,7 +238,7 @@ TEXT;
 # Messages hors vente : passer la main sans inventer
 Certains messages ne sont pas des demandes d'achat. Repère-les :
 - partenariat : proposition commerciale, de collaboration ou de partenariat, publicité, fournisseur ou prestataire qui propose ses services ;
-- reclamation : réclamation sur une commande, une confection, une retouche ou une prestation passée (tu n'en connais pas l'état, même si le client dit l'avoir déposée ou payée) ;
+- reclamation : réclamation ou question sur une commande, une confection, une couture, une retouche ou une prestation passée : un habit, une tenue, un pagne ou un tissu déposé à récupérer, « c'est prêt ? », une attente « depuis des semaines »… Tu n'en connais pas l'état, même si le client dit l'avoir déposé ou payé : ne pose pas de question, passe la main ;
 - plainte : mécontentement ou reproche sur un article reçu ou sur le service ;
 - personnel : message personnel ou interne destiné au gérant ou à l'équipe (nouvelles de quelqu'un, compte rendu, argent remis, « on a pris le lot »…), qui ne s'adresse manifestement pas au service client.
 Pour ces messages :
@@ -276,7 +293,8 @@ TEXT;
      * @param  list<array<string, mixed>>  $images
      * Résultat : escalation_reason (motif de l'escalade : hors vente, statut, précisions), silent
      * (escalade sans réponse au client), follow_up (escalade en attente relancée par le client),
-     * clarification (la réponse demande une précision : status_reply ou general).
+     * clarification (la réponse demande une précision : status_reply ou general), status_hint (réponse
+     * à un statut sans statut du jour : rappel au gérant).
      *
      * @param  list<array{note: string, search?: ?string, kind?: string}>  $quotes
      * @return array{answer: ?string, confidence: float, should_escalate: bool, context_used: array<int, mixed>, media_ids: array<int, string>, payment_proof?: bool, escalation_reason?: ?string, silent?: bool, follow_up?: string, clarification?: string}
@@ -294,6 +312,8 @@ TEXT;
         // Après une question du bot (« J'enregistre votre demande ? »), « Ok merci » ou
         // « D'accord merci » répondent à cette question : seule l'IA peut appeler l'outil.
         $awaitsAnswer = $lastBotMessage !== null && str_contains((string) $lastBotMessage->content, '?');
+
+        $catalogAvailable = $this->catalog->isAvailable($business);
 
         // Demande déjà transmise au gérant : une relance n'appelle qu'une réponse rassurante.
         $pendingEscalation = $conversation?->escalations()->where('status', Escalation::PENDING)->latest()->first();
@@ -319,6 +339,11 @@ TEXT;
             ]);
 
             return $simple;
+        }
+
+        $deterministic = $this->statusOrClaimResponse($business, $conversation, $question, $quotes, $withPhotos, $catalogAvailable, $clarifications);
+        if ($deterministic !== null) {
+            return $deterministic;
         }
 
         $context = collect();
@@ -348,8 +373,7 @@ TEXT;
             // Commandes et rendez-vous ne sont possibles que dans une vraie conversation
             // client, avec le module correspondant actif (et au moins un mode de remise
             // proposé pour les commandes).
-            // Le catalogue (module « catalog » et au moins un article actif) se consulte aussi hors conversation.
-            $catalogAvailable = $this->catalog->isAvailable($business);
+            // Le catalogue (module « catalog » et au moins un article actif, voir plus haut) se consulte aussi hors conversation.
 
             $tools = [];
             if ($conversation !== null && $business->hasModule('orders') && $business->enabledFulfillmentTypes() !== []) {
@@ -596,6 +620,41 @@ TEXT;
                         'business_id' => $business->id,
                         'conversation_id' => $conversationId,
                     ]);
+                }
+            }
+
+            // Un prix qui ne correspond à aucune variante de l'article, ou une taille que le client n'a pas
+            // donnée (souvent reprise d'une ancienne réponse) : un seul nouvel essai, puis escalade.
+            if ($catalogAvailable) {
+                $catalogIssue = $this->catalogIssues($business, $text, $session, $question);
+
+                if ($catalogIssue !== null) {
+                    Log::warning('AIResponseService: prix ou option hors catalogue, réponse régénérée', [
+                        'business_id' => $business->id,
+                        'conversation_id' => $conversationId,
+                    ]);
+
+                    $request['messages'][] = ['role' => 'assistant', 'content' => $payload['content']];
+                    $request['messages'][] = ['role' => 'user', 'content' => '[Message système, pas du client : ne le mentionne pas dans ta réponse] '.$catalogIssue];
+
+                    $payload = $this->converse($request, $business, $conversation, $trace);
+                    $text = $this->extractText($payload);
+
+                    if ($this->catalogIssues($business, $text, $session, $question) !== null || $this->unverifiedOrderClaim($text, $trace, $conversation, $appointmentsAvailable) !== null) {
+                        Log::warning('AIResponseService: prix ou option hors catalogue après le nouvel essai, escalade', [
+                            'business_id' => $business->id,
+                            'conversation_id' => $conversationId,
+                        ]);
+
+                        return [
+                            'answer' => self::WAITING_MESSAGE,
+                            'confidence' => 0.2,
+                            'should_escalate' => true,
+                            'context_used' => $context->pluck('id')->all(),
+                            'media_ids' => [],
+                            'tool_trace' => $this->traceForMetadata($trace),
+                        ];
+                    }
                 }
             }
 
@@ -1508,6 +1567,158 @@ PROMPT.($withCatalog ? "\n11. Pour un article du catalogue, mets dans la ligne l
     }
 
     /**
+     * Réponses sans appel à Claude, qui ne doivent rien deviner :
+     * - réponse à un statut, plusieurs statuts du jour : leurs photos (au plus 4) et « lequel ? » ;
+     * - réponse à un statut sans statut du jour, et le message ne nomme aucun article : une capture
+     *   est demandée (et le gérant invité à enregistrer ses statuts) ;
+     * - capture déjà demandée, et toujours ni photo ni article nommé : le gérant prend le relais ;
+     * - réclamation sur une commande ou une prestation passée (habit déposé…) : une phrase, escalade.
+     *
+     * @param  list<array<string, mixed>>  $quotes
+     * @param  array{count: int, topic: ?string}  $clarifications
+     * @return array<string, mixed>|null
+     */
+    private function statusOrClaimResponse(Business $business, ?Conversation $conversation, string $question, array $quotes, bool $withPhotos, bool $catalogAvailable, array $clarifications): ?array
+    {
+        $tu = $this->addressOf($business) === 'tu';
+        $kinds = array_column($quotes, 'kind');
+        $names = fn () => $catalogAvailable && $this->catalog->identifies($business, $question);
+        $reply = fn (string $answer, array $extra = []) => $extra + [
+            'answer' => $answer,
+            'confidence' => 1.0,
+            'should_escalate' => false,
+            'context_used' => [],
+            'media_ids' => [],
+            'canned' => true,
+        ];
+        $log = fn (string $case) => Log::info("AIResponseService: {$case}, sans appel à Claude", [
+            'business_id' => $business->id,
+            'conversation_id' => $conversation?->id,
+        ]);
+
+        $many = collect($quotes)->firstWhere('kind', QuotedMessageService::KIND_STATUS_MANY);
+        if ($many !== null && ! $withPhotos) {
+            $labels = array_column($many['choices'], 'label');
+            $list = count($labels) > 1 ? implode(', ', array_slice($labels, 0, -1)).' et '.end($labels) : $labels[0];
+            $log('réponse à un statut, plusieurs statuts du jour');
+
+            return $reply(
+                "Voici les articles de nos statuts du jour : {$list}. ".($tu ? 'Lequel t\'intéresse ?' : 'Lequel vous intéresse ?'),
+                ['media_ids' => array_values(array_unique(array_filter(array_column($many['choices'], 'media_id')))), 'clarification' => 'status_reply'],
+            );
+        }
+
+        if (in_array(QuotedMessageService::KIND_UNKNOWN, $kinds, true) && ! $withPhotos && ! $names()) {
+            $log('réponse à un statut sans statut du jour, capture demandée');
+
+            return $reply(
+                $tu ? self::STATUS_CAPTURE_QUESTION_TU : QuotedMessageService::STATUS_CAPTURE_QUESTION,
+                ['clarification' => 'status_reply', 'status_hint' => true],
+            );
+        }
+
+        if ($clarifications['topic'] === 'status_reply' && $quotes === [] && ! $withPhotos && ! $names()) {
+            $log('capture du statut toujours absente, passage au gérant');
+
+            return $reply($this->handoffReply($business), [
+                'confidence' => 0.2,
+                'should_escalate' => true,
+                'escalation_reason' => Escalation::REASON_STATUS_REPLY,
+            ]);
+        }
+
+        if (! $withPhotos && $this->isPastOrderClaim($question) && ! $this->hasOpenOrder($conversation)) {
+            $log('réclamation sur une commande ou une prestation passée');
+
+            return $reply($this->handoffReply($business), [
+                'confidence' => 0.2,
+                'should_escalate' => true,
+                'escalation_reason' => Escalation::REASON_PAST_ORDER,
+            ]);
+        }
+
+        return null;
+    }
+
+    /** « Je viens récupérer mon habit déposé », « c'est prêt ? », « depuis des semaines »… */
+    private function isPastOrderClaim(string $question): bool
+    {
+        $normalized = $this->normalize($question);
+
+        foreach (self::PAST_ORDER_PATTERNS as $pattern) {
+            if (preg_match($pattern, $normalized) === 1) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /** Commande enregistrée dans Causeo et pas encore livrée : l'assistant en connaît l'état. */
+    private function hasOpenOrder(?Conversation $conversation): bool
+    {
+        return $conversation !== null
+            && Order::query()->where('conversation_id', $conversation->id)->whereIn('status', ['new', 'confirmed'])->exists();
+    }
+
+    /**
+     * Consigne de correction si la réponse cite un prix qui ne correspond à aucune variante de
+     * l'article nommé, ou retient une taille que le client n'a jamais écrite ; null sinon.
+     *
+     * @param  Collection<int, object>  $session
+     */
+    private function catalogIssues(Business $business, string $text, Collection $session, string $question): ?string
+    {
+        $issues = [];
+
+        foreach ($this->catalog->priceMismatches($business, $text) as $mismatch) {
+            $prices = implode(' ou ', array_map(fn (int $price) => number_format($price, 0, ',', ' ').' FCFA', $mismatch['prices']));
+            $issues[] = 'Ta réponse cite '.number_format($mismatch['price'], 0, ',', ' ')." FCFA pour « {$mismatch['product']} », "
+                ."qui ne correspond à aucun prix du catalogue ({$prices}). Les prix de l'historique ne font pas foi.";
+        }
+
+        $unchosen = $this->unchosenOptions($text, $session, $question);
+        if ($unchosen !== []) {
+            $issues[] = 'Ta réponse retient la taille '.implode(', ', $unchosen).', que le client n\'a jamais écrite. '
+                .'Ne retiens que les options qu\'il a données lui-même ; sinon demande-la-lui.';
+        }
+
+        return $issues === [] ? null : implode(' ', $issues).' Réécris ta réponse avec les seules informations du catalogue (appelle search_catalog si besoin).';
+    }
+
+    /**
+     * Tailles affirmées dans la réponse (« taille S », pas une question ni une liste de tailles
+     * disponibles) que le client n'a écrites dans aucun de ses messages.
+     *
+     * @param  Collection<int, object>  $session
+     * @return list<string>
+     */
+    private function unchosenOptions(string $text, Collection $session, string $question): array
+    {
+        $customer = mb_strtolower($question."\n".$session->where('direction', 'inbound')->pluck('content')->implode("\n"));
+        $unchosen = [];
+
+        foreach (preg_split('/(?<=[.!?])\s+|\n+/u', $text) ?: [] as $sentence) {
+            if (str_ends_with(trim($sentence), '?') || preg_match('/\b(disponibles?|existe|reste|restent|avons|stock|tailles)\b/iu', $sentence) === 1) {
+                continue;
+            }
+
+            // Une seule taille, pas une liste (« taille S, M ou L »).
+            if (preg_match_all('/\b(?:taille|pointure)\s*:?\s*([A-Z]{1,4}|\d{2})\b(?!\s*(?:,|\/|et|ou)\s*(?:[A-Z]{1,4}|\d{2})\b)/u', $sentence, $matches) === 0) {
+                continue;
+            }
+
+            foreach ($matches[1] as $size) {
+                if (preg_match('/(?<![\p{L}\d])'.preg_quote(mb_strtolower($size), '/').'(?![\p{L}\d])/u', $customer) !== 1) {
+                    $unchosen[] = $size;
+                }
+            }
+        }
+
+        return array_values(array_unique($unchosen));
+    }
+
+    /**
      * Demande en attente du gérant, rappelée à l'assistant pour qu'il ne la redemande pas.
      */
     private function pendingEscalationBlock(Business $business, Escalation $escalation): string
@@ -1561,6 +1772,7 @@ PROMPT.($withCatalog ? "\n11. Pour un article du catalogue, mets dans la ligne l
         return match (true) {
             $clarifications['topic'] === 'status_reply' => "# Capture déjà demandée\n"
                 ."Tu as déjà demandé au client une capture de l'article dont il parle (il répondait à un statut). "
+                ."Ne suppose jamais l'article d'après l'historique de la conversation. "
                 ."S'il l'envoie ou nomme clairement l'article, réponds normalement. S'il ne peut pas, ne l'a pas ou insiste "
                 .'(« regardez mon premier écrit »), ne repose pas la question : écris seulement JE_NE_SAIS_PAS.',
             $clarifications['count'] >= self::MAX_CLARIFICATIONS => "# Précisions déjà demandées\n"

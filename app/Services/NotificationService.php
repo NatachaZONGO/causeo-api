@@ -4,11 +4,14 @@ namespace App\Services;
 
 use App\Mail\OwnerNotificationMail;
 use App\Models\Appointment;
+use App\Models\Business;
+use App\Models\Conversation;
 use App\Models\Escalation;
 use App\Models\Notification;
 use App\Models\Order;
 use App\Models\ProductVariant;
 use App\Services\WhatsApp\OwnerAlertService;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Mail;
 use Throwable;
@@ -76,6 +79,41 @@ class NotificationService
 
         // En plus de la cloche, sans jamais la remplacer (au plus une alerte par période).
         $this->whatsAppAlerts->escalation($escalation);
+    }
+
+    /** Le rappel « Enregistrez vos statuts » part au plus une fois par période, par business. */
+    public const STATUS_HINT_COOLDOWN_HOURS = 24;
+
+    /**
+     * Un client répond à un statut WhatsApp alors qu'aucun statut du jour n'est enregistré :
+     * l'assistant ne sait pas de quel article il parle. Le gérant est invité à enregistrer ses statuts.
+     */
+    public function notifyStatusHint(Business $business, Conversation $conversation): void
+    {
+        try {
+            if (! Cache::add("status-hint:{$business->id}", true, now()->addHours(self::STATUS_HINT_COOLDOWN_HOURS))) {
+                return;
+            }
+
+            $customer = $conversation->customer_name ?: $conversation->customer_phone;
+
+            Notification::create([
+                'business_id' => $business->id,
+                'type' => 'status',
+                'title' => "{$customer} répond à un de vos statuts",
+                'body' => "L'assistant ne sait pas de quel article il s'agit. Enregistrez vos statuts dans Causeo pour que l'assistant puisse répondre.",
+                'data' => [
+                    'kind' => 'status_hint',
+                    'conversation_id' => $conversation->id,
+                    'action_path' => '/dashboard/status',
+                ],
+            ]);
+        } catch (Throwable $e) {
+            Log::error('NotificationService::notifyStatusHint a échoué', [
+                'business_id' => $business->id,
+                'exception' => $e::class,
+            ]);
+        }
     }
 
     /** Titre de la notification d'escalade, selon son motif. */

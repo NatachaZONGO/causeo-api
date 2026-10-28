@@ -8,6 +8,7 @@ use App\Services\WhatsApp\MediaMessage;
 use App\Services\WhatsApp\WhatsAppMediaService;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Storage;
 use Throwable;
 
 /**
@@ -110,6 +111,35 @@ class CustomerImageService
         }
 
         [$body, $mimeType] = $this->resize($body, $mimeType);
+
+        return $body === null ? null : [
+            'type' => 'image',
+            'source' => ['type' => 'base64', 'media_type' => $mimeType, 'data' => base64_encode($body)],
+        ];
+    }
+
+    /**
+     * Bloc image pour Claude à partir d'une image téléversée par le gérant (statut du jour), ou null.
+     *
+     * @return array{type: 'image', source: array{type: 'base64', media_type: string, data: string}}|null
+     */
+    public function fromStorage(?string $path, ?string $mimeType, string $disk = 'supabase_media'): ?array
+    {
+        $mimeType = strtolower(trim(explode(';', (string) $mimeType)[0]));
+
+        if ($path === null || $path === '' || ! in_array($mimeType, MediaMessage::ANALYZABLE_IMAGE_TYPES, true)) {
+            return null;
+        }
+
+        try {
+            $body = (string) Storage::disk($disk)->get($path);
+        } catch (Throwable $e) {
+            Log::warning('CustomerImageService: image du statut illisible.', ['exception' => $e::class]);
+
+            return null;
+        }
+
+        [$body, $mimeType] = strlen($body) <= self::MAX_BYTES ? $this->resize($body, $mimeType) : [null, $mimeType];
 
         return $body === null ? null : [
             'type' => 'image',

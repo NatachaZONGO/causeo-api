@@ -6,7 +6,9 @@ use App\Models\Business;
 use App\Models\BusinessMedia;
 use App\Models\Conversation;
 use App\Models\Message;
+use App\Models\StatusPost;
 use App\Services\AI\CustomerImageService;
+use App\Services\Catalog\CatalogService;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
@@ -18,9 +20,11 @@ use Illuminate\Support\Str;
  * envoyée, message du gérant, message du client) et décrit à l'assistant avec la question.
  *
  * Réponse à un statut WhatsApp du commerçant : Meta ne documente pas ce cas. Le contexte
- * pointe alors vers un message absent de la conversation ; l'assistant demande une capture de
- * l'article (une seule fois, puis il passe la main au gérant), et le payload brut est
- * journalisé (sans numéro) pour l'analyser.
+ * pointe alors vers un message absent de la conversation, et le payload brut est journalisé
+ * (sans numéro) pour l'analyser. Les statuts du jour enregistrés par le gérant (StatusPost)
+ * disent à quoi le client répond : un seul, c'est son article ; plusieurs, l'assistant envoie
+ * leurs photos et demande lequel ; aucun, il demande une capture (une seule fois, puis il passe
+ * la main au gérant). Jamais l'article n'est deviné d'après l'historique.
  */
 class QuotedMessageService
 {
@@ -36,8 +40,14 @@ class QuotedMessageService
     /** Champs du payload qui contiennent un numéro ou un nom : masqués dans le journal. */
     private const PERSONAL_FIELDS = ['from', 'to', 'wa_id', 'recipient_id', 'display_phone_number', 'phone_number', 'name'];
 
-    /** Message cité introuvable (statut WhatsApp…) : une seule question, puis escalade (AIResponseService). */
+    /** Message cité introuvable (statut WhatsApp…) sans statut du jour : une seule question, puis escalade (AIResponseService). */
     public const KIND_UNKNOWN = 'unknown';
+
+    /** Réponse à un statut, un seul statut du jour actif : son article. */
+    public const KIND_STATUS_ONE = 'status_one';
+
+    /** Réponse à un statut, plusieurs statuts du jour actifs : le client choisit (quote['choices']). */
+    public const KIND_STATUS_MANY = 'status_many';
 
     /** La seule question posée quand le client répond à un statut sans dire de quel article il parle. */
     public const STATUS_CAPTURE_QUESTION = "Pouvez-vous m'envoyer une capture de l'article ?";
@@ -47,6 +57,7 @@ class QuotedMessageService
 
     public function __construct(
         private readonly CustomerImageService $images,
+        private readonly CatalogService $catalog,
     ) {}
 
     /**
@@ -107,7 +118,7 @@ class QuotedMessageService
      * citées à lui montrer (photo du client ou du gérant, image de la publication).
      *
      * @param  Collection<int, Message>  $batch
-     * @return array{quotes: list<array{note: string, search: ?string, kind?: string}>, images: list<array<string, mixed>>}
+     * @return array{quotes: list<array{note: string, search: ?string, kind?: string, choices?: list<array{label: string, media_id: ?string}>}>, images: list<array<string, mixed>>}
      */
     public function forBatch(Business $business, Conversation $conversation, Collection $batch): array
     {
@@ -201,13 +212,7 @@ class QuotedMessageService
         $found = $this->find($conversation, $replyTo);
 
         if ($found === null) {
-            return [[
-                'note' => "Le client répond à un message que tu ne vois pas (probablement un statut WhatsApp de la boutique, ou un message trop ancien). "
-                    ."Si sa question ne dit pas clairement de quel article il s'agit, ne devine pas : pose une seule question, "
-                    .'« '.self::STATUS_CAPTURE_QUESTION.' », puis ajoute PRECISION seul sur la dernière ligne.',
-                'search' => null,
-                'kind' => self::KIND_UNKNOWN,
-            ], null];
+            return $this->describeStatus($business);
         }
 
         $message = $found['message'];
@@ -241,6 +246,59 @@ class QuotedMessageService
         };
 
         return [['note' => $note, 'search' => $type === 'image' && $caption === '' ? null : Str::limit($text, 200)], $image];
+    }
+
+    /**
+     * Message cité absent de la conversation : sans doute un statut WhatsApp de la boutique, décrit
+     * d'après les statuts du jour enregistrés par le gérant.
+     *
+     * @return array{0: array<string, mixed>, 1: ?array<string, mixed>}
+     */
+    private function describeStatus(Business $business): array
+    {
+        $posts = $business->statusPosts()->active()->with(['product.variants', 'media'])->limit(StatusPost::MAX_CHOICES + 1)->get();
+        $history = "Ne suppose jamais l'article d'après l'historique de la conversation, ni d'après tes réponses précédentes.";
+
+        if ($posts->isEmpty()) {
+            return [[
+                'note' => "Le client répond à un message que tu ne vois pas (probablement un statut WhatsApp de la boutique, ou un message trop ancien). {$history} "
+                    ."Si sa question ne dit pas clairement de quel article il s'agit, ne devine pas : pose une seule question, "
+                    .'« '.self::STATUS_CAPTURE_QUESTION.' », puis ajoute PRECISION seul sur la dernière ligne.',
+                'search' => null,
+                'kind' => self::KIND_UNKNOWN,
+            ], null];
+        }
+
+        if ($posts->count() > 1) {
+            return [[
+                'note' => 'Le client répond à un des statuts WhatsApp du jour de la boutique : '.$posts->map(fn (StatusPost $post) => '« '.$post->label().' »')->implode(', ').". {$history}",
+                'search' => null,
+                'kind' => self::KIND_STATUS_MANY,
+                'choices' => $posts->take(StatusPost::MAX_CHOICES)->map(fn (StatusPost $post) => ['label' => $post->label(), 'media_id' => $post->photoId()])->values()->all(),
+            ], null];
+        }
+
+        $post = $posts->first();
+        $caption = trim((string) $post->caption) !== '' ? ' (légende : « '.trim((string) $post->caption).' »)' : '';
+
+        if ($post->product !== null) {
+            return [[
+                'note' => "Le client répond au statut WhatsApp du jour de la boutique{$caption}, qui montre l'article du catalogue « {$post->product->name} » : "
+                    .json_encode($this->catalog->describe($post->product), JSON_UNESCAPED_UNICODE).". Sa question porte sur cet article. {$history}",
+                'search' => $post->product->name,
+                'kind' => self::KIND_STATUS_ONE,
+            ], null];
+        }
+
+        $image = $this->images->fromStorage($post->media?->file_path, $post->media?->mime_type);
+
+        return [[
+            'note' => "Le client répond au statut WhatsApp du jour de la boutique{$caption}."
+                .($image !== null ? " L'image du statut est jointe au message : cherche l'article dans le catalogue comme pour une photo du client." : '')
+                ." Sa question porte sur cet article. {$history}",
+            'search' => $caption !== '' ? Str::limit(trim((string) $post->caption), 200) : null,
+            'kind' => self::KIND_STATUS_ONE,
+        ], $image];
     }
 
     /**

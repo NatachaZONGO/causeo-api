@@ -30,6 +30,9 @@ class CatalogService
     /** Articles chargés pour une recherche (catalogues de petits commerces). */
     private const SEARCH_POOL = 1000;
 
+    /** Montant en FCFA dans un texte : « 15 000 FCFA », « 15.000 F », « 15000 francs ». */
+    public const PRICE_PATTERN = '/(\d{1,3}(?:[ .,\x{00A0}\x{202F}]\d{3})+|\d{3,})\s*(?:F\s?CFA|FCFA|francs?|F)(?![\p{L}])/iu';
+
     /** Similarité minimale (embedding) pour qu'un article compte comme proche de la recherche. */
     private const SIMILARITY_THRESHOLD = 0.45;
 
@@ -371,6 +374,74 @@ class CatalogService
         usort($results, fn (array $a, array $b) => $b['score'] <=> $a['score']);
 
         return array_map(fn (array $result) => $this->present($result['product'], $result['variants']), array_slice($results, 0, $limit));
+    }
+
+    /**
+     * Le texte nomme-t-il un article du catalogue ? Un texte sans mot utile (« C'est combien ? »)
+     * n'en nomme aucun : search() renverrait alors tout le catalogue.
+     */
+    public function identifies(Business $business, string $text): bool
+    {
+        return $this->tokens($text) !== [] && $this->search($business, $text, [], 1) !== [];
+    }
+
+    /** Article et toutes ses variantes, tels que l'assistant les voit (statut du jour…). */
+    public function describe(Product $product): array
+    {
+        return $this->present($product, $product->variants);
+    }
+
+    /**
+     * Prix cités dans une réponse pour un article du catalogue qui ne correspondent à aucune de ses
+     * variantes (ni à 2 à 10 pièces). Seules les phrases qui nomment un article sont vérifiées, hors
+     * total, livraison, frais, remise ou acompte.
+     *
+     * @return list<array{product: string, price: int, prices: list<int>}>
+     */
+    public function priceMismatches(Business $business, string $text): array
+    {
+        if (preg_match(self::PRICE_PATTERN, $text) !== 1) {
+            return [];
+        }
+
+        $products = $business->products()->where('is_active', true)->with('variants')->limit(self::SEARCH_POOL)->get();
+        $mismatches = [];
+
+        foreach (preg_split('/(?<=[.!?])\s+|\n+/u', $text) ?: [] as $sentence) {
+            preg_match_all(self::PRICE_PATTERN, $sentence, $matches);
+            $normalized = self::normalize($sentence);
+
+            if ($matches[1] === [] || preg_match('/\b(total|livraison|frais|remise|reduction|acompte|avance|reste)\b/', $normalized) === 1) {
+                continue;
+            }
+
+            $words = $this->tokens($sentence);
+            $named = $products->filter(function (Product $product) use ($words): bool {
+                $tokens = $this->tokens($product->name);
+                $found = count(array_intersect($tokens, $words));
+
+                return $tokens !== [] && ($found === count($tokens) || ($found >= 2 && $found / count($tokens) >= 0.6));
+            });
+
+            if ($named->isEmpty()) {
+                continue;
+            }
+
+            $prices = $named->flatMap(fn (Product $product) => $product->variants->map(fn (ProductVariant $variant) => (int) round($variant->price ?? $product->base_price))
+                ->push((int) round((float) $product->base_price)))
+                ->filter()->unique()->sort()->values()->all();
+            $allowed = collect($prices)->flatMap(fn (int $price) => array_map(fn (int $count) => $price * $count, range(1, 10)))->all();
+
+            foreach ($matches[1] as $raw) {
+                $price = (int) preg_replace('/\D/', '', $raw);
+
+                if ($price > 0 && ! in_array($price, $allowed, true)) {
+                    $mismatches[] = ['product' => $named->pluck('name')->implode(', '), 'price' => $price, 'prices' => $prices];
+                }
+            }
+        }
+
+        return $mismatches;
     }
 
     /**

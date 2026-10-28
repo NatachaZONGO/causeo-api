@@ -90,21 +90,6 @@ class MediaMessageTest extends TestCase
             $table->integer('usage_count')->default(0);
             $table->timestamps();
         });
-        // La vraie migration utilise pgvector : même table sans la colonne d'embedding.
-        Schema::create('business_media', function (Blueprint $table) {
-            $table->uuid('id')->primary();
-            $table->uuid('business_id');
-            $table->string('type');
-            $table->string('title');
-            $table->text('description')->nullable();
-            $table->string('file_path');
-            $table->string('public_url')->nullable();
-            $table->string('mime_type')->nullable();
-            $table->integer('file_size')->nullable();
-            $table->json('keywords');
-            $table->boolean('is_active')->default(true);
-            $table->timestamps();
-        });
 
         $this->owner = User::forceCreate([
             'name' => 'Joyce', 'email' => 'joyce@example.test', 'password' => 'x',
@@ -524,9 +509,9 @@ class MediaMessageTest extends TestCase
             'context' => ['from' => '22625000000', 'id' => 'wamid.STATUS-1'],
         ]);
 
-        $userMessage = end($this->claudeRequests()[0]['messages'])['content'];
-        $this->assertStringContainsString('Le client répond à un message que tu ne vois pas (probablement un statut WhatsApp de la boutique', $userMessage);
-        $this->assertStringContainsString("pose une seule question, « Pouvez-vous m'envoyer une capture de l'article ? », puis ajoute PRECISION", $userMessage);
+        // Aucun statut du jour et aucun article nommé : la capture est demandée, sans rien deviner.
+        $this->assertSame(["Pouvez-vous m'envoyer une capture de l'article ?"], FakeWhatsAppService::$sent);
+        $this->assertSame([], $this->claudeRequests());
 
         Log::shouldHaveReceived('info')->withArgs(function (string $message, array $context = []): bool {
             if (! str_contains($message, 'contenu inconnu')) {

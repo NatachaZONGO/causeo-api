@@ -35,21 +35,6 @@ class BusinessMediaTest extends TestCase
         parent::setUp();
 
         $this->createConversationSchema();
-        // La vraie migration utilise pgvector : même table sans la colonne d'embedding.
-        Schema::create('business_media', function (Blueprint $table) {
-            $table->uuid('id')->primary();
-            $table->uuid('business_id');
-            $table->string('type');
-            $table->string('title');
-            $table->text('description')->nullable();
-            $table->string('file_path');
-            $table->string('public_url')->nullable();
-            $table->string('mime_type')->nullable();
-            $table->integer('file_size')->nullable();
-            $table->json('keywords');
-            $table->boolean('is_active')->default(true);
-            $table->timestamps();
-        });
         Storage::fake('supabase_media');
         $this->mock(EmbeddingService::class)->shouldReceive('embed')->andThrow(new RuntimeException('hors ligne'));
 

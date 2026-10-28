@@ -86,6 +86,10 @@ Route::prefix('v1')->middleware('auth:sanctum')->group(function () {
     Route::post('conversations/{conversation}/ai/resume', [ConversationController::class, 'resumeAi']);
     Route::get('messages/{message}/audio', [\App\Http\Controllers\API\V1\MessageAudioController::class, 'show']);
     Route::get('messages/{message}/media', [\App\Http\Controllers\API\V1\MessageMediaController::class, 'show']);
+    // Statuts du jour (ce que le gérant publie en statut WhatsApp), actifs 24 h.
+    Route::get('businesses/{business}/status-posts', [\App\Http\Controllers\API\V1\StatusPostController::class, 'index']);
+    Route::post('businesses/{business}/status-posts', [\App\Http\Controllers\API\V1\StatusPostController::class, 'store']);
+    Route::delete('status-posts/{statusPost}', [\App\Http\Controllers\API\V1\StatusPostController::class, 'destroy']);
     Route::post('escalations/{escalation}/resolve', [\App\Http\Controllers\API\V1\EscalationController::class, 'resolve']);
 
     Route::get('businesses/{business}/billing', [BillingController::class, 'show']);

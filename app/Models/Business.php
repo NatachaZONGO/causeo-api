@@ -383,6 +383,16 @@ class Business extends Model
     }
 
     /**
+     * Statuts WhatsApp enregistrés par le gérant (statuts du jour).
+     *
+     * @return HasMany<StatusPost, $this>
+     */
+    public function statusPosts(): HasMany
+    {
+        return $this->hasMany(StatusPost::class);
+    }
+
+    /**
      * @return HasMany<LearnedResponse>
      */
     public function learnedResponses(): HasMany

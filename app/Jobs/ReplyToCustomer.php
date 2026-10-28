@@ -247,6 +247,11 @@ class ReplyToCustomer implements ShouldQueue
             $notifications->notifyEscalation($followUp, followUp: true);
         }
 
+        // Réponse à un statut sans statut du jour enregistré : le gérant est invité à les enregistrer.
+        if (! empty($result['status_hint'])) {
+            $notifications->notifyStatusHint($business, $conversation);
+        }
+
         Message::query()->whereKey($batch->modelKeys())->update(['status' => $escalated || $followUp !== null ? 'escalated' : 'answered_by_ai']);
 
         if ($silent) {

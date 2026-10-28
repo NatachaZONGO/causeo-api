@@ -114,6 +114,22 @@ trait CreatesConversationSchema
         (require base_path('database/migrations/2026_10_25_110000_add_branding_to_businesses.php'))->up();
         (require base_path('database/migrations/2026_10_26_100000_create_catalog_tables.php'))->up();
         (require base_path('database/migrations/2026_10_28_100000_add_ai_pause.php'))->up();
+        // La vraie migration utilise pgvector : même table sans la colonne d'embedding.
+        Schema::create('business_media', function (Blueprint $table) {
+            $table->uuid('id')->primary();
+            $table->uuid('business_id');
+            $table->string('type');
+            $table->string('title');
+            $table->text('description')->nullable();
+            $table->string('file_path');
+            $table->string('public_url')->nullable();
+            $table->string('mime_type')->nullable();
+            $table->integer('file_size')->nullable();
+            $table->json('keywords');
+            $table->boolean('is_active')->default(true);
+            $table->timestamps();
+        });
+        (require base_path('database/migrations/2026_10_28_110000_create_status_posts.php'))->up();
     }
 
     /**
