@@ -22,14 +22,6 @@ class AdminConversationsTest extends TestCase
         parent::setUp();
 
         $this->createConversationSchema();
-        Schema::create('escalations', function (Blueprint $table) {
-            $table->uuid('id')->primary();
-            $table->uuid('conversation_id');
-            $table->uuid('business_id')->nullable();
-            $table->text('customer_question');
-            $table->string('status')->default('pending');
-            $table->timestamps();
-        });
 
         $this->owner = User::forceCreate(['name' => 'Gérant', 'email' => 'owner@example.test', 'password' => 'x']);
     }

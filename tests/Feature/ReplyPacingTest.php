@@ -53,18 +53,6 @@ class ReplyPacingTest extends TestCase
         ]);
         $this->travelTo('2026-10-24 10:00:00');
         $this->createConversationSchema();
-        Schema::create('escalations', function (Blueprint $table) {
-            $table->uuid('id')->primary();
-            $table->uuid('conversation_id');
-            $table->uuid('message_id')->nullable();
-            $table->uuid('business_id')->nullable();
-            $table->text('customer_question');
-            $table->text('human_response')->nullable();
-            $table->string('status')->default('pending');
-            $table->timestamp('answered_at')->nullable();
-            $table->timestamps();
-        });
-        (require base_path('database/migrations/2026_10_23_100000_add_reason_to_escalations.php'))->up();
 
         $owner =User::forceCreate(['name' => 'Joyce', 'email' => 'joyce@example.test', 'password' => 'x']);
         $id = (string) Str::uuid();

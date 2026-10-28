@@ -54,17 +54,6 @@ class UsageLimitTest extends TestCase
             $table->integer('chunk_count')->default(0);
             $table->timestamps();
         });
-        Schema::create('escalations', function (Blueprint $table) {
-            $table->uuid('id')->primary();
-            $table->uuid('conversation_id');
-            $table->uuid('message_id')->nullable();
-            $table->uuid('business_id')->nullable();
-            $table->text('customer_question');
-            $table->text('human_response')->nullable();
-            $table->string('status')->default('pending');
-            $table->timestamp('answered_at')->nullable();
-            $table->timestamps();
-        });
         Schema::create('learned_responses', function (Blueprint $table) {
             $table->uuid('id')->primary();
             $table->uuid('business_id');

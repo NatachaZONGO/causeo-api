@@ -30,16 +30,6 @@ class ConversationInboxTest extends TestCase
 
         $this->travelTo('2026-10-24 12:00:00');
         $this->createConversationSchema();
-        Schema::create('escalations', function (Blueprint $table) {
-            $table->uuid('id')->primary();
-            $table->uuid('conversation_id');
-            $table->uuid('message_id')->nullable();
-            $table->uuid('business_id')->nullable();
-            $table->text('customer_question');
-            $table->string('status')->default('pending');
-            $table->string('reason')->nullable();
-            $table->timestamps();
-        });
         (require base_path('database/migrations/2026_10_23_110000_create_admin_access_logs_table.php'))->up();
         (require base_path('database/migrations/2026_10_24_110000_add_conversation_id_to_admin_access_logs.php'))->up();
 

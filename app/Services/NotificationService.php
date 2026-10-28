@@ -21,10 +21,11 @@ class NotificationService
     }
 
     /**
-     * Notifier le gérant d'une nouvelle escalade. Une notification d'escalade
-     * non lue pour la même conversation est mise à jour au lieu d'être dupliquée.
+     * Notifier le gérant d'une nouvelle escalade, ou d'une relance du client sur une escalade
+     * encore en attente ($followUp). Une notification d'escalade non lue pour la même
+     * conversation est mise à jour au lieu d'être dupliquée.
      */
-    public function notifyEscalation(Escalation $escalation): void
+    public function notifyEscalation(Escalation $escalation, bool $followUp = false): void
     {
         try {
             $conversation = $escalation->conversation;
@@ -36,17 +37,14 @@ class NotificationService
 
             $customer = $conversation?->customer_name ?: $conversation?->customer_phone;
 
-            $title = $escalation->reason === Escalation::REASON_PAYMENT_PROOF
-                ? ($customer ? "Preuve de paiement de {$customer} à vérifier" : 'Preuve de paiement à vérifier')
-                : ($customer ? "Question de {$customer} à traiter" : 'Question client à traiter');
-
             $attributes = [
-                'title' => $title,
+                'title' => self::escalationTitle($escalation->reason, $customer, $followUp),
                 'body' => $escalation->customer_question,
                 'data' => array_filter([
                     'conversation_id' => $escalation->conversation_id,
                     'escalation_id' => $escalation->id,
                     'reason' => $escalation->reason,
+                    'follow_up' => $followUp ?: null,
                 ]),
             ];
 
@@ -78,6 +76,26 @@ class NotificationService
 
         // En plus de la cloche, sans jamais la remplacer (au plus une alerte par période).
         $this->whatsAppAlerts->escalation($escalation);
+    }
+
+    /** Titre de la notification d'escalade, selon son motif. */
+    public static function escalationTitle(?string $reason, ?string $customer, bool $followUp = false): string
+    {
+        $of = $customer ? " de {$customer}" : '';
+
+        if ($followUp) {
+            return "Relance{$of} : demande toujours en attente";
+        }
+
+        return match ($reason) {
+            Escalation::REASON_PAYMENT_PROOF => $customer ? "Preuve de paiement de {$customer} à vérifier" : 'Preuve de paiement à vérifier',
+            Escalation::REASON_PARTNERSHIP => "Proposition de partenariat{$of}",
+            Escalation::REASON_PAST_ORDER => "Réclamation{$of} sur une commande ou une prestation passée",
+            Escalation::REASON_COMPLAINT => "Plainte{$of} à traiter",
+            Escalation::REASON_PERSONAL => "Message personnel{$of}",
+            Escalation::REASON_STATUS_REPLY => "Réponse{$of} à un statut à traiter",
+            default => $customer ? "Question de {$customer} à traiter" : 'Question client à traiter',
+        };
     }
 
     /**

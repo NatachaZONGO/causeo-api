@@ -81,6 +81,9 @@ Route::prefix('v1')->middleware('auth:sanctum')->group(function () {
     Route::get('conversations/{conversation}', [ConversationController::class, 'show']);
     Route::post('conversations/{conversation}/reply', [ConversationController::class, 'manualReply']);
     Route::post('conversations/{conversation}/read', [ConversationController::class, 'read']);
+    // Assistant en pause dans une conversation (le gérant prend la main), ou réactivé.
+    Route::post('conversations/{conversation}/ai/pause', [ConversationController::class, 'pauseAi']);
+    Route::post('conversations/{conversation}/ai/resume', [ConversationController::class, 'resumeAi']);
     Route::get('messages/{message}/audio', [\App\Http\Controllers\API\V1\MessageAudioController::class, 'show']);
     Route::get('messages/{message}/media', [\App\Http\Controllers\API\V1\MessageMediaController::class, 'show']);
     Route::post('escalations/{escalation}/resolve', [\App\Http\Controllers\API\V1\EscalationController::class, 'resolve']);

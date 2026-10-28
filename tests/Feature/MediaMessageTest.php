@@ -81,18 +81,6 @@ class MediaMessageTest extends TestCase
         (require base_path('database/migrations/2026_10_12_100000_add_whatsapp_alerts_to_users.php'))->up();
         (require base_path('database/migrations/2026_10_23_110000_create_admin_access_logs_table.php'))->up();
         (require base_path('database/migrations/2026_10_24_110000_add_conversation_id_to_admin_access_logs.php'))->up();
-        Schema::create('escalations', function (Blueprint $table) {
-            $table->uuid('id')->primary();
-            $table->uuid('conversation_id');
-            $table->uuid('message_id')->nullable();
-            $table->uuid('business_id')->nullable();
-            $table->text('customer_question');
-            $table->text('human_response')->nullable();
-            $table->string('status')->default('pending');
-            $table->timestamp('answered_at')->nullable();
-            $table->timestamps();
-        });
-        (require base_path('database/migrations/2026_10_23_100000_add_reason_to_escalations.php'))->up();
         Schema::create('learned_responses', function (Blueprint $table) {
             $table->uuid('id')->primary();
             $table->uuid('business_id');
@@ -538,7 +526,7 @@ class MediaMessageTest extends TestCase
 
         $userMessage = end($this->claudeRequests()[0]['messages'])['content'];
         $this->assertStringContainsString('Le client répond à un message que tu ne vois pas (probablement un statut WhatsApp de la boutique', $userMessage);
-        $this->assertStringContainsString('demande-lui poliment quel article l\'intéresse, en lui proposant de t\'envoyer son nom ou une photo', $userMessage);
+        $this->assertStringContainsString("pose une seule question, « Pouvez-vous m'envoyer une capture de l'article ? », puis ajoute PRECISION", $userMessage);
 
         Log::shouldHaveReceived('info')->withArgs(function (string $message, array $context = []): bool {
             if (! str_contains($message, 'contenu inconnu')) {

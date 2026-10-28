@@ -444,8 +444,9 @@ class WebhookController extends Controller
                     $this->managerReplies->record($business, $message, ManagerReply::SOURCE_ECHO);
                 }
 
-                // Réponse depuis son téléphone : le gérant a lu la conversation.
+                // Réponse depuis son téléphone : le gérant a lu la conversation et prend la main.
                 $conversation->markAsRead();
+                $conversation->pauseAfterManagerMessage($business);
 
                 // Une erreur d'apprentissage ne doit pas bloquer les échos suivants.
                 try {
@@ -567,6 +568,18 @@ class WebhookController extends Controller
 
             if (! empty($raw['context']) || ! empty($raw['referral'])) {
                 $this->quotedMessages->logIfUnknown($conversation, $raw, $business->id);
+            }
+
+            // Le gérant a pris la main : le message reste non lu pour lui, sans réponse, transcription ni escalade.
+            if ($conversation->isAiPaused()) {
+                $inboundMessage->update(['status' => Conversation::PAUSED_MESSAGE_STATUS]);
+
+                Log::info('WebhookController: assistant en pause dans cette conversation, pas de réponse.', [
+                    'business_id' => $business->id,
+                    'conversation_id' => $conversation->id,
+                ]);
+
+                return;
             }
 
             if ($type === 'sticker') {
@@ -798,6 +811,12 @@ class WebhookController extends Controller
             'sender_type' => 'customer',
         ]);
 
+        if ($conversation->isAiPaused()) {
+            $message->update(['status' => Conversation::PAUSED_MESSAGE_STATUS]);
+
+            return response()->json(['answer' => null, 'media_urls' => [], 'media_ids' => [], 'should_escalate' => false, 'ai_paused' => true]);
+        }
+
         // Limite de réponses atteinte : message gardé, pas de réponse automatique.
         if (! $this->usage->allowsReply($business)) {
             $this->usage->recordMissedReply($business, $message);
@@ -835,6 +854,7 @@ class WebhookController extends Controller
                 'message_id' => $message->id,
                 'business_id' => $business->id,
                 'customer_question' => $data['text'],
+                'reason' => $result['escalation_reason'] ?? null,
                 'status' => 'pending',
             ]);
         }

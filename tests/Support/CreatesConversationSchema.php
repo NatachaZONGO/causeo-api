@@ -65,6 +65,18 @@ trait CreatesConversationSchema
             $table->json('metadata')->nullable();
             $table->timestamps();
         });
+        Schema::create('escalations', function (Blueprint $table) {
+            $table->uuid('id')->primary();
+            $table->uuid('conversation_id');
+            $table->uuid('message_id')->nullable();
+            $table->uuid('business_id')->nullable();
+            $table->text('customer_question');
+            $table->text('human_response')->nullable();
+            $table->string('status')->default('pending');
+            $table->timestamp('answered_at')->nullable();
+            $table->timestamps();
+        });
+        (require base_path('database/migrations/2026_10_23_100000_add_reason_to_escalations.php'))->up();
         // Même index unique qu'en production (un message entrant WhatsApp n'est enregistré qu'une fois).
         DB::statement("CREATE UNIQUE INDEX messages_inbound_wamid_unique ON messages (whatsapp_message_id) WHERE whatsapp_message_id IS NOT NULL AND direction = 'inbound'");
         Schema::create('business_templates', function (Blueprint $table) {
@@ -101,6 +113,7 @@ trait CreatesConversationSchema
         (require base_path('database/migrations/2026_10_25_100000_add_payment_proof_to_orders.php'))->up();
         (require base_path('database/migrations/2026_10_25_110000_add_branding_to_businesses.php'))->up();
         (require base_path('database/migrations/2026_10_26_100000_create_catalog_tables.php'))->up();
+        (require base_path('database/migrations/2026_10_28_100000_add_ai_pause.php'))->up();
     }
 
     /**

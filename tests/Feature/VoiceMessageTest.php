@@ -77,18 +77,6 @@ class VoiceMessageTest extends TestCase
 
         $this->createConversationSchema();
         (require base_path('database/migrations/2026_10_12_100000_add_whatsapp_alerts_to_users.php'))->up();
-        Schema::create('escalations', function (Blueprint $table) {
-            $table->uuid('id')->primary();
-            $table->uuid('conversation_id');
-            $table->uuid('message_id')->nullable();
-            $table->uuid('business_id')->nullable();
-            $table->text('customer_question');
-            $table->text('human_response')->nullable();
-            $table->string('status')->default('pending');
-            $table->timestamp('answered_at')->nullable();
-            $table->timestamps();
-        });
-        (require base_path('database/migrations/2026_10_23_100000_add_reason_to_escalations.php'))->up();
         Schema::create('learned_responses', function (Blueprint $table) {
             $table->uuid('id')->primary();
             $table->uuid('business_id');

@@ -18,8 +18,9 @@ use Illuminate\Support\Str;
  * envoyée, message du gérant, message du client) et décrit à l'assistant avec la question.
  *
  * Réponse à un statut WhatsApp du commerçant : Meta ne documente pas ce cas. Le contexte
- * pointe alors vers un message absent de la conversation ; l'assistant demande quel article
- * intéresse le client, et le payload brut est journalisé (sans numéro) pour l'analyser.
+ * pointe alors vers un message absent de la conversation ; l'assistant demande une capture de
+ * l'article (une seule fois, puis il passe la main au gérant), et le payload brut est
+ * journalisé (sans numéro) pour l'analyser.
  */
 class QuotedMessageService
 {
@@ -34,6 +35,12 @@ class QuotedMessageService
 
     /** Champs du payload qui contiennent un numéro ou un nom : masqués dans le journal. */
     private const PERSONAL_FIELDS = ['from', 'to', 'wa_id', 'recipient_id', 'display_phone_number', 'phone_number', 'name'];
+
+    /** Message cité introuvable (statut WhatsApp…) : une seule question, puis escalade (AIResponseService). */
+    public const KIND_UNKNOWN = 'unknown';
+
+    /** La seule question posée quand le client répond à un statut sans dire de quel article il parle. */
+    public const STATUS_CAPTURE_QUESTION = "Pouvez-vous m'envoyer une capture de l'article ?";
 
     /** Longueur maximale d'un message cité montré à l'assistant. */
     private const QUOTE_MAX_LENGTH = 500;
@@ -100,7 +107,7 @@ class QuotedMessageService
      * citées à lui montrer (photo du client ou du gérant, image de la publication).
      *
      * @param  Collection<int, Message>  $batch
-     * @return array{quotes: list<array{note: string, search: ?string}>, images: list<array<string, mixed>>}
+     * @return array{quotes: list<array{note: string, search: ?string, kind?: string}>, images: list<array<string, mixed>>}
      */
     public function forBatch(Business $business, Conversation $conversation, Collection $batch): array
     {
@@ -196,9 +203,10 @@ class QuotedMessageService
         if ($found === null) {
             return [[
                 'note' => "Le client répond à un message que tu ne vois pas (probablement un statut WhatsApp de la boutique, ou un message trop ancien). "
-                    ."Si sa question ne dit pas clairement de quel article il s'agit, ne devine pas : demande-lui poliment quel article l'intéresse, "
-                    .'en lui proposant de t\'envoyer son nom ou une photo.',
+                    ."Si sa question ne dit pas clairement de quel article il s'agit, ne devine pas : pose une seule question, "
+                    .'« '.self::STATUS_CAPTURE_QUESTION.' », puis ajoute PRECISION seul sur la dernière ligne.',
                 'search' => null,
+                'kind' => self::KIND_UNKNOWN,
             ], null];
         }
 

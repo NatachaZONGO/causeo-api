@@ -178,6 +178,8 @@ class BusinessController extends Controller
             'brand_color' => ['nullable', 'string', 'regex:/^#[0-9A-Fa-f]{6}$/'],
             // Catalogue : e-mail en plus de la cloche quand un article passe en stock faible ou en rupture.
             'stock_alert_email' => ['sometimes', 'boolean'],
+            // Pause de l'assistant quand le gérant écrit à un client : 1, 6 ou 24 h, ou 0 (jusqu'à réactivation).
+            'ai_pause_hours' => ['sometimes', 'integer', Rule::in(Business::AI_PAUSE_HOURS)],
         ];
     }
 
@@ -230,6 +232,7 @@ class BusinessController extends Controller
             'voice_fallback_reply.boolean' => 'La réponse aux vocaux non compris, documents et vidéos doit être activée ou désactivée (vrai ou faux).',
             'voice_fallback_message.string' => 'Le message de réponse aux vocaux, documents et vidéos doit être un texte.',
             'voice_fallback_message.max' => 'Le message de réponse aux vocaux, documents et vidéos ne doit pas dépasser 300 caractères.',
+            'ai_pause_hours.in' => 'La pause de l\'assistant dure 1, 6 ou 24 heures, ou jusqu\'à réactivation (0).',
             'stock_alert_email.boolean' => 'Les alertes de stock par e-mail doivent être activées ou désactivées (vrai ou faux).',
             'brand_color.regex' => 'La couleur doit être au format hexadécimal #RRGGBB, par exemple #0F766E.',
             'brand_color.string' => 'La couleur doit être au format hexadécimal #RRGGBB, par exemple #0F766E.',

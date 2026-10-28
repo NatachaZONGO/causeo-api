@@ -54,6 +54,23 @@ class Escalation extends Model
     /** Capture d'un reçu de paiement : le gérant doit vérifier le paiement. */
     public const REASON_PAYMENT_PROOF = 'payment_proof';
 
+    /** Messages hors vente, passés au gérant sans réponse inventée (AIResponseService). */
+    public const REASON_PARTNERSHIP = 'partnership';
+
+    /** Réclamation sur une commande ou une prestation passée (souvent absente de Causeo). */
+    public const REASON_PAST_ORDER = 'past_order_claim';
+
+    public const REASON_COMPLAINT = 'complaint';
+
+    /** Message personnel ou interne destiné au gérant : l'assistant ne répond pas. */
+    public const REASON_PERSONAL = 'personal_message';
+
+    /** Réponse à un statut WhatsApp dont l'article n'a pas pu être identifié. */
+    public const REASON_STATUS_REPLY = 'status_reply';
+
+    /** Deux demandes de précision sans succès. */
+    public const REASON_CLARIFICATION = 'clarification_failed';
+
     /**
      * Escalade d'un vocal non transcrit, d'un document, d'une vidéo ou d'une preuve de
      * paiement : la « question » est un motif (« Document reçu : devis.pdf »), pas le texte

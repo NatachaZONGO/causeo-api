@@ -68,6 +68,18 @@ class SendCustomerReply implements ShouldBeEncrypted, ShouldQueue
             return;
         }
 
+        // Le gérant a mis l'assistant en pause pendant le délai d'écriture.
+        if ($conversation->isAiPaused()) {
+            Message::query()->whereKey($this->messageIds)->where('status', 'answered_by_ai')->update(['status' => Conversation::PAUSED_MESSAGE_STATUS]);
+
+            Log::info('SendCustomerReply: assistant mis en pause pendant le délai d\'écriture, réponse automatique abandonnée', [
+                'business_id' => $business->id,
+                'conversation_id' => $conversation->id,
+            ]);
+
+            return;
+        }
+
         $whatsApp = $whatsAppFactory->forBusiness($business);
         $sent = $whatsApp->sendMessage($conversation->customer_phone, $this->answer);
 

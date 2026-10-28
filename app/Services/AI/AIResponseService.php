@@ -5,11 +5,13 @@ namespace App\Services\AI;
 use App\Models\Appointment;
 use App\Models\Business;
 use App\Models\Conversation;
+use App\Models\Escalation;
 use App\Models\Order;
 use App\Models\ProductVariant;
 use App\Services\Embedding\EmbeddingService;
 use App\Services\AppointmentService;
 use App\Services\Catalog\CatalogService;
+use App\Services\Conversations\QuotedMessageService;
 use App\Services\OrderService;
 use App\Services\WhatsApp\MediaMessage;
 use Carbon\CarbonImmutable;
@@ -17,6 +19,7 @@ use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Str;
 use InvalidArgumentException;
 
 class AIResponseService
@@ -169,6 +172,69 @@ TEXT;
     /** Message d'attente envoyé quand une réponse est bloquée puis escaladée. */
     private const WAITING_MESSAGE = 'Je vérifie ça et je reviens vers vous très vite 😊';
 
+    /** Message hors vente ou demande que l'assistant ne peut pas traiter : passé au gérant, en une phrase. */
+    private const HANDOFF_REPLY = 'Merci pour votre message, je le transmets au responsable qui vous répondra rapidement.';
+
+    private const HANDOFF_REPLY_TU = 'Merci pour ton message, je le transmets au responsable qui te répondra rapidement.';
+
+    /** Relance du client alors qu'une escalade attend la réponse du gérant. */
+    private const FOLLOW_UP_REPLY = 'Votre demande a bien été transmise au responsable, il vous répond dès que possible.';
+
+    private const FOLLOW_UP_REPLY_TU = 'Ta demande a bien été transmise au responsable, il te répond dès que possible.';
+
+    /** Motifs de la ligne technique HORS_VENTE: et motif de l'escalade correspondante. */
+    private const OFF_SALES_REASONS = [
+        'partenariat' => Escalation::REASON_PARTNERSHIP,
+        'reclamation' => Escalation::REASON_PAST_ORDER,
+        'plainte' => Escalation::REASON_COMPLAINT,
+        'personnel' => Escalation::REASON_PERSONAL,
+    ];
+
+    /** Demandes de précision consécutives restées sans succès avant de passer la main au gérant. */
+    private const MAX_CLARIFICATIONS = 2;
+
+    /** Phrases d'une relance (« je suis toujours en attente », « ma requête svp »), texte normalisé. */
+    private const FOLLOW_UP_PHRASES = [
+        'toujours en attente', 'je suis en attente', 'j attends', 'j attend', 'jattends', 'ma requete', 'ma demande',
+        'des nouvelles', 'du nouveau', 'toujours rien', 'pas de reponse', 'personne ne repond', 'vous m avez oublie',
+        'on m a oublie', 'je relance',
+    ];
+
+    /** Une relance faite seulement de ces mots (« alors ? », « svp ») doit contenir un de FOLLOW_UP_TRIGGERS. */
+    private const FOLLOW_UP_FILLERS = ['alors', 'donc', 'et', 'svp', 'stp', 's', 'il', 'vous', 'te', 'plait', 'allo', 'oh', 'eh', 'hein', 'bon', 'ok'];
+
+    private const FOLLOW_UP_TRIGGERS = ['alors', 'svp', 'stp', 'allo', 'plait'];
+
+    /** Mots signalant une vraie demande : ni réponse toute faite ni relance. */
+    private const REQUEST_WORDS = [
+        'prix', 'tarif', 'tarifs', 'combien', 'cout', 'coute', 'horaire', 'horaires', 'adresse',
+        'ouvert', 'ferme', 'livraison', 'livrer', 'commande', 'commander', 'reservation', 'reserver',
+        'dispo', 'disponible', 'disponibilite', 'donner', 'donnez', 'donne', 'envoyer', 'envoie',
+        'envoyez', 'besoin', 'voudrais', 'veux', 'aimerais', 'peux', 'pouvez', 'savoir', 'quand',
+        'comment', 'pourquoi', 'quel', 'quelle', 'quels', 'quelles', 'info', 'infos', 'information',
+        'informations', 'renseignement', 'renseignements', 'question', 'aide', 'aider', 'probleme',
+        'souci', 'menu', 'produit', 'produits', 'service', 'services',
+    ];
+
+    /** Consignes pour les messages hors vente et les demandes de précision (partie stable du prompt). */
+    private const OFF_SALES_INSTRUCTIONS = <<<'TEXT'
+# Messages hors vente : passer la main sans inventer
+Certains messages ne sont pas des demandes d'achat. Repère-les :
+- partenariat : proposition commerciale, de collaboration ou de partenariat, publicité, fournisseur ou prestataire qui propose ses services ;
+- reclamation : réclamation sur une commande, une confection, une retouche ou une prestation passée (tu n'en connais pas l'état, même si le client dit l'avoir déposée ou payée) ;
+- plainte : mécontentement ou reproche sur un article reçu ou sur le service ;
+- personnel : message personnel ou interne destiné au gérant ou à l'équipe (nouvelles de quelqu'un, compte rendu, argent remis, « on a pris le lot »…), qui ne s'adresse manifestement pas au service client.
+Pour ces messages :
+1. N'invente rien : ni état d'une commande, ni délai, ni geste commercial, et ne décris pas une photo jointe.
+2. partenariat : écris seulement « Merci pour votre message, je le transmets au responsable qui vous répondra rapidement. »
+3. reclamation ou plainte : 2 ou 3 phrases au plus. Des excuses une seule fois au plus, sans les répéter ; dis que tu transmets au responsable, qui revient vers le client rapidement. Ne pose pas de question.
+4. personnel : n'écris rien au client.
+5. Termine par la ligne technique HORS_VENTE: suivie du motif (partenariat, reclamation, plainte ou personnel), seule sur la dernière ligne. Dans ces cas seulement, tu peux parler du responsable et de transmission.
+
+# Questions de précision
+Quand tu ne comprends pas la demande ou ne sais pas de quel article parle le client (il répond à un statut, envoie un lien que tu ne peux pas ouvrir, une photo que tu ne reconnais pas…), pose une seule question pour le savoir, puis ajoute PRECISION seul sur la dernière ligne. Pas pour demander une option (taille, couleur, quantité) d'un article déjà identifié.
+TEXT;
+
     /** Libellés des modes de remise, tels que présentés au client. */
     private const FULFILLMENT_LABELS = [
         'delivery' => 'livraison à domicile (delivery)',
@@ -208,8 +274,12 @@ TEXT;
      * auxquels le client répond (QuotedMessageService), décrits avant sa question.
      *
      * @param  list<array<string, mixed>>  $images
-     * @param  list<array{note: string, search?: ?string}>  $quotes
-     * @return array{answer: ?string, confidence: float, should_escalate: bool, context_used: array<int, mixed>, media_ids: array<int, string>, payment_proof?: bool}
+     * Résultat : escalation_reason (motif de l'escalade : hors vente, statut, précisions), silent
+     * (escalade sans réponse au client), follow_up (escalade en attente relancée par le client),
+     * clarification (la réponse demande une précision : status_reply ou general).
+     *
+     * @param  list<array{note: string, search?: ?string, kind?: string}>  $quotes
+     * @return array{answer: ?string, confidence: float, should_escalate: bool, context_used: array<int, mixed>, media_ids: array<int, string>, payment_proof?: bool, escalation_reason?: ?string, silent?: bool, follow_up?: string, clarification?: string}
      */
     public function answer(Business $business, string $question, ?string $conversationId = null, array $images = [], int $unreadableImages = 0, array $quotes = []): array
     {
@@ -224,6 +294,20 @@ TEXT;
         // Après une question du bot (« J'enregistre votre demande ? »), « Ok merci » ou
         // « D'accord merci » répondent à cette question : seule l'IA peut appeler l'outil.
         $awaitsAnswer = $lastBotMessage !== null && str_contains((string) $lastBotMessage->content, '?');
+
+        // Demande déjà transmise au gérant : une relance n'appelle qu'une réponse rassurante.
+        $pendingEscalation = $conversation?->escalations()->where('status', Escalation::PENDING)->latest()->first();
+        $clarifications = $this->previousClarifications($session);
+
+        if ($pendingEscalation !== null && ! $withPhotos && $quotes === [] && $this->isFollowUp($question)) {
+            Log::info('AIResponseService: relance du client sur une demande transmise au gérant, sans appel à Claude', [
+                'business_id' => $business->id,
+                'conversation_id' => $conversationId,
+                'escalation_id' => $pendingEscalation->id,
+            ]);
+
+            return $this->followUpResponse($business, $pendingEscalation) + ['canned' => true];
+        }
 
         // Une réponse à un message cité dépend de ce message : pas de réponse toute faite.
         $simple = $withPhotos || $quotes !== [] ? null : $this->handleSimpleMessage($business, $question, $lastBotMessage !== null, $awaitsAnswer);
@@ -300,6 +384,21 @@ TEXT;
             $pendingSummary = $this->pendingRequestsSummary($conversation);
             if ($pendingSummary !== null) {
                 $systemPrompt .= "\n\n".$pendingSummary;
+            }
+
+            if ($pendingEscalation !== null) {
+                $systemPrompt .= "\n\n".$this->pendingEscalationBlock($business, $pendingEscalation);
+            }
+
+            $clarificationBlock = $this->clarificationBlock($clarifications);
+            if ($clarificationBlock !== null) {
+                $systemPrompt .= "\n\n".$clarificationBlock;
+            }
+
+            $civility = self::customerCivility($conversation?->customer_name);
+            if ($civility !== null) {
+                $systemPrompt .= "\n\n# Civilité du client\n"
+                    ."Son nom de profil WhatsApp indique clairement : {$civility}. Tu peux l'appeler « {$civility} », jamais par son nom.";
             }
 
             if ($messages !== []) {
@@ -510,29 +609,72 @@ TEXT;
                 $text = trim(preg_replace('/^\s*MEDIA\s*:.*$/mi', '', $text) ?? $text);
             }
 
-            if ($text === '') {
-                return [
-                    'answer' => null,
-                    'confidence' => 0,
-                    'should_escalate' => true,
+            // Jamais le prénom ni le nom du client ; puis les lignes techniques (hors vente, relance, précision).
+            $text = self::withoutCustomerName($text, $conversation?->customer_name);
+            [$text, $offSales, $followUp, $asksPrecision] = $this->extractMarkers($text);
+            $escalated = fn (array $result) => $result + [
+                'confidence' => 0.2,
+                'should_escalate' => true,
+                'context_used' => $context->pluck('id')->all(),
+                'media_ids' => [],
+                'tool_trace' => $this->traceForMetadata($trace),
+            ];
+
+            if ($offSales !== null) {
+                $reason = self::OFF_SALES_REASONS[$offSales] ?? null;
+
+                Log::info('AIResponseService: message hors vente passé au gérant', [
+                    'business_id' => $business->id,
+                    'conversation_id' => $conversationId,
+                    'reason' => $reason,
+                ]);
+
+                // Message personnel : aucune réponse. Réclamation ou plainte : 3 phrases au plus.
+                $answer = match ($reason) {
+                    Escalation::REASON_PERSONAL => null,
+                    Escalation::REASON_PAST_ORDER, Escalation::REASON_COMPLAINT => $text !== '' ? self::limitSentences($text, 3) : $this->handoffReply($business),
+                    default => $this->handoffReply($business),
+                };
+
+                return $escalated(['answer' => $answer, 'escalation_reason' => $reason, 'silent' => $answer === null]);
+            }
+
+            if ($followUp && $pendingEscalation !== null) {
+                return $this->followUpResponse($business, $pendingEscalation) + [
                     'context_used' => $context->pluck('id')->all(),
-                    'media_ids' => [],
                     'tool_trace' => $this->traceForMetadata($trace),
                 ];
+            }
+
+            // Après une question sans réponse sur un statut, ou deux demandes de précision : le gérant prend le relais.
+            $handoffReason = match (true) {
+                $clarifications['topic'] === 'status_reply' => Escalation::REASON_STATUS_REPLY,
+                $clarifications['count'] >= self::MAX_CLARIFICATIONS => Escalation::REASON_CLARIFICATION,
+                default => null,
+            };
+
+            if ($handoffReason !== null && ($asksPrecision || str_contains($text, 'JE_NE_SAIS_PAS'))) {
+                Log::info('AIResponseService: précisions déjà demandées sans succès, passage au gérant', [
+                    'business_id' => $business->id,
+                    'conversation_id' => $conversationId,
+                    'reason' => $handoffReason,
+                    'previous_clarifications' => $clarifications['count'],
+                ]);
+
+                return $escalated(['answer' => $this->handoffReply($business), 'escalation_reason' => $handoffReason]);
+            }
+
+            if ($text === '') {
+                return $escalated(['answer' => null, 'confidence' => 0]);
             }
 
             if (str_contains($text, 'JE_NE_SAIS_PAS')) {
                 $visible = trim(str_replace('JE_NE_SAIS_PAS', '', $text));
 
-                return [
-                    'answer' => $visible !== '' ? $visible : null,
-                    'confidence' => 0.2,
-                    'should_escalate' => true,
-                    'context_used' => $context->pluck('id')->all(),
-                    'media_ids' => [],
-                    'tool_trace' => $this->traceForMetadata($trace),
-                ];
+                return $escalated(['answer' => $visible !== '' ? $visible : null]);
             }
+
+            $statusReply = in_array(QuotedMessageService::KIND_UNKNOWN, array_column($quotes, 'kind'), true);
 
             return [
                 'answer' => $text,
@@ -541,7 +683,7 @@ TEXT;
                 'context_used' => $context->pluck('id')->all(),
                 'media_ids' => $mediaIds,
                 'tool_trace' => $this->traceForMetadata($trace),
-            ];
+            ] + ($asksPrecision ? ['clarification' => $statusReply ? 'status_reply' : 'general'] : []);
         } catch (\Throwable $e) {
             Log::error('AIResponseService::answer a échoué', [
                 'business_id' => $business->id,
@@ -1316,6 +1458,195 @@ PROMPT.($withCatalog ? "\n11. Pour un article du catalogue, mets dans la ligne l
     }
 
     /**
+     * Réponse à une relance du client sur une demande transmise au gérant : il est rassuré,
+     * sans qu'on lui redemande ce qu'il veut ; le gérant est alerté de nouveau (ReplyToCustomer).
+     *
+     * @return array{answer: string, confidence: float, should_escalate: bool, follow_up: string, context_used: array<int, mixed>, media_ids: array<int, string>}
+     */
+    private function followUpResponse(Business $business, Escalation $escalation): array
+    {
+        return [
+            'answer' => $this->addressOf($business) === 'tu' ? self::FOLLOW_UP_REPLY_TU : self::FOLLOW_UP_REPLY,
+            'confidence' => 1.0,
+            'should_escalate' => false,
+            'follow_up' => $escalation->id,
+            'context_used' => [],
+            'media_ids' => [],
+        ];
+    }
+
+    private function handoffReply(Business $business): string
+    {
+        return $this->addressOf($business) === 'tu' ? self::HANDOFF_REPLY_TU : self::HANDOFF_REPLY;
+    }
+
+    /**
+     * Le message est-il une simple relance (« je suis toujours en attente », « ma requête svp »,
+     * « alors ? ») ? Une vraie question (prix, livraison…) n'en est pas une.
+     */
+    private function isFollowUp(string $question): bool
+    {
+        $normalized = $this->normalize($question);
+
+        if ($normalized === '') {
+            return str_contains($question, '?');
+        }
+
+        $words = explode(' ', $normalized);
+
+        if (count($words) > 12 || $this->containsAnyWord($normalized, self::REQUEST_WORDS)) {
+            return false;
+        }
+
+        foreach (self::FOLLOW_UP_PHRASES as $phrase) {
+            if (preg_match('/(^| )'.preg_quote($phrase, '/').'( |$)/', $normalized) === 1) {
+                return true;
+            }
+        }
+
+        return array_diff($words, self::FOLLOW_UP_FILLERS) === [] && array_intersect($words, self::FOLLOW_UP_TRIGGERS) !== [];
+    }
+
+    /**
+     * Demande en attente du gérant, rappelée à l'assistant pour qu'il ne la redemande pas.
+     */
+    private function pendingEscalationBlock(Business $business, Escalation $escalation): string
+    {
+        $question = Str::limit(trim((string) preg_replace('/\s+/u', ' ', (string) $escalation->customer_question)), 300);
+        $reply = $this->addressOf($business) === 'tu' ? self::FOLLOW_UP_REPLY_TU : self::FOLLOW_UP_REPLY;
+
+        return "# Demande déjà transmise au responsable\n"
+            ."Le client attend la réponse du responsable à cette demande : « {$question} ».\n"
+            ."S'il relance (« je suis toujours en attente », « ma requête svp », « alors ? »…) ou redemande la même chose, "
+            ."ne lui redemande pas ce qu'il veut et ne recommence pas la conversation : écris seulement « {$reply} », "
+            .'puis RELANCE seul sur la dernière ligne. S\'il pose une autre question, réponds-y normalement.';
+    }
+
+    /**
+     * Demandes de précision consécutives de l'assistant à la fin de la session (metadata
+     * clarification de ses réponses), et le sujet de la plus récente.
+     *
+     * @param  Collection<int, object>  $session
+     * @return array{count: int, topic: ?string}
+     */
+    private function previousClarifications(Collection $session): array
+    {
+        $count = 0;
+        $topic = null;
+
+        foreach ($session->reverse() as $row) {
+            if ($row->direction !== 'outbound') {
+                continue;
+            }
+
+            $metadata = is_string($row->metadata) ? (array) json_decode($row->metadata, true) : (array) $row->metadata;
+            $kind = $metadata['clarification'] ?? null;
+
+            if (! is_string($kind)) {
+                break;
+            }
+
+            $count++;
+            $topic ??= $kind;
+        }
+
+        return ['count' => $count, 'topic' => $topic];
+    }
+
+    /**
+     * @param  array{count: int, topic: ?string}  $clarifications
+     */
+    private function clarificationBlock(array $clarifications): ?string
+    {
+        return match (true) {
+            $clarifications['topic'] === 'status_reply' => "# Capture déjà demandée\n"
+                ."Tu as déjà demandé au client une capture de l'article dont il parle (il répondait à un statut). "
+                ."S'il l'envoie ou nomme clairement l'article, réponds normalement. S'il ne peut pas, ne l'a pas ou insiste "
+                .'(« regardez mon premier écrit »), ne repose pas la question : écris seulement JE_NE_SAIS_PAS.',
+            $clarifications['count'] >= self::MAX_CLARIFICATIONS => "# Précisions déjà demandées\n"
+                ."Tu as déjà demandé des précisions {$clarifications['count']} fois de suite. Ne repose pas de question : "
+                .'si le message ne permet toujours pas de répondre, écris seulement JE_NE_SAIS_PAS.',
+            default => null,
+        };
+    }
+
+    /**
+     * Retirer les lignes techniques HORS_VENTE:motif, RELANCE et PRECISION de la réponse.
+     *
+     * @return array{0: string, 1: ?string, 2: bool, 3: bool}  texte, motif hors vente, relance, précision
+     */
+    private function extractMarkers(string $text): array
+    {
+        $offSales = null;
+
+        if (preg_match('/HORS_VENTE\s*:?\s*(\p{L}+)/u', $text, $match) === 1) {
+            $offSales = $this->normalize($match[1]);
+            $text = (string) preg_replace('/HORS_VENTE\s*:?\s*\p{L}*/u', '', $text);
+        }
+
+        $followUp = preg_match('/\bRELANCE\b/u', $text) === 1;
+        $precision = preg_match('/\bPR[EÉ]CISION\b/u', $text) === 1;
+        $text = (string) preg_replace(['/\bRELANCE\b/u', '/\bPR[EÉ]CISION\b/u'], '', $text);
+
+        return [trim((string) preg_replace('/[ \t]+$/mu', '', $text)), $offSales, $followUp, $precision];
+    }
+
+    /** Les $max premières phrases d'un texte. */
+    private static function limitSentences(string $text, int $max): string
+    {
+        preg_match_all('/[^.!?…]+(?:[.!?…]+[»")]*|$)\s*/u', trim($text), $matches);
+
+        return trim(implode('', array_slice(array_values(array_filter($matches[0], fn (string $part) => trim($part) !== '')), 0, $max)));
+    }
+
+    /**
+     * « Monsieur » ou « Madame » quand le nom de profil WhatsApp l'indique clairement
+     * (« Mme Ouédraogo », « M. Kaboré »…), sinon null.
+     */
+    public static function customerCivility(?string $name): ?string
+    {
+        $words = preg_split('/[\s.]+/u', mb_strtolower(trim((string) $name)), -1, PREG_SPLIT_NO_EMPTY) ?: [];
+
+        return match (true) {
+            array_intersect($words, ['mme', 'madame', 'mlle', 'mademoiselle', 'mrs', 'miss']) !== [] => 'Madame',
+            array_intersect($words, ['monsieur', 'mr']) !== [] || ($words[0] ?? null) === 'm' => 'Monsieur',
+            default => null,
+        };
+    }
+
+    /**
+     * Retirer le prénom et le nom du client d'une réponse (« Bonjour Awa, » → « Bonjour, »),
+     * en gardant « Monsieur » ou « Madame ».
+     */
+    public static function withoutCustomerName(string $text, ?string $name): string
+    {
+        $tokens = array_values(array_filter(
+            preg_split('/[\s,.]+/u', (string) $name, -1, PREG_SPLIT_NO_EMPTY) ?: [],
+            fn (string $token) => mb_strlen($token) >= 3
+                && preg_match('/^\p{L}[\p{L}\'’-]*$/u', $token) === 1
+                && ! in_array(mb_strtolower($token), ['monsieur', 'madame', 'mademoiselle', 'mme', 'mlle'], true),
+        ));
+
+        if ($tokens === []) {
+            return $text;
+        }
+
+        $names = '(?:'.implode('|', array_map(fn (string $token) => preg_quote($token, '/'), $tokens)).')';
+        $fullName = "{$names}(?:\\s+{$names})*";
+
+        $text = (string) preg_replace([
+            // « Bonjour Awa, » → « Bonjour, » ; « Merci Madame Awa ! » → « Merci Madame ! »
+            '/\b(Bonjour|Bonsoir|Salut|Merci|Coucou|Hello|Bienvenue)(\s+(?:M\.|Mme|Mlle|Monsieur|Madame))?\s+'.$fullName.'(?!\p{L})/iu',
+            // « …, Awa ! » → « … ! »
+            '/,\s*'.$fullName.'(?!\p{L})\s*(?=[!.?,]|$)/imu',
+            // « Awa, votre robe… » → « votre robe… »
+            '/^'.$fullName.'\s*,\s*/imu',
+        ], ['$1$2', '', ''], $text);
+
+        return trim(mb_strtoupper(mb_substr($text, 0, 1)).mb_substr($text, 1));
+    }
+
+    /**
      * Consignes quand le client a envoyé une ou plusieurs photos.
      */
     private function photoInstructions(int $shown, int $unreadable, bool $ordersAvailable): string
@@ -1337,8 +1668,9 @@ PROMPT.($withCatalog ? "\n11. Pour un article du catalogue, mets dans la ligne l
 {$photos}
 1. Si une photo est la capture ou la photo d'un reçu de paiement (Orange Money, Moov Money, Wave, transfert, virement, dépôt…) : ne confirme JAMAIS le paiement ni son montant, et ne dis jamais qu'il est reçu ou validé. Écris seulement PREUVE_PAIEMENT, seul sur la dernière ligne : un message adapté est envoyé au client et le gérant vérifie.
 2. Sinon, cherche l'article photographié dans le contexte et dans les médias du business (titres, descriptions, mots-clés). Si un article correspond clairement, donne son nom, son prix et sa disponibilité tels qu'ils figurent dans le contexte, sans rien ajouter qui n'y figure pas.{$order}
-3. Si rien ne correspond clairement, ou au moindre doute, dis-le simplement et pose une seule question pour préciser (nom de l'article, taille, couleur…), ou applique la règle d'escalade. N'invente jamais un article, un prix ou une disponibilité, et ne devine pas un prix d'après la photo.
-4. Ne décris pas la photo au client : réponds à ce qu'il cherche.
+3. Si la photo ne montre pas clairement un article du catalogue (billets ou pièces de monnaie, document, personne, lieu, capture sans rapport, photo floue…), ne dis jamais ce qu'elle montre et n'identifie aucun objet : ne devine pas. Si le message est hors vente, applique les consignes HORS_VENTE ; sinon demande simplement ce que souhaite le client, ou applique la règle d'escalade.
+4. Si rien ne correspond clairement, ou au moindre doute, dis-le simplement et pose une seule question pour préciser (nom de l'article, taille, couleur…), ou applique la règle d'escalade. N'invente jamais un article, un prix ou une disponibilité, et ne devine pas un prix d'après la photo.
+5. Ne décris pas la photo au client : réponds à ce qu'il cherche.
 PROMPT;
     }
 
@@ -1749,18 +2081,8 @@ PROMPT;
         ];
         $affirmations = ['ok', 'oui', 'daccord', 'd accord', 'ok daccord', 'ok d accord'];
 
-        // Mots signalant une vraie demande : on ne court-circuite pas l'IA.
-        $requestWords = [
-            'prix', 'tarif', 'tarifs', 'combien', 'cout', 'coute', 'horaire', 'horaires', 'adresse',
-            'ouvert', 'ferme', 'livraison', 'livrer', 'commande', 'commander', 'reservation', 'reserver',
-            'dispo', 'disponible', 'disponibilite', 'donner', 'donnez', 'donne', 'envoyer', 'envoie',
-            'envoyez', 'besoin', 'voudrais', 'veux', 'aimerais', 'peux', 'pouvez', 'savoir', 'quand',
-            'comment', 'pourquoi', 'quel', 'quelle', 'quels', 'quelles', 'info', 'infos', 'information',
-            'informations', 'renseignement', 'renseignements', 'question', 'aide', 'aider', 'probleme',
-            'souci', 'menu', 'produit', 'produits', 'service', 'services',
-        ];
-
-        $looksLikeRequest = $this->containsAnyWord($normalized, $requestWords);
+        // Une vraie demande : on ne court-circuite pas l'IA.
+        $looksLikeRequest = $this->containsAnyWord($normalized, self::REQUEST_WORDS);
 
         $isGreeting = $this->matchesSimple($normalized, $greetings);
         $isThanks = $this->matchesSimple($normalized, $thanks);
@@ -2078,6 +2400,7 @@ Tu discutes avec un client sur WhatsApp. Tu réponds au nom de {$business->name}
 {$langue}
 {$adresse}
 - Ne te présente pas de toi-même comme une intelligence artificielle, un robot ou un programme. Mais si le client demande sincèrement s'il parle à une IA ou à un robot, ne le nie JAMAIS : reconnais-le simplement et avec naturel, puis propose ton aide.
+- N'appelle jamais le client par son prénom ni par son nom, même s'il te l'a donné. Dis « Monsieur » ou « Madame » seulement quand c'est évident (le client l'a dit lui-même, ou c'est indiqué plus bas) ; sinon, aucune formule : « Bonjour, … ».
 - N'invente JAMAIS d'information : prix, stock, disponibilité, horaires, produits, services, délais, villes desservies, conditions, promotions. Utilise uniquement ce qui est écrit dans le contexte fourni plus bas dans la conversation.
 - Si une information manque dans le contexte, ne la confirme pas et ne l'infirme pas non plus : ne dis ni « oui » ni « non » (par exemple, si une ville n'est pas mentionnée, ne dis pas que vous y livrez, ni que vous n'y livrez pas). Applique alors la règle d'escalade ci-dessous.
 - Ne promets JAMAIS un service qui ne figure pas dans le contexte : par exemple prévenir le client d'un retour en stock, mettre un article de côté au-delà des règles indiquées, faire une remise, livrer à un endroit ou dans un délai non mentionné.
@@ -2103,6 +2426,8 @@ Tu discutes avec un client sur WhatsApp. Tu réponds au nom de {$business->name}
 # Accueil
 {$accueil}
 PROMPT;
+
+        $prompt .= "\n\n".self::OFF_SALES_INSTRUCTIONS;
 
         if (! $this->legacyStyle) {
             $prompt .= $this->styleBlock($business);

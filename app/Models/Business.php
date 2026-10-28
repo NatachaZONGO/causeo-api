@@ -44,6 +44,16 @@ class Business extends Model
     ];
 
     /**
+     * Durées possibles (heures) de la pause de l'assistant quand le gérant écrit à un client ;
+     * 0 (MANUAL_AI_PAUSE) : jusqu'à réactivation manuelle.
+     */
+    public const AI_PAUSE_HOURS = [self::MANUAL_AI_PAUSE, 1, 6, 24];
+
+    public const MANUAL_AI_PAUSE = 0;
+
+    public const DEFAULT_AI_PAUSE_HOURS = 6;
+
+    /**
      * Valeurs par défaut avant enregistrement : aucun module tant qu'on ne l'a pas choisi.
      *
      * @var array<string, mixed>
@@ -89,6 +99,7 @@ class Business extends Model
         'brand_color',
         'logo_path',
         'stock_alert_email',
+        'ai_pause_hours',
     ];
 
     /**
@@ -135,6 +146,7 @@ class Business extends Model
             'style_profile_updated_at' => 'datetime',
             'voice_fallback_reply' => 'boolean',
             'stock_alert_email' => 'boolean',
+            'ai_pause_hours' => 'integer',
         ];
     }
 

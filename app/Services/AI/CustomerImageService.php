@@ -23,6 +23,12 @@ class CustomerImageService
     /** Les photos WhatsApp font au plus 5 Mo. */
     public const MAX_BYTES = 5 * 1024 * 1024;
 
+    /** Serveurs d'images de Meta (publications, publicités). */
+    public const META_HOSTS = '/(^|\.)(fbcdn\.net|fbsbx\.com|cdninstagram\.com|whatsapp\.net)$/';
+
+    /** Serveurs d'images de TikTok (vignette d'une vidéo, via oEmbed). */
+    public const TIKTOK_HOSTS = '/(^|\.)(tiktokcdn\.com|tiktokcdn-us\.com|tiktokcdn-eu\.com)$/';
+
     /** Taille maximale d'une image non réduite (Claude refuse plus de 5 Mo en base64). */
     private const CLAUDE_MAX_BYTES = 3_700_000;
 
@@ -70,24 +76,24 @@ class CustomerImageService
 
     /**
      * Bloc image pour Claude à partir d'une adresse publique de Meta (image d'une publication
-     * ou d'une publicité dont vient le client : messages[].referral.image_url), ou null.
-     * Seuls les serveurs de Meta sont appelés : le webhook ne doit pas faire télécharger
-     * n'importe quelle adresse au serveur.
+     * ou d'une publicité dont vient le client : messages[].referral.image_url) ou, avec
+     * TIKTOK_HOSTS, de TikTok (vignette d'une vidéo), ou null. Seuls ces serveurs sont
+     * appelés : le webhook ne doit pas faire télécharger n'importe quelle adresse au serveur.
      *
      * @return array{type: 'image', source: array{type: 'base64', media_type: string, data: string}}|null
      */
-    public function fromUrl(string $url): ?array
+    public function fromUrl(string $url, string $allowedHosts = self::META_HOSTS, int $timeout = 10): ?array
     {
         $host = strtolower((string) parse_url($url, PHP_URL_HOST));
 
-        if (parse_url($url, PHP_URL_SCHEME) !== 'https' || preg_match('/(^|\.)(fbcdn\.net|fbsbx\.com|cdninstagram\.com|whatsapp\.net)$/', $host) !== 1) {
-            Log::info('CustomerImageService: image hors des serveurs de Meta ignorée.', ['host' => $host]);
+        if (parse_url($url, PHP_URL_SCHEME) !== 'https' || preg_match($allowedHosts, $host) !== 1) {
+            Log::info('CustomerImageService: image hors des serveurs autorisés ignorée.', ['host' => $host]);
 
             return null;
         }
 
         try {
-            $response = Http::timeout(10)->get($url);
+            $response = Http::timeout($timeout)->get($url);
         } catch (Throwable $e) {
             Log::warning('CustomerImageService: téléchargement de l\'image impossible.', ['host' => $host, 'exception' => $e::class]);
 

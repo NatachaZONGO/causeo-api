@@ -12,6 +12,7 @@ use App\Services\AI\AIResponseService;
 use App\Services\AI\CustomerImageService;
 use App\Services\Conversations\QuotedMessageService;
 use App\Services\Conversations\ReplyPacing;
+use App\Services\Conversations\SocialLinkService;
 use App\Services\NotificationService;
 use App\Services\WhatsApp\WhatsAppServiceFactory;
 use App\Support\EmojiStyle;
@@ -104,7 +105,7 @@ class ReplyToCustomer implements ShouldQueue
             ->values();
     }
 
-    public function handle(AIResponseService $ai, WhatsAppServiceFactory $whatsAppFactory, ReplyPacing $pacing, CustomerImageService $images, NotificationService $notifications, QuotedMessageService $quotedMessages): void
+    public function handle(AIResponseService $ai, WhatsAppServiceFactory $whatsAppFactory, ReplyPacing $pacing, CustomerImageService $images, NotificationService $notifications, QuotedMessageService $quotedMessages, SocialLinkService $socialLinks): void
     {
         // Une seule réponse en préparation par conversation : l'autre job réessaie un peu plus tard
         // (s'il a déjà repris ce message, il n'y aura plus rien à faire).
@@ -117,7 +118,7 @@ class ReplyToCustomer implements ShouldQueue
         }
 
         try {
-            $this->reply($ai, $whatsAppFactory, $pacing, $images, $notifications, $quotedMessages);
+            $this->reply($ai, $whatsAppFactory, $pacing, $images, $notifications, $quotedMessages, $socialLinks);
         } catch (Throwable $e) {
             // Pas de getMessage() : une QueryException contient le SQL avec le texte du client.
             Log::error('ReplyToCustomer a échoué', [
@@ -131,7 +132,7 @@ class ReplyToCustomer implements ShouldQueue
         }
     }
 
-    private function reply(AIResponseService $ai, WhatsAppServiceFactory $whatsAppFactory, ReplyPacing $pacing, CustomerImageService $imageService, NotificationService $notifications, QuotedMessageService $quotedMessages): void
+    private function reply(AIResponseService $ai, WhatsAppServiceFactory $whatsAppFactory, ReplyPacing $pacing, CustomerImageService $imageService, NotificationService $notifications, QuotedMessageService $quotedMessages, SocialLinkService $socialLinks): void
     {
         $trigger = Message::find($this->messageId);
 
@@ -148,6 +149,18 @@ class ReplyToCustomer implements ShouldQueue
         }
 
         $batch = self::pendingBatch($conversation->id);
+
+        // Le gérant a mis l'assistant en pause (ou pris la main) pendant l'attente.
+        if ($conversation->isAiPaused()) {
+            Message::query()->whereKey([$trigger->id, ...$batch->modelKeys()])->where('status', 'pending')->update(['status' => Conversation::PAUSED_MESSAGE_STATUS]);
+
+            Log::info('ReplyToCustomer: assistant en pause dans cette conversation, pas de réponse', [
+                'business_id' => $business->id,
+                'conversation_id' => $conversation->id,
+            ]);
+
+            return;
+        }
 
         // Le gérant a répondu après ce message, pendant l'attente.
         if (! $batch->contains('id', $trigger->id)) {
@@ -180,9 +193,11 @@ class ReplyToCustomer implements ShouldQueue
 
         // Messages auxquels le client répond (citation) : décrits à l'assistant, photos citées comprises.
         $quoted = $quotedMessages->forBatch($business, $conversation, $batch);
-        $images = array_slice([...$images, ...$quoted['images']], 0, self::MAX_PHOTOS);
+        // Liens TikTok (vignette et légende), Instagram ou Facebook : traités comme une photo, ou capture demandée.
+        $links = $socialLinks->forBatch($batch);
+        $images = array_slice([...$images, ...$quoted['images'], ...$links['images']], 0, self::MAX_PHOTOS);
 
-        $result = $ai->answer($business, $question, $conversation->id, $images, $unreadable, $quoted['quotes']);
+        $result = $ai->answer($business, $question, $conversation->id, $images, $unreadable, [...$quoted['quotes'], ...$links['quotes']]);
         $generationSeconds = microtime(true) - $startedAt;
 
         if (self::managerRepliedSince($conversation, $newest->created_at)) {
@@ -192,9 +207,14 @@ class ReplyToCustomer implements ShouldQueue
         }
 
         $escalated = (bool) $result['should_escalate'];
+        // Message personnel destiné au gérant : escaladé sans réponse au client.
+        $silent = $escalated && ! empty($result['silent']);
         $answer = EmojiStyle::apply($business, $escalated
             ? ($result['answer'] ?? 'Merci pour votre message ! Je vérifie ça et je reviens vers vous très vite 😊')
             : (string) $result['answer']);
+
+        // Relance sur une demande déjà transmise : pas de nouvelle escalade, le gérant est alerté de nouveau.
+        $followUp = ! empty($result['follow_up']) ? Escalation::find($result['follow_up']) : null;
 
         $paymentProof = ! empty($result['payment_proof']);
         $order = $paymentProof ? $this->attachPaymentProof($conversation, $photos->first()) : null;
@@ -207,8 +227,13 @@ class ReplyToCustomer implements ShouldQueue
                 'customer_question' => $paymentProof
                     ? 'Preuve de paiement reçue'.($order !== null ? " pour la commande {$order->reference()}" : '')
                     : $question,
-                // Une question avec photo n'est pas apprise : sa réponse dépend de l'image.
-                'reason' => $paymentProof ? Escalation::REASON_PAYMENT_PROOF : ($photos->isNotEmpty() ? Escalation::REASON_IMAGE : null),
+                // Une question avec photo n'est pas apprise : sa réponse dépend de l'image. Hors vente, statut… : leur motif.
+                'reason' => match (true) {
+                    $paymentProof => Escalation::REASON_PAYMENT_PROOF,
+                    ! empty($result['escalation_reason']) => $result['escalation_reason'],
+                    $photos->isNotEmpty() => Escalation::REASON_IMAGE,
+                    default => null,
+                },
                 'status' => 'pending',
             ]);
 
@@ -218,7 +243,21 @@ class ReplyToCustomer implements ShouldQueue
             }
         }
 
-        Message::query()->whereKey($batch->modelKeys())->update(['status' => $escalated ? 'escalated' : 'answered_by_ai']);
+        if ($followUp !== null) {
+            $notifications->notifyEscalation($followUp, followUp: true);
+        }
+
+        Message::query()->whereKey($batch->modelKeys())->update(['status' => $escalated || $followUp !== null ? 'escalated' : 'answered_by_ai']);
+
+        if ($silent) {
+            Log::info('ReplyToCustomer: message transmis au gérant sans réponse au client', [
+                'business_id' => $business->id,
+                'conversation_id' => $conversation->id,
+                'reason' => $result['escalation_reason'] ?? null,
+            ]);
+
+            return;
+        }
 
         // Un vocal compte toujours comme une unité, même avec une réponse toute faite.
         $isVoice = $batch->contains(fn (Message $message) => ($message->metadata['type'] ?? null) === 'audio');
@@ -229,6 +268,9 @@ class ReplyToCustomer implements ShouldQueue
             + ($result['tool_trace'] ?? [])
             + (! $escalated && $canned && ! $isVoice ? ['canned' => true] : [])
             + ($batch->count() > 1 ? ['grouped_messages' => $batch->count()] : [])
+            // Demande de précision : au-delà de deux de suite (une pour un statut), le gérant prend le relais.
+            + (! empty($result['clarification']) ? ['clarification' => $result['clarification']] : [])
+            + ($followUp !== null ? ['follow_up' => $followUp->id] : [])
             + ($paymentProof ? ['payment_proof' => array_filter(['order_id' => $order?->id])] : []);
 
         // Le délai d'écriture court depuis que le bot « lit » : le temps de génération en fait partie.

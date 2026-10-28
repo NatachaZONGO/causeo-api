@@ -34,18 +34,6 @@ class EscalationLifecycleTest extends TestCase
 
         $this->travelTo('2026-10-23 12:00:00');
         $this->createConversationSchema();
-        Schema::create('escalations', function (Blueprint $table) {
-            $table->uuid('id')->primary();
-            $table->uuid('conversation_id');
-            $table->uuid('message_id')->nullable();
-            $table->uuid('business_id')->nullable();
-            $table->text('customer_question');
-            $table->text('human_response')->nullable();
-            $table->string('status')->default('pending');
-            $table->timestamp('answered_at')->nullable();
-            $table->string('reason')->nullable();
-            $table->timestamps();
-        });
         (require base_path('database/migrations/2026_10_23_130000_add_resolved_and_expired_escalation_statuses.php'))->up();
         Schema::create('learned_responses', function (Blueprint $table) {
             $table->uuid('id')->primary();

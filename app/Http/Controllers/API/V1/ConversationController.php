@@ -12,7 +12,7 @@ use App\Services\AI\LearningService;
 use App\Services\AI\ManagerReplyService;
 use App\Services\Conversations\ConversationListQuery;
 use App\Services\WhatsApp\WhatsAppNotConnectedException;
-use App\Services\WhatsApp\WhatsAppService;
+use App\Services\WhatsApp\WhatsAppServiceFactory;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
@@ -28,6 +28,7 @@ class ConversationController extends Controller
     public function __construct(
         private readonly LearningService $learningService,
         private readonly ManagerReplyService $managerReplies,
+        private readonly WhatsAppServiceFactory $whatsAppFactory,
     ) {
     }
 
@@ -117,6 +118,62 @@ class ConversationController extends Controller
     }
 
     /**
+     * Mettre l'assistant en pause dans cette conversation : pendant `hours` heures, ou
+     * jusqu'à réactivation manuelle sans `hours`. Les messages du client restent enregistrés.
+     */
+    public function pauseAi(Request $request, Conversation $conversation): JsonResponse
+    {
+        $conversation->loadMissing('business');
+
+        $this->checkOwnership($conversation->business);
+
+        $data = $request->validate([
+            'hours' => ['nullable', 'integer', 'min:1', 'max:720'],
+        ], [
+            'hours.integer' => 'La durée de la pause doit être un nombre d\'heures.',
+            'hours.min' => 'La pause dure au moins 1 heure.',
+            'hours.max' => 'La pause dure au plus 720 heures (30 jours) ; sans durée, elle dure jusqu\'à la réactivation.',
+        ]);
+
+        $conversation->pauseAi(isset($data['hours']) ? now()->addHours((int) $data['hours']) : null);
+
+        return response()->json([
+            'message' => isset($data['hours'])
+                ? "L'assistant est en pause pour cette conversation pendant {$data['hours']} h."
+                : "L'assistant est en pause pour cette conversation jusqu'à ce que vous le réactiviez.",
+        ] + self::pauseState($conversation));
+    }
+
+    /**
+     * Réactiver l'assistant dans cette conversation. Les messages reçus pendant la pause
+     * restent sans réponse automatique.
+     */
+    public function resumeAi(Conversation $conversation): JsonResponse
+    {
+        $conversation->loadMissing('business');
+
+        $this->checkOwnership($conversation->business);
+
+        $conversation->resumeAi();
+
+        return response()->json([
+            'message' => "L'assistant répond de nouveau dans cette conversation.",
+        ] + self::pauseState($conversation));
+    }
+
+    /**
+     * @return array{ai_paused: bool, ai_paused_until: ?string, ai_paused_indefinitely: bool}
+     */
+    private static function pauseState(Conversation $conversation): array
+    {
+        return [
+            'ai_paused' => $conversation->ai_paused,
+            'ai_paused_until' => $conversation->ai_paused_until?->toIso8601String(),
+            'ai_paused_indefinitely' => $conversation->ai_paused_indefinitely,
+        ];
+    }
+
+    /**
      * Paramètres de la liste des conversations (gérant et admin).
      *
      * @return array{q?: ?string, filter?: ?string}
@@ -159,7 +216,7 @@ class ConversationController extends Controller
         // Envoyer depuis le numéro de l'entreprise, jamais depuis le numéro global :
         // sans numéro connecté, on refuse avant d'enregistrer quoi que ce soit.
         try {
-            $whatsApp = WhatsAppService::forBusiness($conversation->business);
+            $whatsApp = $this->whatsAppFactory->forBusiness($conversation->business);
         } catch (WhatsAppNotConnectedException $e) {
             return response()->json(['message' => $e->getMessage()], 422);
         }
@@ -187,8 +244,9 @@ class ConversationController extends Controller
 
         $message->update(['whatsapp_message_id' => $wamid]);
 
-        // Le gérant a répondu : il a lu la conversation.
+        // Le gérant a répondu : il a lu la conversation et prend la main (pause de l'assistant).
         $conversation->markAsRead();
+        $conversation->pauseAfterManagerMessage($conversation->business);
 
         // Exemple de ton et matière du profil de style (si le gérant l'accepte).
         $this->managerReplies->record($conversation->business, $message, ManagerReply::SOURCE_DASHBOARD);
