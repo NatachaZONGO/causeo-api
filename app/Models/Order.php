@@ -13,7 +13,8 @@ class Order extends Model
 
     public const STATUSES = ['new', 'confirmed', 'paid', 'delivered', 'cancelled'];
 
-    public const FULFILLMENT_TYPES = ['delivery', 'pickup', 'shipping'];
+    /** dine_in : sur place (restaurant). */
+    public const FULFILLMENT_TYPES = ['delivery', 'pickup', 'shipping', 'dine_in'];
 
     /**
      * The attributes that are mass assignable.

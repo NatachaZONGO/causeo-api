@@ -23,7 +23,8 @@ class OrderService
      * Créer une commande à partir des données de l'outil create_order.
      * Le total est toujours recalculé ici à partir des articles. Une ligne avec variant_id
      * (module Catalogue) prend le nom, les options et le prix du catalogue, est refusée en
-     * rupture, et sort du stock dans la même transaction que la création de la commande.
+     * rupture, et sort du stock dans la même transaction que la création de la commande. Ses
+     * suppléments (restaurant : « fromage +500 FCFA ») s'ajoutent au prix unitaire.
      *
      * @param  array<string, mixed>  $input
      *
@@ -49,12 +50,14 @@ class OrderService
             );
         }
 
-        $isPickup = $fulfillmentType === 'pickup';
+        // Retrait ou sur place (restaurant) : ni adresse ni frais de livraison.
+        $isPickup = in_array($fulfillmentType, ['pickup', 'dine_in'], true);
 
         if ($isPickup) {
             foreach ($items as $item) {
                 if ($this->isDeliveryFee($item['name'])) {
-                    throw new InvalidArgumentException("Aucun frais de livraison ne doit être facturé pour un retrait en boutique : retire la ligne « {$item['name']} ».");
+                    $mode = $fulfillmentType === 'dine_in' ? 'une commande sur place' : 'un retrait en boutique';
+                    throw new InvalidArgumentException("Aucun frais de livraison ne doit être facturé pour {$mode} : retire la ligne « {$item['name']} ».");
                 }
             }
         }
@@ -122,7 +125,7 @@ class OrderService
 
     /**
      * @param  ?Business  $catalogBusiness  business dont le catalogue fait foi (module actif), sinon null
-     * @return array<int, array{name: string, options: ?string, quantity: int, unit_price: float, variant_id?: string}>
+     * @return array<int, array{name: string, options: ?string, quantity: int, unit_price: float, variant_id?: string, extras?: list<array{name: string, price: float}>}>
      */
     private function normalizeItems(mixed $items, ?Business $catalogBusiness = null): array
     {
@@ -142,10 +145,12 @@ class OrderService
                 ? $this->catalogVariant($catalogBusiness, (string) $item['variant_id'], $position)
                 : null;
 
+            $extras = [];
             if ($variant !== null) {
-                // Le catalogue fait foi : nom, options et prix de la variante.
+                // Le catalogue fait foi : nom, options et prix de la variante, plus ses suppléments.
                 $name = $variant->product->name;
-                $unitPrice = $variant->effective_price;
+                $extras = $this->catalogExtras($variant, $item['extras'] ?? [], $position);
+                $unitPrice = $variant->effective_price + array_sum(array_column($extras, 'price'));
             }
 
             if ($name === null) {
@@ -163,12 +168,20 @@ class OrderService
                 $options = implode(', ', array_filter(array_map(fn ($value) => $this->string($value), $options)));
             }
 
+            $label = $variant !== null ? ($this->string($variant->optionsLabel()) ?? $this->string($options)) : $this->string($options);
+            if ($extras !== []) {
+                $label = $this->string(implode(', ', array_filter([
+                    $label,
+                    ...array_map(fn (array $extra) => 'supplément '.mb_strtolower($extra['name']).' (+'.number_format($extra['price'], 0, ',', ' ').' FCFA)', $extras),
+                ])));
+            }
+
             $normalized[] = [
                 'name' => $name,
-                'options' => $variant !== null ? ($this->string($variant->optionsLabel()) ?? $this->string($options)) : $this->string($options),
+                'options' => $label,
                 'quantity' => (int) $quantity,
                 'unit_price' => (float) $unitPrice,
-            ] + ($variant !== null ? ['variant_id' => $variant->id] : []);
+            ] + ($variant !== null ? ['variant_id' => $variant->id] : []) + ($extras !== [] ? ['extras' => $extras] : []);
         }
 
         return $normalized;
@@ -202,6 +215,38 @@ class OrderService
         }
 
         return $variant;
+    }
+
+    /**
+     * Suppléments choisis pour un plat du catalogue, avec le prix du catalogue.
+     *
+     * @return list<array{name: string, price: float}>
+     *
+     * @throws InvalidArgumentException message destiné à l'IA
+     */
+    private function catalogExtras(ProductVariant $variant, mixed $requested, int $position): array
+    {
+        $offered = collect((array) $variant->product->extras)->keyBy(fn (array $extra) => CatalogService::normalize($extra['name']));
+        $chosen = [];
+
+        foreach ((array) $requested as $extra) {
+            $name = is_array($extra) ? $this->string($extra['name'] ?? null) : $this->string($extra);
+            if ($name === null) {
+                continue;
+            }
+
+            $match = $offered->get(CatalogService::normalize($name))
+                ?? $offered->first(fn (array $offer, string $key) => str_contains($key, CatalogService::normalize($name)) || str_contains(CatalogService::normalize($name), $key));
+
+            if ($match === null) {
+                $list = $offered->isEmpty() ? 'aucun' : $offered->map(fn (array $offer) => $offer['name'].' (+'.number_format((float) $offer['price'], 0, ',', ' ').' FCFA)')->implode(', ');
+                throw new InvalidArgumentException("Article {$position} : le supplément « {$name} » n'existe pas pour « {$variant->product->name} ». Suppléments proposés : {$list}.");
+            }
+
+            $chosen[CatalogService::normalize($match['name'])] = ['name' => $match['name'], 'price' => (float) $match['price']];
+        }
+
+        return array_values($chosen);
     }
 
     /**

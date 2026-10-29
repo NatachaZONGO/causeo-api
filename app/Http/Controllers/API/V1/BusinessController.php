@@ -6,6 +6,7 @@ use App\Enums\BusinessType;
 use App\Http\Controllers\Controller;
 use App\Models\Business;
 use App\Services\Billing\BillingService;
+use App\Support\ActivityProfile;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
@@ -36,6 +37,7 @@ class BusinessController extends Controller
         $data['modules'] = array_key_exists('modules', $data)
             ? $this->normalizeModules($data['modules'])
             : Business::defaultModulesFor($data['type']);
+        $data['activity_profile'] ??= ActivityProfile::forType($data['type']);
 
         $business = auth()->user()->businesses()->create($data);
 
@@ -180,6 +182,11 @@ class BusinessController extends Controller
             'stock_alert_email' => ['sometimes', 'boolean'],
             // Pause de l'assistant quand le gérant écrit à un client : 1, 6 ou 24 h, ou 0 (jusqu'à réactivation).
             'ai_pause_hours' => ['sometimes', 'integer', Rule::in(Business::AI_PAUSE_HOURS)],
+            // Profil d'activité : vocabulaire et réglages du catalogue (Catalogue, Menu, Prestations).
+            'activity_profile' => ['sometimes', Rule::in(ActivityProfile::AVAILABLE)],
+            // Restaurant : les plats épuisés redeviennent disponibles chaque matin (sinon à la main).
+            'catalog_daily_reset' => ['sometimes', 'boolean'],
+            'dine_in_enabled' => ['sometimes', 'boolean'],
         ];
     }
 
@@ -232,6 +239,9 @@ class BusinessController extends Controller
             'voice_fallback_reply.boolean' => 'La réponse aux vocaux non compris, documents et vidéos doit être activée ou désactivée (vrai ou faux).',
             'voice_fallback_message.string' => 'Le message de réponse aux vocaux, documents et vidéos doit être un texte.',
             'voice_fallback_message.max' => 'Le message de réponse aux vocaux, documents et vidéos ne doit pas dépasser 300 caractères.',
+            'activity_profile.in' => 'Activité inconnue. Activités disponibles : '.implode(', ', ActivityProfile::AVAILABLE).'.',
+            'catalog_daily_reset.boolean' => 'La remise à disponible chaque matin doit être activée ou désactivée (vrai ou faux).',
+            'dine_in_enabled.boolean' => 'La consommation sur place doit être activée ou désactivée (vrai ou faux).',
             'ai_pause_hours.in' => 'La pause de l\'assistant dure 1, 6 ou 24 heures, ou jusqu\'à réactivation (0).',
             'stock_alert_email.boolean' => 'Les alertes de stock par e-mail doivent être activées ou désactivées (vrai ou faux).',
             'brand_color.regex' => 'La couleur doit être au format hexadécimal #RRGGBB, par exemple #0F766E.',

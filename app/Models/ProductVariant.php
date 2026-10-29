@@ -95,6 +95,11 @@ class ProductVariant extends Model
 
     public function getAvailabilityAttribute(): string
     {
+        // Plat épuisé aujourd'hui (restaurant) : toutes ses variantes le sont.
+        if ($this->product?->sold_out_at !== null && $this->product->isSoldOut()) {
+            return self::OUT_OF_STOCK;
+        }
+
         return self::availabilityFor($this->stock_quantity, $this->low_stock_threshold ?? 2);
     }
 

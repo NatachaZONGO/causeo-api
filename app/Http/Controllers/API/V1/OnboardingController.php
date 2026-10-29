@@ -8,6 +8,7 @@ use App\Models\BusinessTemplate;
 use App\Models\DocumentChunk;
 use App\Services\Billing\BillingService;
 use App\Services\Embedding\EmbeddingService;
+use App\Support\ActivityProfile;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -56,7 +57,9 @@ class OnboardingController extends Controller
             'ai_instructions' => str_replace('{nom}', $data['business_name'], $template->default_ai_instructions),
             'country' => $user->country,
             'is_active' => true,
-            'modules' => $template->default_modules ?? [],
+            // Le catalogue (Catalogue, Menu ou Prestations) est toujours activé, soumis à la formule.
+            'modules' => Business::defaultModulesFor($template->type, $template->default_modules ?? []),
+            'activity_profile' => ActivityProfile::forType($template->type),
         ]);
 
         // Essai Pro (TRIAL_DAYS jours ou TRIAL_UNITS unités), sauf si l'utilisateur a déjà eu un essai.

@@ -5,6 +5,9 @@ namespace App\Services;
 use App\Models\Appointment;
 use App\Models\Business;
 use App\Models\Conversation;
+use App\Models\Product;
+use App\Models\ProductVariant;
+use App\Services\Catalog\CatalogService;
 use Carbon\CarbonImmutable;
 use Carbon\Exceptions\InvalidFormatException;
 use Illuminate\Support\Facades\Log;
@@ -20,7 +23,8 @@ class AppointmentService
 
     /**
      * Enregistrer une demande de rendez-vous à partir des données de l'outil
-     * create_appointment. Le créneau reste à confirmer par l'entreprise.
+     * create_appointment. Le créneau reste à confirmer par l'entreprise. Avec product_id (et
+     * variant_id), la prestation du catalogue fait foi : son nom, sa durée et son prix.
      *
      * @param  array<string, mixed>  $input
      *
@@ -28,8 +32,12 @@ class AppointmentService
      */
     public function createFromAi(Business $business, Conversation $conversation, array $input, ?CarbonImmutable $today = null): Appointment
     {
+        [$product, $variant] = $this->catalogService($business, $input);
+
         // Colonnes string(255) : un texte plus long ferait échouer l'enregistrement.
-        $service = $this->string($input['service'] ?? null, 255);
+        $service = $product !== null
+            ? mb_substr(trim($product->name.($variant !== null && $variant->optionsLabel() !== '' ? " ({$variant->optionsLabel()})" : '')), 0, 255)
+            : $this->string($input['service'] ?? null, 255);
         $requestedTime = $this->string($input['requested_time'] ?? null, 255);
         $customerName = $this->string($input['customer_name'] ?? null, 255) ?? $conversation->customer_name;
         $requestedDate = $this->string($input['requested_date'] ?? null);
@@ -72,7 +80,8 @@ class AppointmentService
             throw new InvalidArgumentException('Le nombre de participants doit être un entier supérieur ou égal à 1.');
         }
 
-        $price = $input['price'] ?? null;
+        $price = $product !== null ? ($variant?->effective_price ?? $product->base_price) : ($input['price'] ?? null);
+        $duration = $product !== null ? (($variant !== null ? CatalogService::optionMinutes($variant) : null) ?? $product->duration_minutes) : null;
         if ($price !== null && $price !== '' && (! is_numeric($price) || (float) $price < 0)) {
             throw new InvalidArgumentException("Le prix est invalide. N'invente jamais un prix absent du contexte.");
         }
@@ -111,6 +120,8 @@ class AppointmentService
             'price' => $price === null || $price === '' ? null : (float) $price,
             'notes' => $this->string($input['notes'] ?? null),
             'status' => 'requested',
+            'product_id' => $product?->id,
+            'duration_minutes' => $duration,
         ]);
 
         // Pas de données client dans les logs : la date interprétée et le fuseau suffisent à diagnostiquer.
@@ -126,6 +137,38 @@ class AppointmentService
         $this->notificationService->notifyAppointment($appointment);
 
         return $appointment;
+    }
+
+    /**
+     * Prestation (et variante) du catalogue désignée par product_id / variant_id, ou [null, null].
+     *
+     * @param  array<string, mixed>  $input
+     * @return array{0: ?Product, 1: ?ProductVariant}
+     *
+     * @throws InvalidArgumentException message destiné à l'IA
+     */
+    private function catalogService(Business $business, array $input): array
+    {
+        $productId = $this->string($input['product_id'] ?? null);
+
+        if ($productId === null || ! $business->hasModule('catalog')) {
+            return [null, null];
+        }
+
+        $product = $business->products()->with('variants')->whereKey($productId)->where('is_active', true)->first();
+
+        if ($product === null) {
+            throw new InvalidArgumentException('product_id inconnu. Utilise uniquement un product_id renvoyé par search_catalog, ou omets-le.');
+        }
+
+        $variantId = $this->string($input['variant_id'] ?? null);
+        $variant = $variantId !== null ? $product->variants->firstWhere('id', $variantId) : null;
+
+        if ($variantId !== null && $variant === null) {
+            throw new InvalidArgumentException("variant_id inconnu pour « {$product->name} ». Utilise un variant_id renvoyé par search_catalog.");
+        }
+
+        return [$product, $variant ?? ($product->variants->count() === 1 ? $product->variants->first() : null)];
     }
 
     private function string(mixed $value, ?int $maxLength = null): ?string

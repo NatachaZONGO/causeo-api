@@ -7,6 +7,7 @@ use App\Enums\SubscriptionPlan;
 use App\Services\Billing\BillingService;
 use App\Services\Billing\BillingState;
 use App\Services\Billing\Currency;
+use App\Support\ActivityProfile;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Casts\Attribute;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
@@ -100,6 +101,9 @@ class Business extends Model
         'logo_path',
         'stock_alert_email',
         'ai_pause_hours',
+        'activity_profile',
+        'catalog_daily_reset',
+        'dine_in_enabled',
     ];
 
     /**
@@ -120,6 +124,7 @@ class Business extends Model
         'tone',
         'logo_url',
         'brand_text_color',
+        'activity',
     ];
 
     /**
@@ -147,6 +152,8 @@ class Business extends Model
             'voice_fallback_reply' => 'boolean',
             'stock_alert_email' => 'boolean',
             'ai_pause_hours' => 'integer',
+            'catalog_daily_reset' => 'boolean',
+            'dine_in_enabled' => 'boolean',
         ];
     }
 
@@ -192,6 +199,28 @@ class Business extends Model
     protected function tone(): Attribute
     {
         return Attribute::get(fn () => $this->reply_style['address'] === 'tu' ? 'tu' : 'vous');
+    }
+
+    /**
+     * Profil d'activité (boutique, restaurant, services) : celui choisi par le gérant, sinon celui
+     * du modèle choisi à l'inscription.
+     */
+    public function activityProfile(): string
+    {
+        $profile = $this->getAttribute('activity_profile');
+        $type = $this->type instanceof \BackedEnum ? $this->type->value : $this->type;
+
+        return in_array($profile, ActivityProfile::AVAILABLE, true) ? $profile : ActivityProfile::forType($type);
+    }
+
+    /**
+     * Vocabulaire et réglages du profil, pour les libellés du dashboard (voir ActivityProfile).
+     *
+     * @return Attribute<array<string, mixed>, never>
+     */
+    protected function activity(): Attribute
+    {
+        return Attribute::get(fn () => ActivityProfile::definition($this->activityProfile()));
     }
 
     /**
@@ -280,17 +309,17 @@ class Business extends Model
     }
 
     /**
-     * Modules par défaut d'un type d'entreprise, repris du template de même type.
+     * Modules par défaut d'un type d'entreprise, repris du template de même type ; le catalogue
+     * (Catalogue, Menu ou Prestations selon l'activité) l'est toujours.
      *
+     * @param  list<string>|null  $templateModules  modules du modèle déjà chargé
      * @return list<string>
      */
-    public static function defaultModulesFor(?string $type): array
+    public static function defaultModulesFor(?string $type, ?array $templateModules = null): array
     {
-        if ($type === null) {
-            return [];
-        }
+        $modules = $templateModules ?? ($type === null ? [] : (BusinessTemplate::query()->where('type', $type)->value('default_modules') ?? []));
 
-        return BusinessTemplate::query()->where('type', $type)->value('default_modules') ?? [];
+        return array_values(array_unique([...$modules, 'catalog']));
     }
 
     /**

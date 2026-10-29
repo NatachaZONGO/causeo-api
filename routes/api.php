@@ -37,6 +37,9 @@ Route::get('v1/templates', fn () => response()->json(
 
 Route::get('v1/plans', [PlanController::class, 'index']);
 
+// Profils d'activité (Catalogue, Menu, Prestations…) et leur vocabulaire, pour l'inscription et les réglages.
+Route::get('v1/activity-profiles', fn () => response()->json(['data' => \App\Support\ActivityProfile::all()]));
+
 Route::post('v1/onboarding', [OnboardingController::class, 'store'])->middleware('auth:sanctum');
 
 Route::prefix('v1/auth')->group(function () {
@@ -71,6 +74,7 @@ Route::prefix('v1')->middleware('auth:sanctum')->group(function () {
     Route::delete('products/{product}', [\App\Http\Controllers\API\V1\ProductController::class, 'destroy']);
     Route::post('products/{product}/variants/generate', [\App\Http\Controllers\API\V1\ProductController::class, 'generateVariants']);
     Route::patch('variants/{variant}/stock', [\App\Http\Controllers\API\V1\ProductController::class, 'updateStock']);
+    Route::patch('products/{product}/availability', [\App\Http\Controllers\API\V1\ProductController::class, 'updateAvailability']);
     Route::post('businesses/{business}/logo', [\App\Http\Controllers\API\V1\BusinessLogoController::class, 'store']);
     Route::delete('businesses/{business}/logo', [\App\Http\Controllers\API\V1\BusinessLogoController::class, 'destroy']);
     Route::apiResource('businesses.documents', \App\Http\Controllers\API\V1\DocumentController::class)->shallow()->except('update');
@@ -104,6 +108,8 @@ Route::prefix('v1')->middleware('auth:sanctum')->group(function () {
     Route::get('me/whatsapp-alerts', [WhatsAppAlertController::class, 'show']);
     Route::put('me/whatsapp-alerts', [WhatsAppAlertController::class, 'update']);
     Route::post('me/whatsapp-alerts/test', [WhatsAppAlertController::class, 'test'])->middleware('throttle:5,1');
+    // Activation en un clic (inscription) : numéro et consentement explicite, enregistré avec sa date.
+    Route::post('me/whatsapp-alerts/activate', [WhatsAppAlertController::class, 'activate']);
 
     // Retours du gérant (bugs, suggestions, questions).
     Route::post('feedback', [FeedbackController::class, 'store']);

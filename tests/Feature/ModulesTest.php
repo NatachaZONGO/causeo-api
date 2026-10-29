@@ -48,6 +48,31 @@ class ModulesTest extends TestCase
         }
     }
 
+    public function test_activity_migration_enables_the_catalog_everywhere_and_sets_the_profile_from_the_type(): void
+    {
+        (require base_path(self::MODULES_MIGRATION))->up();
+        $template = $this->insertTemplate('salon_beaute', 'salon_beaute', ['appointments']);
+        $owner = $this->makeUser();
+        $ids = [];
+        foreach (['restaurant' => ['orders'], 'boutique' => ['orders', 'catalog'], 'salon_beaute' => [], 'other' => []] as $type => $modules) {
+            $ids[$type] = (string) Str::uuid();
+            DB::table('businesses')->insert(['id' => $ids[$type], 'user_id' => $owner->id, 'name' => $type, 'type' => $type, 'modules' => json_encode($modules)]);
+        }
+
+        (require base_path('database/migrations/2026_10_29_100000_add_activity_profiles.php'))->up();
+
+        $this->assertSame(['orders', 'catalog'], Business::find($ids['restaurant'])->modules);
+        $this->assertSame(['orders', 'catalog'], Business::find($ids['boutique'])->modules);
+        $this->assertSame(['catalog'], Business::find($ids['salon_beaute'])->modules);
+        $this->assertSame(['appointments', 'catalog'], BusinessTemplate::find($template)->default_modules);
+
+        $this->assertSame('restaurant', Business::find($ids['restaurant'])->activity_profile);
+        $this->assertSame('boutique', Business::find($ids['boutique'])->activity_profile);
+        $this->assertSame('services', Business::find($ids['salon_beaute'])->activity_profile);
+        $this->assertSame('boutique', Business::find($ids['other'])->activity_profile);
+        $this->assertSame('Prestations', Business::find($ids['salon_beaute'])->activity['module_label']);
+    }
+
     public function test_migration_sets_template_defaults_and_backfills_businesses_by_type(): void
     {
         foreach (['restaurant' => 'restaurant', 'boutique' => 'boutique', 'photographe' => 'photographe', 'autre' => 'other'] as $slug => $type) {
@@ -116,33 +141,41 @@ class ModulesTest extends TestCase
     public function test_onboarding_applies_the_template_modules(): void
     {
         (require base_path(self::MODULES_MIGRATION))->up();
+        (require base_path('database/migrations/2026_10_29_100000_add_activity_profiles.php'))->up();
         $boutique = $this->insertTemplate('boutique', 'boutique', ['orders']);
         $salon = $this->insertTemplate('salon_beaute', 'salon_beaute', []);
 
         Sanctum::actingAs($this->makeUser());
         $this->postJson('/api/v1/onboarding', ['template_id' => $boutique, 'business_name' => 'Joyce'])
             ->assertCreated()
-            ->assertJsonPath('business.modules', ['orders']);
+            ->assertJsonPath('business.modules', ['orders', 'catalog'])
+            ->assertJsonPath('business.activity_profile', 'boutique')
+            ->assertJsonPath('business.activity.module_label', 'Catalogue');
 
+        // Le catalogue est activé quel que soit le modèle : ici, la liste des prestations.
         Sanctum::actingAs($this->makeUser());
         $this->postJson('/api/v1/onboarding', ['template_id' => $salon, 'business_name' => 'Belle Coiffure'])
             ->assertCreated()
-            ->assertJsonPath('business.modules', []);
+            ->assertJsonPath('business.modules', ['catalog'])
+            ->assertJsonPath('business.activity_profile', 'services')
+            ->assertJsonPath('business.activity.module_label', 'Prestations');
     }
 
     public function test_business_creation_uses_the_modules_of_the_template_of_the_same_type(): void
     {
         (require base_path(self::MODULES_MIGRATION))->up();
+        (require base_path('database/migrations/2026_10_29_100000_add_activity_profiles.php'))->up();
         $this->insertTemplate('restaurant', 'restaurant', ['orders']);
         Sanctum::actingAs($this->makeUser());
 
         $this->postJson('/api/v1/businesses', ['name' => 'Chez Fatou', 'type' => 'restaurant'])
             ->assertCreated()
-            ->assertJsonPath('business.modules', ['orders']);
+            ->assertJsonPath('business.modules', ['orders', 'catalog'])
+            ->assertJsonPath('business.activity.module_label', 'Menu');
 
         $this->postJson('/api/v1/businesses', ['name' => 'Clinique', 'type' => 'clinic'])
             ->assertCreated()
-            ->assertJsonPath('business.modules', []);
+            ->assertJsonPath('business.modules', ['catalog']);
     }
 
     public function test_owner_can_read_and_update_modules_with_allowed_values_only(): void

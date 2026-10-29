@@ -9,6 +9,7 @@ use App\Models\ProductVariant;
 use App\Models\StockMovement;
 use App\Services\Catalog\CatalogService;
 use App\Services\Catalog\CatalogSpreadsheet;
+use App\Support\ActivityProfile;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -117,6 +118,28 @@ class ProductController extends Controller
         $product->delete();
 
         return response()->json(['message' => 'L\'article a été supprimé du catalogue.']);
+    }
+
+    /**
+     * Restaurant : plat épuisé aujourd'hui (available: false), ou de nouveau disponible. Sans
+     * remise à disponible chaque matin (catalog_daily_reset), il reste épuisé jusqu'à ce rappel.
+     */
+    public function updateAvailability(Request $request, Product $product): JsonResponse
+    {
+        $this->checkAccess($product->business, write: true);
+
+        $data = $request->validate(['available' => ['required', 'boolean']], [
+            'available.required' => 'Indiquez si le plat est disponible (true) ou épuisé (false).',
+            'available.boolean' => 'La disponibilité doit valoir vrai ou faux.',
+        ]);
+
+        $product = $this->catalog->setAvailability($product, $request->boolean('available'));
+        $item = ActivityProfile::definition($product->business->activityProfile())['item_singular'];
+
+        return response()->json([
+            'message' => $data['available'] ? "Le {$item} est de nouveau disponible." : "Le {$item} est marqué épuisé.",
+            'product' => $product,
+        ]);
     }
 
     /**
@@ -236,6 +259,12 @@ class ProductController extends Controller
             'is_active' => ['sometimes', 'boolean'],
             'media_ids' => ['nullable', 'array', 'max:10'],
             'media_ids.*' => ['uuid', Rule::exists('business_media', 'id')->where('business_id', $business->id)],
+            // Prestations : durée ; restaurant : délai de préparation indicatif et suppléments payants.
+            'duration_minutes' => ['nullable', 'integer', 'min:1', 'max:1440'],
+            'preparation_minutes' => ['nullable', 'integer', 'min:0', 'max:600'],
+            'extras' => ['nullable', 'array', 'max:20'],
+            'extras.*.name' => ['required', 'string', 'max:60'],
+            'extras.*.price' => ['required', 'numeric', 'min:0'],
             'variants' => ['sometimes', 'array', 'max:200'],
             'variants.*.id' => ['nullable', 'uuid'],
             'variants.*.options' => ['nullable', 'array', 'max:5'],
@@ -252,6 +281,13 @@ class ProductController extends Controller
             'media_ids.*.exists' => 'Une photo choisie n\'appartient pas à vos médias.',
             'variants.*.stock_quantity.min' => 'Le stock ne peut pas être négatif.',
             'variants.*.price.min' => 'Le prix d\'une variante ne peut pas être négatif.',
+            'duration_minutes.min' => 'La durée doit être d\'au moins 1 minute.',
+            'duration_minutes.max' => 'La durée ne peut pas dépasser 24 heures (1440 minutes).',
+            'preparation_minutes.max' => 'Le délai de préparation ne peut pas dépasser 600 minutes.',
+            'extras.max' => 'Au plus 20 suppléments par plat.',
+            'extras.*.name.required' => 'Chaque supplément doit avoir un nom.',
+            'extras.*.price.required' => 'Chaque supplément doit avoir un prix (0 s\'il est offert).',
+            'extras.*.price.min' => 'Le prix d\'un supplément ne peut pas être négatif.',
         ]);
 
         // Deux variantes avec les mêmes options seraient indiscernables pour le client.

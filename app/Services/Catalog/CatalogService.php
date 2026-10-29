@@ -9,6 +9,7 @@ use App\Models\ProductVariant;
 use App\Models\StockMovement;
 use App\Services\Embedding\EmbeddingService;
 use App\Services\NotificationService;
+use App\Support\ActivityProfile;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -67,12 +68,16 @@ class CatalogService
     {
         $product = DB::transaction(function () use ($business, $data, $product, $variants, $userId) {
             $product ??= new Product(['business_id' => $business->id]);
-            $product->fill(array_intersect_key($data, array_flip(['name', 'description', 'category', 'base_price', 'is_active', 'media_ids'])));
+            $product->fill(array_intersect_key($data, array_flip(['name', 'description', 'category', 'base_price', 'is_active', 'media_ids', 'duration_minutes', 'preparation_minutes'])));
+            if (array_key_exists('extras', $data)) {
+                $product->extras = self::normalizeExtras((array) $data['extras']);
+            }
             $product->business_id = $business->id;
             $product->save();
 
             if ($variants !== null) {
-                $this->syncVariants($product, $variants, $userId);
+                // Restaurant et prestations : pas de stock en quantité.
+                $this->syncVariants($product, $variants, $userId, ActivityProfile::definition($business->activityProfile())['tracking'] === ActivityProfile::TRACK_QUANTITY);
             }
 
             if (! $product->variants()->exists()) {
@@ -90,13 +95,16 @@ class CatalogService
     /**
      * @param  list<array<string, mixed>>  $variants
      */
-    private function syncVariants(Product $product, array $variants, ?int $userId): void
+    private function syncVariants(Product $product, array $variants, ?int $userId, bool $tracksStock = true): void
     {
         $keep = [];
 
         foreach ($variants as $data) {
             $variant = ! empty($data['id']) ? $product->variants()->whereKey($data['id'])->first() : null;
-            $stock = isset($data['stock_quantity']) ? (int) $data['stock_quantity'] : null;
+            $stock = $tracksStock && isset($data['stock_quantity']) ? (int) $data['stock_quantity'] : null;
+            if (! $tracksStock) {
+                unset($data['stock_quantity']);
+            }
 
             $attributes = [
                 'options' => self::normalizeOptions($data['options'] ?? []),
@@ -170,6 +178,37 @@ class CatalogService
 
             return $created;
         });
+    }
+
+    /**
+     * Restaurant : plat épuisé (aujourd'hui, ou jusqu'à réactivation si le business ne remet pas ses
+     * plats à disponible chaque matin), ou de nouveau disponible.
+     */
+    public function setAvailability(Product $product, bool $available): Product
+    {
+        $product->update(['sold_out_at' => $available ? null : now()]);
+
+        return $product->load('variants');
+    }
+
+    /**
+     * Suppléments payants d'un plat : [{"name": "Fromage", "price": 500}], sans doublon de nom.
+     *
+     * @param  array<int, mixed>  $extras
+     * @return list<array{name: string, price: float}>
+     */
+    public static function normalizeExtras(array $extras): array
+    {
+        $normalized = [];
+        foreach ($extras as $extra) {
+            $name = is_array($extra) ? trim((string) ($extra['name'] ?? '')) : '';
+            if ($name === '' || isset($normalized[self::normalize($name)])) {
+                continue;
+            }
+            $normalized[self::normalize($name)] = ['name' => $name, 'price' => (float) ($extra['price'] ?? 0)];
+        }
+
+        return array_values($normalized);
     }
 
     // --- Stock -------------------------------------------------------------------------------
@@ -373,7 +412,9 @@ class CatalogService
 
         usort($results, fn (array $a, array $b) => $b['score'] <=> $a['score']);
 
-        return array_map(fn (array $result) => $this->present($result['product'], $result['variants']), array_slice($results, 0, $limit));
+        $profile = $business->activityProfile();
+
+        return array_map(fn (array $result) => $this->present($result['product'], $result['variants'], $profile), array_slice($results, 0, $limit));
     }
 
     /**
@@ -388,7 +429,7 @@ class CatalogService
     /** Article et toutes ses variantes, tels que l'assistant les voit (statut du jour…). */
     public function describe(Product $product): array
     {
-        return $this->present($product, $product->variants);
+        return $this->present($product, $product->variants, $product->business?->activityProfile() ?? ActivityProfile::BOUTIQUE);
     }
 
     /**
@@ -445,19 +486,27 @@ class CatalogService
     }
 
     /**
-     * Article tel que l'assistant le voit : prix et disponibilité par variante.
+     * Article tel que l'assistant le voit, selon le profil d'activité : prix et disponibilité par
+     * variante (« en rupture » en boutique, « épuisé aujourd'hui » au restaurant, aucune pour une
+     * prestation) ; suppléments payants et délai de préparation (restaurant) ; durée (prestations).
      *
      * @param  Collection<int, ProductVariant>  $variants
      * @return array<string, mixed>
      */
-    private function present(Product $product, Collection $variants): array
+    private function present(Product $product, Collection $variants, string $profile = ActivityProfile::BOUTIQUE): array
     {
-        $variants = $variants->take(30)->map(fn (ProductVariant $variant) => array_filter([
-            'variant_id' => $variant->id,
-            'options' => $variant->options ?: null,
-            'price' => $variant->price ?? $product->base_price,
-            'availability' => ProductVariant::AVAILABILITY_LABELS[$variant->availability],
-        ], fn ($value) => $value !== null))->values()->all();
+        $variants = $variants->take(30)->map(function (ProductVariant $variant) use ($product, $profile) {
+            // Prestation : la durée d'une variante (option « durée ») prime sur celle de la prestation.
+            $minutes = $profile === ActivityProfile::SERVICES ? (self::optionMinutes($variant) ?? $product->duration_minutes) : null;
+
+            return array_filter([
+                'variant_id' => $variant->id,
+                'options' => $variant->options ?: null,
+                'price' => $variant->price ?? $product->base_price,
+                'availability' => ActivityProfile::availabilityLabel($profile, $variant->availability),
+                'duration' => ActivityProfile::duration($minutes),
+            ], fn ($value) => $value !== null);
+        })->values()->all();
 
         return array_filter([
             'product_id' => $product->id,
@@ -465,8 +514,30 @@ class CatalogService
             'category' => $product->category,
             'description' => $product->description !== null ? Str::limit($product->description, 300) : null,
             'currency' => 'FCFA',
+            'duration' => $profile === ActivityProfile::SERVICES ? ActivityProfile::duration($product->duration_minutes) : null,
+            'extras' => $profile === ActivityProfile::RESTAURANT && ! empty($product->extras) ? $product->extras : null,
+            'preparation' => $profile === ActivityProfile::RESTAURANT && $product->preparation_minutes ? 'environ '.ActivityProfile::duration($product->preparation_minutes) : null,
             'variants' => $variants,
         ], fn ($value) => $value !== null);
+    }
+
+    /** Durée en minutes d'une variante de prestation (option « durée » : « 90 », « 90 min », « 1h30 »). */
+    public static function optionMinutes(ProductVariant $variant): ?int
+    {
+        foreach ((array) $variant->options as $name => $value) {
+            if (! in_array(self::normalize((string) $name), ['duree', 'duration'], true)) {
+                continue;
+            }
+            $value = self::normalize((string) $value);
+            if (preg_match('/^(\d+)\s*h\s*(\d{1,2})?/', $value, $match) === 1) {
+                return (int) $match[1] * 60 + (int) ($match[2] ?? 0);
+            }
+            if (preg_match('/^(\d+)/', $value, $match) === 1) {
+                return (int) $match[1];
+            }
+        }
+
+        return null;
     }
 
     /**

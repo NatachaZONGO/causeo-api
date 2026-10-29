@@ -27,6 +27,17 @@ class Product extends Model
         'base_price',
         'is_active',
         'media_ids',
+        'duration_minutes',
+        'preparation_minutes',
+        'extras',
+        'sold_out_at',
+    ];
+
+    /**
+     * @var list<string>
+     */
+    protected $appends = [
+        'sold_out',
     ];
 
     /**
@@ -47,7 +58,37 @@ class Product extends Model
             'base_price' => 'float',
             'is_active' => 'boolean',
             'media_ids' => 'array',
+            'duration_minutes' => 'integer',
+            'preparation_minutes' => 'integer',
+            'extras' => 'array',
+            'sold_out_at' => 'datetime',
         ];
+    }
+
+    /**
+     * Épuisé (restaurant) : marqué épuisé aujourd'hui, dans le fuseau du business, ou jusqu'à
+     * réactivation manuelle si le business ne remet pas ses plats à disponible chaque matin.
+     */
+    public function isSoldOut(): bool
+    {
+        if ($this->sold_out_at === null) {
+            return false;
+        }
+
+        $business = $this->business;
+
+        if ($business === null || ! $business->catalog_daily_reset) {
+            return true;
+        }
+
+        $timezone = $business->localTimezone();
+
+        return $this->sold_out_at->copy()->timezone($timezone)->toDateString() === now($timezone)->toDateString();
+    }
+
+    public function getSoldOutAttribute(): bool
+    {
+        return $this->isSoldOut();
     }
 
     /**

@@ -34,6 +34,7 @@ class User extends Authenticatable
         'notification_phone',
         'whatsapp_alerts_enabled',
         'whatsapp_alerts_consented_at',
+        'whatsapp_alerts_consent_version',
     ];
 
     /**

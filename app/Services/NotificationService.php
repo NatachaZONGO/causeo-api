@@ -294,6 +294,7 @@ class NotificationService
 
             $remise = match ($order->fulfillment_type) {
                 'pickup' => ', retrait en boutique'.($order->pickup_time ? " ({$order->pickup_time})" : ''),
+                'dine_in' => ', sur place'.($order->pickup_time ? " ({$order->pickup_time})" : ''),
                 'shipping' => $order->delivery_city ? ", expédition vers {$order->delivery_city}" : ', expédition',
                 default => $order->delivery_city ? ", livraison {$order->delivery_city}" : '',
             };

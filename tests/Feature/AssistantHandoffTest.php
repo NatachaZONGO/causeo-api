@@ -77,6 +77,7 @@ class AssistantHandoffTest extends TestCase
 
         $this->createConversationSchema();
         (require base_path('database/migrations/2026_10_12_100000_add_whatsapp_alerts_to_users.php'))->up();
+        (require base_path('database/migrations/2026_10_29_110000_add_whatsapp_alerts_consent_version.php'))->up();
 
         $this->owner = User::forceCreate([
             'name' => 'Gérant', 'email' => 'neeb@example.test', 'password' => 'x',

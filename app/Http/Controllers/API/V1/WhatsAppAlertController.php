@@ -15,6 +15,14 @@ use Illuminate\Validation\ValidationException;
  */
 class WhatsAppAlertController extends Controller
 {
+    /**
+     * Texte que le gérant accepte, affiché tel quel à côté de la case à cocher. Sa version est
+     * enregistrée avec la date du consentement : changer le texte demande une nouvelle version.
+     */
+    public const CONSENT_TEXT = "J'accepte de recevoir sur ce numéro WhatsApp les alertes de Causeo (questions de clients à traiter, nouvelles commandes, nouveaux rendez-vous). Je peux les désactiver à tout moment dans mes réglages.";
+
+    public const CONSENT_VERSION = '2026-10-29';
+
     /** Exemple envoyé par l'alerte de test (modèle escalade_client). */
     public const TEST_QUESTION = 'Bonjour, livrez-vous à Koudougou demain ?';
 
@@ -58,6 +66,7 @@ class WhatsAppAlertController extends Controller
 
         if (array_key_exists('consent', $data)) {
             $user->whatsapp_alerts_consented_at = $data['consent'] ? now() : null;
+            $user->whatsapp_alerts_consent_version = $data['consent'] ? self::CONSENT_VERSION : null;
         }
 
         if (array_key_exists('whatsapp_alerts_enabled', $data)) {
@@ -79,6 +88,34 @@ class WhatsAppAlertController extends Controller
         }
 
         $user->save();
+
+        return response()->json($this->settings($user));
+    }
+
+    /**
+     * Activation en un clic (étape de l'inscription) : numéro (prérempli avec suggested_phone) et
+     * consentement explicite, obligatoire. Le consentement est enregistré avec sa date et la version
+     * du texte accepté ; les alertes sont activées.
+     */
+    public function activate(Request $request): JsonResponse
+    {
+        $data = $request->validate([
+            'notification_phone' => ['required', 'string', 'max:30'],
+            'consent' => ['accepted'],
+        ], [
+            'notification_phone.required' => 'Indiquez le numéro WhatsApp qui recevra les alertes.',
+            'consent.accepted' => 'Cochez la case pour accepter de recevoir les alertes WhatsApp de Causeo sur ce numéro.',
+        ]);
+
+        /** @var User $user */
+        $user = $request->user();
+
+        $user->forceFill([
+            'notification_phone' => $this->normalizePhone($data['notification_phone']),
+            'whatsapp_alerts_consented_at' => now(),
+            'whatsapp_alerts_consent_version' => self::CONSENT_VERSION,
+            'whatsapp_alerts_enabled' => true,
+        ])->save();
 
         return response()->json($this->settings($user));
     }
@@ -128,9 +165,35 @@ class WhatsAppAlertController extends Controller
             'notification_phone' => $user->notification_phone,
             'whatsapp_alerts_enabled' => (bool) $user->whatsapp_alerts_enabled,
             'whatsapp_alerts_consented_at' => $user->whatsapp_alerts_consented_at?->toIso8601String(),
+            'whatsapp_alerts_consent_version' => $user->whatsapp_alerts_consent_version,
             'alerts_active' => OwnerAlertService::ownerAccepts($user) && $this->alerts->isConfigured(),
             'service_available' => $this->alerts->isConfigured(),
+            // Étape d'activation : numéro à préremplir et texte exact à faire accepter.
+            'suggested_phone' => $this->suggestedPhone($user),
+            'consent_text' => self::CONSENT_TEXT,
+            'consent_version' => self::CONSENT_VERSION,
         ];
+    }
+
+    /**
+     * Numéro à préremplir : celui des alertes, sinon le WhatsApp ou le téléphone du gérant, sinon
+     * celui de son entreprise ; au format international, ou null.
+     */
+    private function suggestedPhone(User $user): ?string
+    {
+        foreach ([$user->notification_phone, $user->whatsapp_phone, $user->phone, $user->businesses()->value('phone')] as $candidate) {
+            try {
+                $phone = $this->normalizePhone(is_string($candidate) ? $candidate : null);
+            } catch (ValidationException) {
+                continue;
+            }
+
+            if ($phone !== null) {
+                return $phone;
+            }
+        }
+
+        return null;
     }
 
     /**

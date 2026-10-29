@@ -31,6 +31,8 @@ class Appointment extends Model
         'price',
         'notes',
         'status',
+        'product_id',
+        'duration_minutes',
     ];
 
     /**
@@ -44,6 +46,7 @@ class Appointment extends Model
             'requested_date' => 'date:Y-m-d',
             'participants' => 'integer',
             'price' => 'float',
+            'duration_minutes' => 'integer',
         ];
     }
 

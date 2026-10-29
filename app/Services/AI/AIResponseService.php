@@ -15,6 +15,7 @@ use App\Services\Catalog\CatalogService;
 use App\Services\Conversations\QuotedMessageService;
 use App\Services\OrderService;
 use App\Services\WhatsApp\MediaMessage;
+use App\Support\ActivityProfile;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
@@ -257,6 +258,31 @@ TEXT;
         'delivery' => 'livraison à domicile (delivery)',
         'pickup' => 'retrait en boutique (pickup)',
         'shipping' => 'expédition vers une autre ville (shipping)',
+        'dine_in' => 'sur place (dine_in)',
+    ];
+
+    /** Au restaurant, le retrait est « à emporter ». */
+    private const RESTAURANT_FULFILLMENT_LABELS = [
+        'pickup' => 'à emporter (pickup)',
+    ];
+
+    /** Vocabulaire et règles du catalogue selon le profil d'activité (ActivityProfile), après CATALOG_INSTRUCTIONS. */
+    private const PROFILE_INSTRUCTIONS = [
+        ActivityProfile::RESTAURANT => <<<'TEXT'
+# Menu du restaurant
+Ce catalogue est le menu du restaurant : parle de « plats » et du « menu », pas d'articles (« Je ne trouve pas ce plat sur notre menu »).
+- Disponibilité : un plat est « disponible aujourd'hui » ou « épuisé aujourd'hui », jamais « en rupture de stock » ; s'il est épuisé, propose un autre plat disponible du menu.
+- Options : portion et accompagnement se choisissent comme une taille ; les suppléments (champ extras) ont un prix en plus (« supplément fromage +500 FCFA »), ajouté au prix du plat seulement si le client le choisit. Ne propose jamais un supplément absent du menu.
+- Délai de préparation (champ preparation) : indicatif, « environ 20 min », jamais une heure garantie.
+- Pour une commande, mets les suppléments choisis dans extras (leurs noms) : le prix total est recalculé par le serveur.
+TEXT,
+        ActivityProfile::SERVICES => <<<'TEXT'
+# Prestations
+Ce catalogue est la liste des prestations : parle de « prestations », pas d'articles (« Je ne trouve pas cette prestation dans nos services »).
+- Chaque prestation a une durée (champ duration) et un prix : « cette prestation dure 2 h et coûte 15 000 FCFA ». Ne parle jamais de stock ni de rupture.
+- Options : la durée et le niveau se choisissent comme une taille, jamais à la place du client.
+- Pour une prise de rendez-vous, passe à create_appointment le product_id (et le variant_id choisi) renvoyés par search_catalog : le nom, la durée et le prix sont repris de la prestation.
+TEXT,
     ];
 
     public function __construct(
@@ -381,13 +407,14 @@ TEXT;
                 $tools[] = $this->createOrderTool($business, $catalogAvailable);
             }
             if ($catalogAvailable) {
-                $stablePrompt .= "\n\n".self::CATALOG_INSTRUCTIONS;
-                $tools[] = self::SEARCH_CATALOG_TOOL;
+                $stablePrompt .= "\n\n".self::CATALOG_INSTRUCTIONS
+                    .(isset(self::PROFILE_INSTRUCTIONS[$business->activityProfile()]) ? "\n\n".self::PROFILE_INSTRUCTIONS[$business->activityProfile()] : '');
+                $tools[] = $this->searchCatalogTool($business);
             }
             $appointmentsAvailable = $conversation !== null && $business->hasModule('appointments');
             if ($appointmentsAvailable) {
                 $stablePrompt .= "\n\n".$this->appointmentInstructions($business);
-                $tools[] = $this->createAppointmentTool();
+                $tools[] = $this->createAppointmentTool($catalogAvailable);
             } else {
                 // Sans l'outil, une demande de rendez-vous va au gérant : jamais de « c'est noté ».
                 $stablePrompt .= "\n\n".self::NO_APPOINTMENT_INSTRUCTIONS;
@@ -1248,8 +1275,13 @@ TEXT;
      *
      * @return array<string, mixed>
      */
-    private function createAppointmentTool(): array
+    private function createAppointmentTool(bool $withCatalog = false): array
     {
+        $catalog = $withCatalog ? [
+            'product_id' => ['type' => 'string', 'description' => 'Identifiant de la prestation renvoyé par search_catalog : son nom, sa durée et son prix sont repris.'],
+            'variant_id' => ['type' => 'string', 'description' => 'Variante choisie (durée, niveau…) renvoyée par search_catalog, s\'il y en a plusieurs.'],
+        ] : [];
+
         return [
             'name' => 'create_appointment',
             'description' => "Enregistre une demande de rendez-vous du client. Le créneau reste à confirmer par l'entreprise. "
@@ -1266,7 +1298,7 @@ TEXT;
                     'participants' => ['type' => 'integer', 'minimum' => 1, 'description' => 'Nombre de personnes concernées, si utile.'],
                     'price' => ['type' => 'number', 'minimum' => 0, 'description' => 'Prix en FCFA indiqué dans le contexte pour cette prestation. À omettre s\'il n\'y figure pas.'],
                     'notes' => ['type' => 'string', 'description' => 'Précisions utiles du client, facultatif.'],
-                ],
+                ] + $catalog,
                 'required' => ['service', 'requested_date', 'requested_time', 'customer_name'],
             ],
         ];
@@ -1294,6 +1326,20 @@ PROMPT;
     }
 
     /**
+     * Outil search_catalog, décrit avec le vocabulaire du profil d'activité.
+     *
+     * @return array<string, mixed>
+     */
+    private function searchCatalogTool(Business $business): array
+    {
+        return match ($business->activityProfile()) {
+            ActivityProfile::RESTAURANT => ['description' => 'Cherche des plats dans le menu du restaurant. Renvoie les plats correspondants avec leurs variantes (portion, accompagnement), leur prix en FCFA, leur disponibilité (disponible ou épuisé aujourd\'hui), les suppléments payants (extras), le délai de préparation indicatif, et le variant_id à utiliser pour une commande.'] + self::SEARCH_CATALOG_TOOL,
+            ActivityProfile::SERVICES => ['description' => 'Cherche des prestations dans la liste des services. Renvoie les prestations correspondantes avec leurs variantes (durée, niveau), leur prix en FCFA, leur durée, et le product_id (et variant_id) à utiliser pour une prise de rendez-vous.'] + self::SEARCH_CATALOG_TOOL,
+            default => self::SEARCH_CATALOG_TOOL,
+        };
+    }
+
+    /**
      * Définition de l'outil create_order, limitée aux modes de remise activés.
      *
      * @return array<string, mixed>
@@ -1318,14 +1364,17 @@ PROMPT;
                                 'options' => ['type' => 'string', 'description' => 'Options choisies (taille, couleur…), vide si aucune.'],
                                 'quantity' => ['type' => 'integer', 'minimum' => 1],
                                 'unit_price' => ['type' => 'number', 'minimum' => 0, 'description' => 'Prix unitaire en FCFA, tel qu\'indiqué dans le contexte.'],
-                            ] + ($withCatalog ? ['variant_id' => ['type' => 'string', 'description' => 'Identifiant de la variante renvoyé par search_catalog, pour un article du catalogue (le prix enregistré est alors celui du catalogue).']] : []),
+                            ] + ($withCatalog ? [
+                                'variant_id' => ['type' => 'string', 'description' => 'Identifiant de la variante renvoyé par search_catalog, pour un article du catalogue (le prix enregistré est alors celui du catalogue).'],
+                                'extras' => ['type' => 'array', 'items' => ['type' => 'string'], 'description' => 'Suppléments payants choisis par le client (noms du champ extras de search_catalog), ajoutés au prix par le serveur.'],
+                            ] : []),
                             'required' => ['name', 'quantity', 'unit_price'],
                         ],
                     ],
                     'fulfillment_type' => [
                         'type' => 'string',
                         'enum' => $business->enabledFulfillmentTypes(),
-                        'description' => 'Mode de remise choisi par le client : delivery (livraison à domicile), pickup (retrait en boutique), shipping (expédition).',
+                        'description' => 'Mode de remise choisi par le client : delivery (livraison à domicile), pickup (retrait en boutique, ou à emporter au restaurant), shipping (expédition), dine_in (sur place).',
                     ],
                     'customer_name' => ['type' => 'string', 'description' => 'Nom du client.'],
                     'delivery_city' => ['type' => 'string', 'description' => 'Ville de livraison ou d\'expédition. Obligatoire pour delivery et shipping, à omettre pour pickup.'],
@@ -1346,8 +1395,9 @@ PROMPT;
     {
         $enabled = $business->enabledFulfillmentTypes();
 
+        $labels = $business->activityProfile() === ActivityProfile::RESTAURANT ? self::RESTAURANT_FULFILLMENT_LABELS + self::FULFILLMENT_LABELS : self::FULFILLMENT_LABELS;
         $modes = implode("\n", array_map(
-            fn (string $type) => '- '.self::FULFILLMENT_LABELS[$type],
+            fn (string $type) => '- '.$labels[$type],
             $enabled,
         ));
 
@@ -1437,6 +1487,7 @@ PROMPT.($withCatalog ? "\n11. Pour un article du catalogue, mets dans la ligne l
             ));
             $mode = match ($order->fulfillment_type) {
                 'pickup' => 'retrait en boutique',
+                'dine_in' => 'sur place',
                 'shipping' => 'expédition'.($order->delivery_city ? " vers {$order->delivery_city}" : ''),
                 default => 'livraison'.($order->delivery_city ? " à {$order->delivery_city}" : ''),
             };

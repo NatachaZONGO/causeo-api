@@ -130,6 +130,7 @@ trait CreatesConversationSchema
             $table->timestamps();
         });
         (require base_path('database/migrations/2026_10_28_110000_create_status_posts.php'))->up();
+        (require base_path('database/migrations/2026_10_29_100000_add_activity_profiles.php'))->up();
     }
 
     /**

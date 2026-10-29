@@ -32,6 +32,7 @@ class BusinessWebsiteTest extends TestCase
             '2026_10_09_100000_create_plans_table.php',
             '2026_10_09_120000_create_plan_prices_table.php',
             '2026_10_09_160000_add_website_to_businesses.php',
+            '2026_10_29_100000_add_activity_profiles.php',
         ] as $migration) {
             (require base_path("database/migrations/{$migration}"))->up();
         }
