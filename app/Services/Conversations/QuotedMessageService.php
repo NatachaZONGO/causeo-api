@@ -24,8 +24,9 @@ use Illuminate\Support\Str;
  * pointe alors vers un message absent de la conversation, et le payload brut est journalisé
  * (sans numéro) pour l'analyser. Les statuts du jour enregistrés par le gérant (StatusPost)
  * disent à quoi le client répond : un seul, c'est son article ; plusieurs, l'assistant envoie
- * leurs photos et demande lequel ; aucun, il demande une capture (une seule fois, puis il passe
- * la main au gérant). Jamais l'article n'est deviné d'après l'historique.
+ * leurs photos et demande lequel ; aucun (statut publié hors Causeo), il répond avec ce qu'il sait,
+ * sans demander de capture, et passe la main au gérant si l'article ou le prix du statut est
+ * nécessaire. Jamais l'article n'est deviné d'après l'historique.
  */
 class QuotedMessageService
 {
@@ -41,7 +42,7 @@ class QuotedMessageService
     /** Champs du payload qui contiennent un numéro ou un nom : masqués dans le journal. */
     private const PERSONAL_FIELDS = ['from', 'to', 'wa_id', 'recipient_id', 'display_phone_number', 'phone_number', 'name'];
 
-    /** Message cité introuvable (statut WhatsApp…) sans statut du jour : une seule question, puis escalade (AIResponseService). */
+    /** Message cité introuvable (statut publié hors Causeo…) : réponse avec ce que sait l'assistant, ou escalade (AIResponseService). */
     public const KIND_UNKNOWN = 'unknown';
 
     /** Réponse à un statut, un seul statut du jour actif : son article. */
@@ -49,9 +50,6 @@ class QuotedMessageService
 
     /** Réponse à un statut, plusieurs statuts du jour actifs : le client choisit (quote['choices']). */
     public const KIND_STATUS_MANY = 'status_many';
-
-    /** La seule question posée quand le client répond à un statut sans dire de quel article il parle. */
-    public const STATUS_CAPTURE_QUESTION = "Pouvez-vous m'envoyer une capture de l'article ?";
 
     /** Longueur maximale d'un message cité montré à l'assistant. */
     private const QUOTE_MAX_LENGTH = 500;
@@ -266,9 +264,10 @@ class QuotedMessageService
 
         if ($posts->isEmpty()) {
             return [[
-                'note' => "Le client répond à un message que tu ne vois pas (probablement un statut WhatsApp de la boutique, ou un message trop ancien). {$history} "
-                    ."Si sa question ne dit pas clairement de quel article il s'agit, ne devine pas : pose une seule question, "
-                    .'« '.self::STATUS_CAPTURE_QUESTION.' », puis ajoute PRECISION seul sur la dernière ligne.',
+                'note' => "Le client répond à un message que tu ne vois pas : probablement un statut WhatsApp de la boutique publié hors Causeo, "
+                    ."ou un message trop ancien. {$history} Ne fais pas semblant de le connaître et ne demande pas de capture. "
+                    ."Réponds à sa question avec ce que tu sais (horaires, adresse, livraison, paiement…). Si la réponse dépend "
+                    .'de l\'article ou du prix de ce statut, écris seulement JE_NE_SAIS_PAS.',
                 'search' => null,
                 'kind' => self::KIND_UNKNOWN,
             ], null];

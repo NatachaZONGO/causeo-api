@@ -555,27 +555,44 @@ class AssistantHandoffTest extends TestCase
 
     // --- 4. Réponses aux statuts et questions sans référence ------------------------------------
 
-    public function test_a_status_reply_gets_one_capture_question_then_goes_to_the_owner(): void
+    public function test_a_reply_to_a_status_published_outside_causeo_needing_its_price_goes_silently_to_the_owner(): void
     {
-        $question = "Pouvez-vous m'envoyer une capture de l'article ?";
+        config(['services.anthropic.escalation_summary' => true]);
+        $this->claudeAnswers = ['JE_NE_SAIS_PAS'];
 
         $this->receiveRaw([
             'id' => 'wamid.1', 'type' => 'text', 'text' => ['body' => "C'est combien ?"],
             'context' => ['from' => '22625000000', 'id' => 'wamid.STATUS-1'],
         ]);
 
-        $this->assertSame([$question], FakeWhatsAppService::$sent);
-        $this->assertSame('status_reply', Message::where('direction', 'outbound')->sole()->metadata['clarification']);
+        // Ni capture demandée, ni réponse inventée : le gérant prend le relais.
+        $this->assertSame([], FakeWhatsAppService::$sent);
+        $note = end($this->claudeRequests()[0]['messages'])['content'];
+        $this->assertStringContainsString('probablement un statut WhatsApp de la boutique publié hors Causeo', $note);
+        $this->assertStringContainsString('Ne fais pas semblant de le connaître et ne demande pas de capture.', $note);
+        $this->assertStringContainsString("Si la réponse dépend de l'article ou du prix de ce statut, écris seulement JE_NE_SAIS_PAS.", $note);
+        $this->assertStringNotContainsString('capture de l\'article', $note);
 
-        $this->travel(1)->minutes();
-        $this->receive('wamid.2', 'Regardez mon premier écrit');
-
-        // Ni la question ni la relance ne passent par Claude : rien n'est deviné d'après l'historique.
-        $this->assertSame([], $this->claudeRequests());
-        $this->assertSame([$question, self::HANDOFF], FakeWhatsAppService::$sent);
         $escalation = Escalation::sole();
         $this->assertSame(Escalation::REASON_STATUS_REPLY, $escalation->reason);
+        $this->assertTrue($escalation->silent);
         $this->assertSame('Réponse de Awa à un statut à traiter', Notification::where('type', 'escalation')->sole()->title);
+        $this->assertStringContainsString('réponse à un statut publié hors Causeo', $this->summaryRequests()[0]['messages'][0]['content']);
+        $this->assertSame(1, Notification::where('type', 'status')->count());
+    }
+
+    public function test_a_reply_to_an_unknown_status_is_answered_with_what_the_assistant_knows(): void
+    {
+        $this->claudeAnswers = ['Oui, nous sommes ouverts samedi de 9h à 18h.'];
+
+        $this->receiveRaw([
+            'id' => 'wamid.1', 'type' => 'text', 'text' => ['body' => 'Vous êtes ouverts samedi ?'],
+            'context' => ['from' => '22625000000', 'id' => 'wamid.STATUS-1'],
+        ]);
+
+        $this->assertSame(['Oui, nous sommes ouverts samedi de 9h à 18h.'], FakeWhatsAppService::$sent);
+        $this->assertSame(0, Escalation::count());
+        $this->assertArrayNotHasKey('clarification', Message::where('direction', 'outbound')->sole()->metadata);
     }
 
     public function test_after_two_unsuccessful_clarifications_the_assistant_hands_over(): void

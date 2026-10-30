@@ -214,9 +214,6 @@ TEXT;
         'personnel' => Escalation::REASON_PERSONAL,
     ];
 
-    /** Seule question posée quand le client répond à un statut sans statut du jour enregistré. */
-    private const STATUS_CAPTURE_QUESTION_TU = "Peux-tu m'envoyer une capture de l'article ?";
-
     /** Réclamation sur une commande ou une prestation passée (texte normalisé, voir isPastOrderClaim). */
     private const PAST_ORDER_PATTERNS = [
         '/\b(j ai|jai|on a|avais|avait|deja|ai)( \w+){0,3} depose/',
@@ -270,7 +267,7 @@ Pour ces messages :
 5. Termine par la ligne technique HORS_VENTE: suivie du motif (partenariat, reclamation, plainte ou personnel), seule sur la dernière ligne. Dans ces cas seulement, tu peux parler du responsable et de transmission.
 
 # Questions de précision
-Quand tu ne comprends pas la demande ou ne sais pas de quel article parle le client (il répond à un statut, envoie un lien que tu ne peux pas ouvrir, une photo que tu ne reconnais pas…), pose une seule question pour le savoir, puis ajoute PRECISION seul sur la dernière ligne. Pas pour demander une option (taille, couleur, quantité) d'un article déjà identifié.
+Quand tu ne comprends pas la demande ou ne sais pas de quel article parle le client (il envoie un lien que tu ne peux pas ouvrir, une photo que tu ne reconnais pas…), pose une seule question pour le savoir, puis ajoute PRECISION seul sur la dernière ligne. Pas pour demander une option (taille, couleur, quantité) d'un article déjà identifié.
 TEXT;
 
     /** Libellés des modes de remise, tels que présentés au client. */
@@ -800,20 +797,24 @@ TEXT,
             // L'assistant ne sait pas : rien n'est envoyé au client, même un message d'attente écrit
             // avec le marqueur. Le gérant est prévenu ; le message d'attente neutre ne part qu'après
             // escalation_fallback_minutes sans sa réponse (ReplyToCustomer, SendEscalationFallback).
+            // Réponse à un statut publié hors Causeo : le résumé au gérant le précise, et il est invité
+            // à enregistrer ses statuts.
+            $statusReply = in_array(QuotedMessageService::KIND_UNKNOWN, array_column($quotes, 'kind'), true);
+            $statusHint = $statusReply ? ['status_hint' => true] : [];
+
             if (str_contains($text, 'JE_NE_SAIS_PAS')) {
-                return $escalated(['answer' => null, 'silent' => true]);
+                return $escalated(['answer' => null, 'silent' => true]
+                    + ($statusReply ? ['escalation_reason' => Escalation::REASON_STATUS_REPLY] : []) + $statusHint);
             }
 
-            $statusReply = in_array(QuotedMessageService::KIND_UNKNOWN, array_column($quotes, 'kind'), true);
-
-            return [
+            return $statusHint + [
                 'answer' => $text,
                 'confidence' => $hasContext ? $this->averageSimilarity($context) : 0.3,
                 'should_escalate' => false,
                 'context_used' => $context->pluck('id')->all(),
                 'media_ids' => $mediaIds,
                 'tool_trace' => $this->traceForMetadata($trace),
-            ] + ($asksPrecision ? ['clarification' => $statusReply ? 'status_reply' : 'general'] : []);
+            ] + ($asksPrecision ? ['clarification' => 'general'] : []);
         } catch (\Throwable $e) {
             Log::error('AIResponseService::answer a échoué', [
                 'business_id' => $business->id,
@@ -1786,10 +1787,11 @@ PROMPT.($withCatalog ? "\n11. Pour un article du catalogue, mets dans la ligne l
     /**
      * Réponses sans appel à Claude, qui ne doivent rien deviner :
      * - réponse à un statut, plusieurs statuts du jour : leurs photos (au plus 4) et « lequel ? » ;
-     * - réponse à un statut sans statut du jour, et le message ne nomme aucun article : une capture
-     *   est demandée (et le gérant invité à enregistrer ses statuts) ;
-     * - capture déjà demandée, et toujours ni photo ni article nommé : le gérant prend le relais ;
+     * - « lequel ? » resté sans réponse claire (ni photo ni article nommé) : le gérant prend le relais,
+     *   sans rien envoyer au client ;
      * - réclamation sur une commande ou une prestation passée (habit déposé…) : une phrase, escalade.
+     * Un statut publié hors Causeo (inconnu) passe par Claude : il répond avec ce qu'il sait, sans
+     * demander de capture, et escalade si l'article ou le prix du statut est nécessaire.
      *
      * @param  list<array<string, mixed>>  $quotes
      * @param  array{count: int, topic: ?string}  $clarifications
@@ -1798,7 +1800,6 @@ PROMPT.($withCatalog ? "\n11. Pour un article du catalogue, mets dans la ligne l
     private function statusOrClaimResponse(Business $business, ?Conversation $conversation, string $question, array $quotes, bool $withPhotos, bool $catalogAvailable, array $clarifications): ?array
     {
         $tu = $this->addressOf($business) === 'tu';
-        $kinds = array_column($quotes, 'kind');
         $names = fn () => $catalogAvailable && $this->catalog->identifies($business, $question);
         $reply = fn (string $answer, array $extra = []) => $extra + [
             'answer' => $answer,
@@ -1825,23 +1826,18 @@ PROMPT.($withCatalog ? "\n11. Pour un article du catalogue, mets dans la ligne l
             );
         }
 
-        if (in_array(QuotedMessageService::KIND_UNKNOWN, $kinds, true) && ! $withPhotos && ! $names()) {
-            $log('réponse à un statut sans statut du jour, capture demandée');
-
-            return $reply(
-                $tu ? self::STATUS_CAPTURE_QUESTION_TU : QuotedMessageService::STATUS_CAPTURE_QUESTION,
-                ['clarification' => 'status_reply', 'status_hint' => true],
-            );
-        }
-
         if ($clarifications['topic'] === 'status_reply' && $quotes === [] && ! $withPhotos && ! $names()) {
-            $log('capture du statut toujours absente, passage au gérant');
+            $log('statut du jour toujours pas choisi, passage au gérant');
 
-            return $reply($this->handoffReply($business), [
+            return [
+                'answer' => null,
                 'confidence' => 0.2,
                 'should_escalate' => true,
+                'silent' => true,
                 'escalation_reason' => Escalation::REASON_STATUS_REPLY,
-            ]);
+                'context_used' => [],
+                'media_ids' => [],
+            ];
         }
 
         if (! $withPhotos && $this->isPastOrderClaim($question) && ! $this->hasOpenOrder($conversation)) {
@@ -1994,11 +1990,11 @@ PROMPT.($withCatalog ? "\n11. Pour un article du catalogue, mets dans la ligne l
     private function clarificationBlock(array $clarifications): ?string
     {
         return match (true) {
-            $clarifications['topic'] === 'status_reply' => "# Capture déjà demandée\n"
-                ."Tu as déjà demandé au client une capture de l'article dont il parle (il répondait à un statut). "
+            $clarifications['topic'] === 'status_reply' => "# Statut déjà demandé\n"
+                ."Tu as déjà demandé au client lequel des statuts du jour l'intéresse. "
                 ."Ne suppose jamais l'article d'après l'historique de la conversation. "
-                ."S'il l'envoie ou nomme clairement l'article, réponds normalement. S'il ne peut pas, ne l'a pas ou insiste "
-                .'(« regardez mon premier écrit »), ne repose pas la question : écris seulement JE_NE_SAIS_PAS.',
+                ."S'il envoie une photo ou nomme clairement l'article, réponds normalement. Sinon, ne repose pas la question : "
+                .'écris seulement JE_NE_SAIS_PAS.',
             $clarifications['count'] >= self::MAX_CLARIFICATIONS => "# Précisions déjà demandées\n"
                 ."Tu as déjà demandé des précisions {$clarifications['count']} fois de suite. Ne repose pas de question : "
                 .'si le message ne permet toujours pas de répondre, écris seulement JE_NE_SAIS_PAS.',

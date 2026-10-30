@@ -568,18 +568,20 @@ class MediaMessageTest extends TestCase
         $this->assertStringContainsString("Le client cite une photo qu'il a envoyée (cette photo est jointe au message).", $text['text']);
     }
 
-    public function test_a_reply_to_a_status_asks_which_article_and_logs_the_payload_without_numbers(): void
+    public function test_a_reply_to_an_unknown_status_goes_to_the_owner_and_logs_the_payload_without_numbers(): void
     {
         Log::spy();
+        $this->claudeAnswer = 'JE_NE_SAIS_PAS';
 
         $this->receiveRaw([
             'id' => 'wamid.5', 'type' => 'text', 'text' => ['body' => 'Il est à combien ? Appelez-moi au 70 11 22 33'],
             'context' => ['from' => '22625000000', 'id' => 'wamid.STATUS-1'],
         ]);
 
-        // Aucun statut du jour et aucun article nommé : la capture est demandée, sans rien deviner.
-        $this->assertSame(["Pouvez-vous m'envoyer une capture de l'article ?"], FakeWhatsAppService::$sent);
-        $this->assertSame([], $this->claudeRequests());
+        // Aucun statut du jour : pas de capture demandée, l'assistant ne connaît pas le prix et passe la main.
+        $this->assertSame([], FakeWhatsAppService::$sent);
+        $this->assertCount(1, $this->claudeRequests());
+        $this->assertSame(Escalation::REASON_STATUS_REPLY, Escalation::sole()->reason);
 
         Log::shouldHaveReceived('info')->withArgs(function (string $message, array $context = []): bool {
             if (! str_contains($message, 'contenu inconnu')) {

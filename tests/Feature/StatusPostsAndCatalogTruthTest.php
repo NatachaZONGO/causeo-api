@@ -203,21 +203,17 @@ class StatusPostsAndCatalogTruthTest extends TestCase
     {
         $this->history(['La robe longue noire à paillettes est dispo ?', 'Oui, la robe longue noire à paillettes est à 15 000 FCFA.']);
 
+        $this->claudeAnswers = ['JE_NE_SAIS_PAS'];
         $this->replyToStatus('wamid.1', "C'est combien ?");
 
-        $this->assertSame(["Pouvez-vous m'envoyer une capture de l'article ?"], FakeWhatsAppService::$sent);
-        $this->assertSame([], $this->claudeRequests());
+        // Ni le prix de l'historique ni une capture demandée : le gérant prend le relais, sans message au client.
+        $this->assertSame([], FakeWhatsAppService::$sent);
+        $this->assertStringContainsString("Ne suppose jamais l'article d'après l'historique de la conversation", json_encode($this->claudeRequests()[0]['messages'], JSON_UNESCAPED_UNICODE));
+        $this->assertSame(Escalation::REASON_STATUS_REPLY, Escalation::sole()->reason);
         $hint = Notification::where('type', 'status')->sole();
         $this->assertSame('Awa répond à un de vos statuts', $hint->title);
         $this->assertStringContainsString('Enregistrez vos statuts dans Causeo pour que l\'assistant puisse répondre', $hint->body);
         $this->assertSame('status_hint', $hint->data['kind']);
-
-        // Le client ne peut pas : escalade « Réponse à un statut », toujours sans Claude.
-        $this->travel(1)->minutes();
-        $this->receive('wamid.2', 'Regardez mon premier écrit');
-        $this->assertSame(self::HANDOFF, end(FakeWhatsAppService::$sent));
-        $this->assertSame(Escalation::REASON_STATUS_REPLY, Escalation::sole()->reason);
-        $this->assertSame([], $this->claudeRequests());
 
         // Le rappel part au plus une fois par jour.
         $this->replyToStatus('wamid.3', "C'est combien ?", '22671111111');
