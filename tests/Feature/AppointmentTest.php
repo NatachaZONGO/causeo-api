@@ -209,7 +209,9 @@ class AppointmentTest extends TestCase
 
         $result = $this->service()->answer($this->business, 'oui', $this->conversationId);
 
-        $this->assertSame('Nous vérifions et revenons vers vous très vite 😊', $result['answer']);
+        // Escalade silencieuse : rien au client.
+        $this->assertNull($result['answer']);
+        $this->assertTrue($result['silent']);
         $this->assertTrue($result['should_escalate']);
         $this->assertTrue($result['tool_trace']['blocked_claim']);
         $this->assertSame(0, Appointment::count());
@@ -535,19 +537,21 @@ class AppointmentTest extends TestCase
         $this->business->update(['modules' => []]);
         Http::fake(['api.anthropic.com/*' => Http::sequence()
             ->push($this->textResponse('C\'est noté pour samedi à 15h !'))
-            ->push($this->textResponse("Nous transmettons votre demande pour samedi à 15h au gérant, qui reviendra vers vous.\nJE_NE_SAIS_PAS")),
+            ->push($this->textResponse('JE_NE_SAIS_PAS')),
         ]);
 
         $result = $this->service()->answer($this->business, 'Je veux des tresses samedi à 15h', $this->conversationId);
 
-        $this->assertSame('Nous transmettons votre demande pour samedi à 15h au gérant, qui reviendra vers vous.', $result['answer']);
+        $this->assertNull($result['answer']);
+        $this->assertTrue($result['silent']);
         $this->assertTrue($result['should_escalate']);
         $this->assertSame(0, Appointment::count());
 
         $requests = Http::recorded()->map(fn (array $pair) => $pair[0]->data());
         $this->assertArrayNotHasKey('tools', $requests[0]);
         $this->assertStringContainsString('# Demandes de rendez-vous ou de réservation', $this->systemPrompt($requests[0]));
-        $this->assertStringContainsString('nous transmettons sa demande au gérant', $this->systemPrompt($requests[0]));
+        $this->assertStringContainsString("- N'écris rien au client : écris seulement le marqueur JE_NE_SAIS_PAS.", $this->systemPrompt($requests[0]));
+        $this->assertStringNotContainsString('seule exception à la règle qui interdit de parler de transmission', $this->systemPrompt($requests[0]));
         $correction = collect($requests[1]['messages'])->last()['content'];
         $this->assertStringContainsString('module Rendez-vous inactif', $correction);
         $this->assertStringContainsString('JE_NE_SAIS_PAS', $correction);
@@ -564,7 +568,7 @@ class AppointmentTest extends TestCase
 
         $result = $this->service()->answer($this->business->fresh(), 'Je veux des tresses samedi à 15h', $this->conversationId);
 
-        $this->assertSame('Nous vérifions et revenons vers vous très vite 😊', $result['answer']);
+        $this->assertNull($result['answer']);
         $this->assertTrue($result['should_escalate']);
         $this->assertStringContainsString('# Demandes de rendez-vous ou de réservation', $this->systemPrompt(Http::recorded()[0][0]->data()));
     }

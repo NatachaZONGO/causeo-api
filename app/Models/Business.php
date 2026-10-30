@@ -55,6 +55,14 @@ class Business extends Model
     public const DEFAULT_AI_PAUSE_HOURS = 6;
 
     /**
+     * Minutes sans réponse du gérant à une escalade silencieuse avant le message d'attente au
+     * client (escalation_fallback_minutes) ; 0 : jamais.
+     */
+    public const DEFAULT_ESCALATION_FALLBACK_MINUTES = 15;
+
+    public const ESCALATION_FALLBACK_MAX_MINUTES = 1440;
+
+    /**
      * Valeurs par défaut avant enregistrement : aucun module tant qu'on ne l'a pas choisi.
      *
      * @var array<string, mixed>
@@ -104,6 +112,7 @@ class Business extends Model
         'activity_profile',
         'catalog_daily_reset',
         'dine_in_enabled',
+        'escalation_fallback_minutes',
     ];
 
     /**
@@ -155,6 +164,7 @@ class Business extends Model
             'catalog_daily_reset' => 'boolean',
             'dine_in_enabled' => 'boolean',
             'contacts_exported_at' => 'datetime',
+            'escalation_fallback_minutes' => 'integer',
         ];
     }
 

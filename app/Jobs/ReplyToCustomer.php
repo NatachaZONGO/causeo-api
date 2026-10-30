@@ -207,11 +207,10 @@ class ReplyToCustomer implements ShouldQueue
         }
 
         $escalated = (bool) $result['should_escalate'];
-        // Message personnel destiné au gérant : escaladé sans réponse au client.
-        $silent = $escalated && ! empty($result['silent']);
-        $answer = EmojiStyle::apply($business, $escalated
-            ? ($result['answer'] ?? 'Merci pour votre message ! Nous vérifions et revenons vers vous très vite 😊')
-            : (string) $result['answer']);
+        // Rien n'est envoyé au client : l'assistant ne sait pas (le gérant est prévenu), message
+        // personnel destiné au gérant, ou relance sur une escalade silencieuse.
+        $silent = ! empty($result['silent']) || ($escalated && trim((string) ($result['answer'] ?? '')) === '');
+        $answer = EmojiStyle::apply($business, (string) ($result['answer'] ?? ''));
 
         // Relance sur une demande déjà transmise : pas de nouvelle escalade, le gérant est alerté de nouveau.
         $followUp = ! empty($result['follow_up']) ? Escalation::find($result['follow_up']) : null;
@@ -235,7 +234,14 @@ class ReplyToCustomer implements ShouldQueue
                     default => null,
                 },
                 'status' => 'pending',
+                'silent' => $silent,
+                'fallback_due_at' => $this->fallbackDueAt($business, $silent, $result['escalation_reason'] ?? null),
             ]);
+
+            // Sans réponse du gérant d'ici là, un seul message d'attente neutre part au client.
+            if ($escalation->fallback_due_at !== null) {
+                SendEscalationFallback::dispatch($escalation->id)->delay($escalation->fallback_due_at);
+            }
 
             // Cloche et alerte WhatsApp à la création de l'escalade ; en plus, un e-mail pour vérifier le paiement.
             if ($paymentProof) {
@@ -259,6 +265,7 @@ class ReplyToCustomer implements ShouldQueue
                 'business_id' => $business->id,
                 'conversation_id' => $conversation->id,
                 'reason' => $result['escalation_reason'] ?? null,
+                'follow_up' => $followUp !== null,
             ]);
 
             return;
@@ -308,6 +315,17 @@ class ReplyToCustomer implements ShouldQueue
             'generation_seconds' => round($generationSeconds, 1),
             'send_delay_seconds' => $delay,
         ]);
+    }
+
+    /**
+     * Heure du message d'attente d'une escalade silencieuse : après escalation_fallback_minutes
+     * (0 = jamais). Jamais pour un message personnel, destiné au gérant et non au service client.
+     */
+    private function fallbackDueAt(Business $business, bool $silent, ?string $reason): ?CarbonInterface
+    {
+        $minutes = (int) ($business->escalation_fallback_minutes ?? Business::DEFAULT_ESCALATION_FALLBACK_MINUTES);
+
+        return $silent && $minutes > 0 && $reason !== Escalation::REASON_PERSONAL ? now()->addMinutes($minutes) : null;
     }
 
     /**

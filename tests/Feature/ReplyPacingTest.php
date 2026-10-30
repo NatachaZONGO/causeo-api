@@ -222,13 +222,14 @@ class ReplyPacingTest extends TestCase
         $this->receive('Et à Koudougou ?', 'wamid.2');
         $this->travel(8)->seconds();
         $this->runJob(Queue::pushed(ReplyToCustomer::class)->last());
-        $this->runJob(Queue::pushed(SendCustomerReply::class)->sole());
 
+        // Escalade silencieuse : aucune réponse préparée pour le client.
+        Queue::assertNotPushed(SendCustomerReply::class);
         $escalation = Escalation::sole();
         $this->assertSame("Vous livrez à Bobo ?\nEt à Koudougou ?", $escalation->customer_question);
         $this->assertSame(Message::where('whatsapp_message_id', 'wamid.2')->value('id'), $escalation->message_id);
         $this->assertSame(['escalated', 'escalated'], Message::where('direction', 'inbound')->orderBy('created_at')->pluck('status')->all());
-        $this->assertSame(['Nous vérifions et revenons vers vous très vite'], FakeWhatsAppService::$sent);
+        $this->assertSame([], FakeWhatsAppService::$sent);
     }
 
     public function test_without_a_fake_queue_the_reply_goes_out_in_the_same_flow(): void

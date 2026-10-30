@@ -137,12 +137,13 @@ class OrderTest extends TestCase
                 'fulfillment_type' => 'delivery',
                 'payment_method' => 'Orange Money',
             ]))
-            ->push($this->textResponse('Nous vérifions et revenons vers vous très vite 😊')),
+            ->push($this->textResponse('JE_NE_SAIS_PAS')),
         ]);
 
         $result = $this->service()->answer($this->business, 'oui', $this->conversationId);
 
-        $this->assertSame('Nous vérifions et revenons vers vous très vite 😊', $result['answer']);
+        $this->assertNull($result['answer']);
+        $this->assertTrue($result['silent']);
         $this->assertSame(0, Order::count());
         $this->assertSame(0, Notification::count());
 
@@ -482,7 +483,8 @@ class OrderTest extends TestCase
 
         $result = $this->service()->answer($this->business, 'oui', $this->conversationId);
 
-        $this->assertSame('Nous vérifions et revenons vers vous très vite 😊', $result['answer']);
+        $this->assertNull($result['answer']);
+        $this->assertTrue($result['silent']);
         $this->assertTrue($result['should_escalate']);
         $this->assertTrue($result['tool_trace']['blocked_claim']);
         $this->assertSame(0, Order::count());

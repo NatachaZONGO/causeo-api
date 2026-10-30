@@ -28,6 +28,12 @@ class Escalation extends Model
     public const EXPIRES_AFTER_HOURS = 24;
 
     /**
+     * Seul message envoyé au client après une escalade silencieuse restée sans réponse du gérant
+     * (Business::escalation_fallback_minutes) : toujours au vouvoiement et au « nous ».
+     */
+    public const FALLBACK_MESSAGE = 'Merci pour votre patience, nous revenons vers vous au plus vite.';
+
+    /**
      * The attributes that are mass assignable.
      *
      * @var list<string>
@@ -41,6 +47,9 @@ class Escalation extends Model
         'status',
         'answered_at',
         'reason',
+        'silent',
+        'fallback_due_at',
+        'fallback_sent_at',
     ];
 
     /** Motifs (reason) des escalades qui ne viennent pas d'une question écrite ; voice_* pour les vocaux. */
@@ -100,6 +109,9 @@ class Escalation extends Model
     {
         return [
             'answered_at' => 'datetime',
+            'silent' => 'boolean',
+            'fallback_due_at' => 'datetime',
+            'fallback_sent_at' => 'datetime',
         ];
     }
 

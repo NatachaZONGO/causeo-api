@@ -187,6 +187,8 @@ class BusinessController extends Controller
             // Restaurant : les plats épuisés redeviennent disponibles chaque matin (sinon à la main).
             'catalog_daily_reset' => ['sometimes', 'boolean'],
             'dine_in_enabled' => ['sometimes', 'boolean'],
+            // Message d'attente au client si le gérant n'a pas répondu à une escalade silencieuse (0 = jamais).
+            'escalation_fallback_minutes' => ['sometimes', 'integer', 'min:0', 'max:'.Business::ESCALATION_FALLBACK_MAX_MINUTES],
         ];
     }
 
@@ -242,6 +244,9 @@ class BusinessController extends Controller
             'activity_profile.in' => 'Activité inconnue. Activités disponibles : '.implode(', ', ActivityProfile::AVAILABLE).'.',
             'catalog_daily_reset.boolean' => 'La remise à disponible chaque matin doit être activée ou désactivée (vrai ou faux).',
             'dine_in_enabled.boolean' => 'La consommation sur place doit être activée ou désactivée (vrai ou faux).',
+            'escalation_fallback_minutes.integer' => "Le délai avant le message d'attente est un nombre de minutes (0 pour ne jamais l'envoyer).",
+            'escalation_fallback_minutes.min' => "Le délai avant le message d'attente est un nombre de minutes (0 pour ne jamais l'envoyer).",
+            'escalation_fallback_minutes.max' => "Le délai avant le message d'attente ne doit pas dépasser ".Business::ESCALATION_FALLBACK_MAX_MINUTES.' minutes (24 h).',
             'ai_pause_hours.in' => 'La pause de l\'assistant dure 1, 6 ou 24 heures, ou jusqu\'à réactivation (0).',
             'stock_alert_email.boolean' => 'Les alertes de stock par e-mail doivent être activées ou désactivées (vrai ou faux).',
             'brand_color.regex' => 'La couleur doit être au format hexadécimal #RRGGBB, par exemple #0F766E.',

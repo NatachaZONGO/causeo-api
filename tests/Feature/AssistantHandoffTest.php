@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use App\Jobs\IndexManagerReply;
+use App\Jobs\SendEscalationFallback;
 use App\Jobs\RefreshStyleProfile;
 use App\Models\Business;
 use App\Models\Conversation;
@@ -289,19 +290,121 @@ class AssistantHandoffTest extends TestCase
         $this->assertStringContainsString("Si la photo ne montre pas clairement un article du catalogue (billets ou pièces de monnaie, document, personne, lieu, capture sans rapport, photo floue…), ne dis jamais ce qu'elle montre et n'identifie aucun objet : ne devine pas.", $request['system'][1]['text']);
     }
 
-    // --- 3. Relances après une escalade ---------------------------------------------------------
+    // --- 3. Escalade silencieuse et relances -------------------------------------------------------
 
-    public function test_a_follow_up_on_a_pending_escalation_reassures_and_alerts_the_owner_again(): void
+    public function test_when_the_assistant_does_not_know_nothing_is_sent_and_the_owner_is_alerted(): void
     {
+        // Même avec un message d'attente écrit par Claude avant le marqueur : rien ne part.
         $this->claudeAnswers = ["Nous vérifions et revenons vers vous très vite\nJE_NE_SAIS_PAS"];
+
+        $this->receive('wamid.1', 'Vous livrez à Koudougou ?');
+
+        $this->assertSame([], FakeWhatsAppService::$sent);
+        $this->assertSame(0, Message::where('direction', 'outbound')->count());
+        $this->assertSame('escalated', Message::where('whatsapp_message_id', 'wamid.1')->value('status'));
+        $escalation = Escalation::sole();
+        $this->assertTrue($escalation->silent);
+        $this->assertSame(Escalation::PENDING, $escalation->status);
+        $this->assertSame('2026-10-28 10:15:00', $escalation->fallback_due_at->toDateTimeString());
+        $this->assertNull($escalation->fallback_sent_at);
+        $this->assertSame('Awa attend votre réponse', Notification::where('type', 'escalation')->sole()->title);
+        $this->assertSame(1, $this->alertsSent());
+
+        // Le prompt ne fait plus écrire de message d'attente.
+        $stable = $this->claudeRequests()[0]['system'][0]['text'];
+        $this->assertStringContainsString("n'invente rien et n'écris rien au client : écris seulement le marqueur technique JE_NE_SAIS_PAS, seul.", $stable);
+        $this->assertStringContainsString('Ne parle jamais au client de gérant, de responsable, de transmission ni de vérification.', $stable);
+        $this->assertStringNotContainsString('Nous vérifions et revenons vers vous très vite', $stable);
+
+        // Le dashboard voit la conversation en attente du gérant.
+        Sanctum::actingAs($this->owner);
+        $listed = $this->getJson("/api/v1/businesses/{$this->business->id}/conversations?filter=pending")->assertOk()->json('data.0.escalations.0');
+        $this->assertTrue($listed['silent']);
+        $this->assertNotNull($listed['fallback_due_at']);
+        $this->assertNull($listed['fallback_sent_at']);
+    }
+
+    public function test_without_an_answer_from_the_owner_one_neutral_message_is_sent_after_fifteen_minutes(): void
+    {
+        $this->claudeAnswers = ['JE_NE_SAIS_PAS'];
+        $this->receive('wamid.1', 'Vous livrez à Koudougou ?');
+        $escalation = Escalation::sole();
+
+        // Trop tôt : rien.
+        $this->travel(14)->minutes();
+        $this->runFallback($escalation);
+        $this->assertSame([], FakeWhatsAppService::$sent);
+
+        $this->travel(1)->minutes();
+        $this->runFallback($escalation);
+        $this->assertSame(['Merci pour votre patience, nous revenons vers vous au plus vite.'], FakeWhatsAppService::$sent);
+        $this->assertNotNull($escalation->fresh()->fallback_sent_at);
+        $message = Message::where('direction', 'outbound')->sole();
+        $this->assertSame('ai', $message->sender_type);
+        $this->assertSame($escalation->id, $message->metadata['escalation_fallback']);
+        $this->assertSame(Escalation::PENDING, $escalation->fresh()->status);
+
+        // Une seule fois, même relancé, et pas de nouveau message pour une deuxième escalade.
+        $this->runFallback($escalation);
+        $this->receive('wamid.2', 'Et à Bobo ?');
+        $this->travel(20)->minutes();
+        $this->runFallback(Escalation::latest()->orderByDesc('id')->first());
+        $this->assertCount(1, FakeWhatsAppService::$sent);
+    }
+
+    public function test_the_neutral_message_is_cancelled_when_the_owner_answers_first(): void
+    {
+        $this->claudeAnswers = ['JE_NE_SAIS_PAS'];
+        $this->receive('wamid.1', 'Vous livrez à Koudougou ?');
+        $escalation = Escalation::sole();
+
+        $this->travel(5)->minutes();
+        Sanctum::actingAs($this->owner);
+        $this->postJson('/api/v1/conversations/'.Conversation::sole()->id.'/reply', ['response' => 'Oui, 2 000 F la livraison.'])->assertOk();
+
+        $this->travel(15)->minutes();
+        $this->runFallback($escalation);
+
+        $this->assertSame(['Oui, 2 000 F la livraison.'], FakeWhatsAppService::$sent);
+        $this->assertNull($escalation->fresh()->fallback_sent_at);
+    }
+
+    public function test_the_owner_sets_the_delay_or_never_sends_the_neutral_message(): void
+    {
+        Sanctum::actingAs($this->owner);
+        $this->assertSame(15, $this->business->fresh()->escalation_fallback_minutes);
+        $this->patchJson("/api/v1/businesses/{$this->business->id}", ['escalation_fallback_minutes' => 1441])
+            ->assertUnprocessable()->assertJsonValidationErrors('escalation_fallback_minutes');
+        $this->patchJson("/api/v1/businesses/{$this->business->id}", ['escalation_fallback_minutes' => -1])->assertUnprocessable();
+        $this->patchJson("/api/v1/businesses/{$this->business->id}", ['escalation_fallback_minutes' => 30])
+            ->assertOk()->assertJsonPath('business.escalation_fallback_minutes', 30);
+
+        $this->claudeAnswers = ['JE_NE_SAIS_PAS'];
+        $this->receive('wamid.1', 'Vous livrez à Koudougou ?');
+        $this->assertSame('2026-10-28 10:30:00', Escalation::sole()->fallback_due_at->toDateTimeString());
+
+        // 0 : jamais de message d'attente.
+        $this->patchJson("/api/v1/businesses/{$this->business->id}", ['escalation_fallback_minutes' => 0])->assertOk();
+        $this->receive('wamid.2', 'Et à Bobo ?', 'Awa', '22671000009');
+        $second = Escalation::where('conversation_id', '!=', Escalation::oldest()->first()->conversation_id)->sole();
+        $this->assertTrue($second->silent);
+        $this->assertNull($second->fallback_due_at);
+        $this->travel(2)->hours();
+        $this->runFallback($second);
+        $this->assertSame([], FakeWhatsAppService::$sent);
+    }
+
+    public function test_a_follow_up_on_a_silent_escalation_stays_silent_and_alerts_the_owner_again(): void
+    {
+        $this->claudeAnswers = ['JE_NE_SAIS_PAS'];
         $this->receive('wamid.1', 'Vous livrez à Koudougou ?');
         $this->assertSame(1, $this->alertsSent());
 
         $this->travel(2)->minutes();
         $this->receive('wamid.2', 'Je suis toujours en attente');
 
-        // Pas de « que voulez-vous ? » ni de nouvel appel à Claude, et pas de nouvelle escalade.
-        $this->assertSame(self::FOLLOW_UP, end(FakeWhatsAppService::$sent));
+        // Ni réponse, ni nouvel appel à Claude, ni nouvelle escalade.
+        $this->assertSame([], FakeWhatsAppService::$sent);
         $this->assertCount(1, $this->claudeRequests());
         $this->assertSame(1, Escalation::count());
         $this->assertSame('escalated', Message::where('whatsapp_message_id', 'wamid.2')->value('status'));
@@ -313,35 +416,45 @@ class AssistantHandoffTest extends TestCase
 
         $this->travel(20)->minutes();
         $this->receive('wamid.3', 'Ma requête svp');
-        $this->assertSame(self::FOLLOW_UP, end(FakeWhatsAppService::$sent));
+        $this->assertSame([], FakeWhatsAppService::$sent);
         $this->assertSame(2, $this->alertsSent());
-
-        $this->receive('wamid.4', 'Alors ?');
-        $this->assertSame(self::FOLLOW_UP, end(FakeWhatsAppService::$sent));
-        $this->assertSame(1, Escalation::count());
     }
 
-    public function test_the_pending_question_is_given_to_the_assistant(): void
+    public function test_the_silent_pending_question_is_given_to_the_assistant_without_the_owner(): void
     {
-        $this->claudeAnswers = ["Nous vérifions et revenons vers vous très vite\nJE_NE_SAIS_PAS", self::FOLLOW_UP."\nRELANCE"];
+        $this->claudeAnswers = ['JE_NE_SAIS_PAS', 'RELANCE'];
         $this->receive('wamid.1', 'Vous livrez à Koudougou ?');
         $this->travel(2)->minutes();
-        $this->receive('wamid.2', 'Le responsable a vu mon message de tout à l\'heure ?');
+        $this->receive('wamid.2', 'Vous avez vu mon message de tout à l\'heure ?');
 
         $system = $this->claudeRequests()[1]['system'][1]['text'];
-        $this->assertStringContainsString("# Demande déjà transmise au responsable\nLe client attend la réponse du responsable à cette demande : « Vous livrez à Koudougou ? ».", $system);
-        $this->assertSame(self::FOLLOW_UP, end(FakeWhatsAppService::$sent));
+        $this->assertStringContainsString("# Demande en cours de traitement\nLe client attend une réponse à cette demande : « Vous livrez à Koudougou ? ».", $system);
+        $this->assertStringNotContainsString('responsable', $system);
+        $this->assertSame([], FakeWhatsAppService::$sent);
         $this->assertSame(1, Escalation::count());
         $this->assertSame('Relance de Awa : demande toujours en attente', Notification::where('type', 'escalation')->sole()->title);
     }
 
+    public function test_a_follow_up_on_a_complaint_still_gets_the_reassuring_reply(): void
+    {
+        $this->claudeAnswers = ["Toutes nos excuses pour ce retard.\nHORS_VENTE: plainte"];
+        $this->receive('wamid.1', 'Ma robe reçue hier est déchirée, ce n\'est pas sérieux');
+        $this->assertFalse(Escalation::sole()->silent);
+        $this->assertNull(Escalation::sole()->fallback_due_at);
+
+        $this->travel(2)->minutes();
+        $this->receive('wamid.2', 'Je suis toujours en attente');
+
+        $this->assertSame(self::FOLLOW_UP, end(FakeWhatsAppService::$sent));
+    }
+
     public function test_a_real_question_during_a_pending_escalation_is_still_answered(): void
     {
-        $this->claudeAnswers = ["Nous vérifions et revenons vers vous très vite\nJE_NE_SAIS_PAS", 'La robe wax Awa est à 12 500 FCFA.'];
+        $this->claudeAnswers = ['JE_NE_SAIS_PAS', 'La robe wax Awa est à 12 500 FCFA.'];
         $this->receive('wamid.1', 'Vous livrez à Koudougou ?');
         $this->receive('wamid.2', 'Et la robe wax Awa, combien svp ?');
 
-        $this->assertSame('La robe wax Awa est à 12 500 FCFA.', end(FakeWhatsAppService::$sent));
+        $this->assertSame(['La robe wax Awa est à 12 500 FCFA.'], FakeWhatsAppService::$sent);
         $this->assertCount(2, $this->claudeRequests());
     }
 
@@ -386,8 +499,10 @@ class AssistantHandoffTest extends TestCase
         $this->receive('wamid.3', 'Vous savez bien lequel');
 
         $this->assertStringContainsString('Tu as déjà demandé des précisions 2 fois de suite. Ne repose pas de question', $this->claudeRequests()[2]['system'][1]['text']);
-        $this->assertSame(self::HANDOFF, end(FakeWhatsAppService::$sent));
+        // Le gérant prend le relais sans que le client en soit informé.
+        $this->assertCount(2, FakeWhatsAppService::$sent);
         $this->assertSame(Escalation::REASON_CLARIFICATION, Escalation::sole()->reason);
+        $this->assertTrue(Escalation::sole()->silent);
     }
 
     // --- 5. Liens TikTok, Instagram, Facebook ---------------------------------------------------
@@ -484,13 +599,16 @@ class AssistantHandoffTest extends TestCase
         $this->assertContains('De rien', $sent);
     }
 
-    public function test_escalation_fallbacks_carry_no_emoji_by_default(): void
+    public function test_the_neutral_message_carries_no_emoji_and_says_vous_even_with_tu(): void
     {
+        $this->business->update(['reply_style' => ['address' => 'tu', 'emojis' => 'often']]);
         $this->claudeAnswers = ['JE_NE_SAIS_PAS'];
 
-        $this->receive('wamid.1', 'Vous livrez à Koudougou ?');
+        $this->receive('wamid.1', 'Tu livres à Koudougou ?');
+        $this->travel(15)->minutes();
+        $this->runFallback(Escalation::sole());
 
-        $this->assertSame(['Merci pour votre message ! Nous vérifions et revenons vers vous très vite'], FakeWhatsAppService::$sent);
+        $this->assertSame(['Merci pour votre patience, nous revenons vers vous au plus vite.'], FakeWhatsAppService::$sent);
     }
 
     // --- Outils -------------------------------------------------------------------------------------
@@ -553,6 +671,11 @@ class AssistantHandoffTest extends TestCase
             ->map(fn (array $pair) => $pair[0]->data())
             ->values()
             ->all();
+    }
+
+    private function runFallback(Escalation $escalation): void
+    {
+        SendEscalationFallback::dispatchSync($escalation->id);
     }
 
     private function alertsSent(): int

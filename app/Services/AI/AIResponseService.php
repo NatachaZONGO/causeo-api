@@ -129,8 +129,7 @@ TEXT,
 # Demandes de rendez-vous ou de réservation
 Tu ne peux pas enregistrer de rendez-vous ni de réservation toi-même. Si le client veut prendre rendez-vous, réserver ou bloquer un créneau :
 - Ne dis jamais que le rendez-vous ou la réservation est noté, enregistré, pris, réservé ou confirmé, et ne fais pas de récapitulatif à confirmer.
-- Dis-lui simplement que nous transmettons sa demande au gérant (avec la prestation, la date et l'heure souhaitées s'il les a données), qui reviendra vers lui pour la suite. C'est la seule exception à la règle qui interdit de parler de transmission.
-- Puis ajoute le marqueur JE_NE_SAIS_PAS, seul sur la dernière ligne.
+- N'écris rien au client : écris seulement le marqueur JE_NE_SAIS_PAS. Sa demande (prestation, date et heure s'il les a données) part au gérant, qui reviendra vers lui.
 TEXT;
 
     /** Ligne technique ajoutée par Claude quand une photo est la capture d'un paiement. */
@@ -182,9 +181,6 @@ TEXT;
             'required' => ['query'],
         ],
     ];
-
-    /** Message d'attente envoyé quand une réponse est bloquée puis escaladée. */
-    private const WAITING_MESSAGE = 'Nous vérifions et revenons vers vous très vite 😊';
 
     /** Message hors vente ou demande que l'assistant ne peut pas traiter : passé au gérant, en une phrase. */
     private const HANDOFF_REPLY = 'Merci pour votre message, nous le transmettons au responsable qui vous répondra rapidement.';
@@ -328,7 +324,7 @@ TEXT,
      *
      * @param  list<array<string, mixed>>  $images
      * Résultat : escalation_reason (motif de l'escalade : hors vente, statut, précisions), silent
-     * (escalade sans réponse au client), follow_up (escalade en attente relancée par le client),
+     * (rien n'est envoyé au client : l'assistant ne sait pas, ou message personnel), follow_up (escalade en attente relancée par le client),
      * clarification (la réponse demande une précision : status_reply ou general), status_hint (réponse
      * à un statut sans statut du jour : rappel au gérant).
      *
@@ -511,9 +507,7 @@ TEXT,
                     ."Les informations déjà données dans l'historique de cette conversation (par exemple un récapitulatif de commande) restent valables. "
                     ."Si le client pose une question technique ou spécifique sur un produit / service / prix / horaire "
                     .($catalogAvailable ? "que l'outil search_catalog ne trouve pas non plus (appelle-le d'abord pour tout article ou prix), " : '')
-                    ."que tu ne connais pas, ne confirme rien et n'infirme rien : réponds par un message d'attente court, "
-                    ."par exemple « Nous vérifions et revenons vers vous très vite », sans mentionner d'équipe, "
-                    ."de responsable ni de transmission, puis ajoute JE_NE_SAIS_PAS seul sur la dernière ligne.";
+                    ."que tu ne connais pas, ne confirme rien et n'infirme rien : écris seulement JE_NE_SAIS_PAS.";
 
                 $userMessage = ($catalogBlock.$quotesBlock) !== '' ? "{$catalogBlock}{$quotesBlock}Question du client : {$question}" : $question;
             }
@@ -628,14 +622,7 @@ TEXT,
 
                     $trace['blocked_claim'] = true;
 
-                    return [
-                        'answer' => self::WAITING_MESSAGE,
-                        'confidence' => 0.2,
-                        'should_escalate' => true,
-                        'context_used' => $context->pluck('id')->all(),
-                        'media_ids' => [],
-                        'tool_trace' => $this->traceForMetadata($trace),
-                    ];
+                    return $this->silentEscalation($context, $trace);
                 }
             }
 
@@ -662,14 +649,7 @@ TEXT,
                             'conversation_id' => $conversationId,
                         ]);
 
-                        return [
-                            'answer' => self::WAITING_MESSAGE,
-                            'confidence' => 0.2,
-                            'should_escalate' => true,
-                            'context_used' => $context->pluck('id')->all(),
-                            'media_ids' => [],
-                            'tool_trace' => $this->traceForMetadata($trace),
-                        ];
+                        return $this->silentEscalation($context, $trace);
                     }
                 }
             }
@@ -681,7 +661,7 @@ TEXT,
                 'tu' => $this->addressOf($business) === 'vous' && $this->usesTu($reply),
                 'je' => $this->usesJe($reply),
             ]));
-            $issues = $addressIssues($text);
+            $issues = str_contains($text, 'JE_NE_SAIS_PAS') ? [] : $addressIssues($text);
 
             if ($issues !== []) {
                 Log::warning('AIResponseService: tutoiement ou « je » dans la réponse, réponse réécrite', [
@@ -775,17 +755,18 @@ TEXT,
                     'previous_clarifications' => $clarifications['count'],
                 ]);
 
-                return $escalated(['answer' => $this->handoffReply($business), 'escalation_reason' => $handoffReason]);
+                return $escalated(['answer' => null, 'silent' => true, 'escalation_reason' => $handoffReason]);
             }
 
             if ($text === '') {
-                return $escalated(['answer' => null, 'confidence' => 0]);
+                return $escalated(['answer' => null, 'silent' => true, 'confidence' => 0]);
             }
 
+            // L'assistant ne sait pas : rien n'est envoyé au client, même un message d'attente écrit
+            // avec le marqueur. Le gérant est prévenu ; le message d'attente neutre ne part qu'après
+            // escalation_fallback_minutes sans sa réponse (ReplyToCustomer, SendEscalationFallback).
             if (str_contains($text, 'JE_NE_SAIS_PAS')) {
-                $visible = trim(str_replace('JE_NE_SAIS_PAS', '', $text));
-
-                return $escalated(['answer' => $visible !== '' ? $visible : null]);
+                return $escalated(['answer' => null, 'silent' => true]);
             }
 
             $statusReply = in_array(QuotedMessageService::KIND_UNKNOWN, array_column($quotes, 'kind'), true);
@@ -804,15 +785,28 @@ TEXT,
                 'message' => $e->getMessage(),
             ]);
 
-            return [
-                'answer' => null,
-                'confidence' => 0,
-                'should_escalate' => true,
-                'context_used' => $context->pluck('id')->all(),
-                'media_ids' => [],
-                'tool_trace' => $this->traceForMetadata($trace),
-            ];
+            return ['confidence' => 0] + $this->silentEscalation($context, $trace);
         }
+    }
+
+    /**
+     * Escalade sans réponse au client (réponse bloquée, erreur…) : comme pour JE_NE_SAIS_PAS.
+     *
+     * @param  Collection<int, object>  $context
+     * @param  array<string, mixed>  $trace
+     * @return array<string, mixed>
+     */
+    private function silentEscalation(Collection $context, array $trace): array
+    {
+        return [
+            'answer' => null,
+            'confidence' => 0.2,
+            'should_escalate' => true,
+            'silent' => true,
+            'context_used' => $context->pluck('id')->all(),
+            'media_ids' => [],
+            'tool_trace' => $this->traceForMetadata($trace),
+        ];
     }
 
     /**
@@ -1100,8 +1094,7 @@ TEXT,
         if (! $appointmentsAvailable && str_contains($reason, 'module Rendez-vous inactif')) {
             return "[Message système, pas du client : ne le mentionne pas dans ta réponse] Ta réponse précédente n'a pas été envoyée ({$reason}). "
                 ."Tu ne peux pas enregistrer de rendez-vous : ne dis jamais qu'un rendez-vous ou une réservation est noté, enregistré, pris, réservé ou confirmé. "
-                ."Dis au client que nous transmettons sa demande au gérant, qui reviendra vers lui, puis ajoute JE_NE_SAIS_PAS seul sur la dernière ligne. "
-                .'Réécris ta réponse au client en conséquence.';
+                .'N\'écris rien au client : écris seulement JE_NE_SAIS_PAS.';
         }
 
         return "[Message système, pas du client : ne le mentionne pas dans ta réponse] Ta réponse précédente n'a pas été envoyée ({$reason}). "
@@ -1289,7 +1282,7 @@ TEXT,
                 ]);
 
                 $results[] = $result + [
-                    'content' => "Erreur technique : rien n'a été enregistré. N'annonce aucun enregistrement ; dis au client que nous vérifions et ajoute JE_NE_SAIS_PAS seul sur la dernière ligne.",
+                    'content' => "Erreur technique : rien n'a été enregistré. N'annonce aucun enregistrement : écris seulement JE_NE_SAIS_PAS.",
                     'is_error' => true,
                 ];
             }
@@ -1694,10 +1687,25 @@ PROMPT.($withCatalog ? "\n11. Pour un article du catalogue, mets dans la ligne l
      * Réponse à une relance du client sur une demande transmise au gérant : il est rassuré,
      * sans qu'on lui redemande ce qu'il veut ; le gérant est alerté de nouveau (ReplyToCustomer).
      *
-     * @return array{answer: string, confidence: float, should_escalate: bool, follow_up: string, context_used: array<int, mixed>, media_ids: array<int, string>}
+     * Après une escalade silencieuse, rien n'est envoyé (silent).
+     *
+     * @return array{answer: ?string, confidence: float, should_escalate: bool, follow_up: string, silent?: bool, context_used: array<int, mixed>, media_ids: array<int, string>}
      */
     private function followUpResponse(Business $business, Escalation $escalation): array
     {
+        // Escalade silencieuse : le client n'a jamais entendu parler du responsable, il n'en entend pas parler ici.
+        if ($escalation->silent) {
+            return [
+                'answer' => null,
+                'confidence' => 1.0,
+                'should_escalate' => false,
+                'silent' => true,
+                'follow_up' => $escalation->id,
+                'context_used' => [],
+                'media_ids' => [],
+            ];
+        }
+
         return [
             'answer' => $this->addressOf($business) === 'tu' ? self::FOLLOW_UP_REPLY_TU : self::FOLLOW_UP_REPLY,
             'confidence' => 1.0,
@@ -1898,6 +1906,13 @@ PROMPT.($withCatalog ? "\n11. Pour un article du catalogue, mets dans la ligne l
     private function pendingEscalationBlock(Business $business, Escalation $escalation): string
     {
         $question = Str::limit(trim((string) preg_replace('/\s+/u', ' ', (string) $escalation->customer_question)), 300);
+        if ($escalation->silent) {
+            return "# Demande en cours de traitement\n"
+                ."Le client attend une réponse à cette demande : « {$question} ». Tu ne la connais pas.\n"
+                ."S'il relance (« je suis toujours en attente », « ma requête svp », « alors ? »…) ou redemande la même chose, "
+                ."écris seulement RELANCE, sans rien d'autre. S'il pose une autre question, réponds-y normalement.";
+        }
+
         $reply = $this->addressOf($business) === 'tu' ? self::FOLLOW_UP_REPLY_TU : self::FOLLOW_UP_REPLY;
 
         return "# Demande déjà transmise au responsable\n"
@@ -2792,8 +2807,8 @@ Tu discutes avec un client sur WhatsApp. Tu réponds au nom de {$business->name}
 - Si une information manque dans le contexte, ne la confirme pas et ne l'infirme pas non plus : ne dis ni « oui » ni « non » (par exemple, si une ville n'est pas mentionnée, ne dis pas que vous y livrez, ni que vous n'y livrez pas). Applique alors la règle d'escalade ci-dessous.
 - Ne promets JAMAIS un service qui ne figure pas dans le contexte : par exemple prévenir le client d'un retour en stock, mettre un article de côté au-delà des règles indiquées, faire une remise, livrer à un endroit ou dans un délai non mentionné.
 - Ne renvoie JAMAIS le client vers un numéro de téléphone, une adresse e-mail, un site ou un autre canal de contact, et surtout pas vers le numéro WhatsApp de cette conversation : c'est ici que le client obtient sa réponse. Seule exception : un contact indiqué explicitement dans les consignes spécifiques de l'entreprise, que tu peux alors donner tel quel.
-- Escalade : si tu ne trouves pas l'information dans le contexte ou si la demande dépasse ce que le contexte permet, NE dis PAS « je ne sais pas ». Réponds par un message d'attente court et naturel, avec tes propres mots, par exemple : « Nous vérifions et revenons vers vous très vite » ou « Laissez-nous vérifier ce point, nous vous répondons rapidement ». Ne mentionne ni équipe, ni responsable, ni collègue, ni transmission de la demande. Puis, tout à la fin de ton message, sur une nouvelle ligne, ajoute le marqueur technique JE_NE_SAIS_PAS, seul sur cette dernière ligne. Ce marqueur ne doit jamais apparaître dans une phrase adressée au client.
-- Si le contexte invite le client à « contacter la boutique », à « nous écrire », à « appeler » ou à s'adresser à un conseiller pour obtenir une information, cela signifie que cette information n'est pas disponible : tu es déjà le canal de contact du client. Ne recopie JAMAIS cette consigne au client. Réponds par le message d'attente (« Nous vérifions et revenons vers vous très vite ») et ajoute le marqueur JE_NE_SAIS_PAS, comme pour toute escalade.
+- Escalade : si tu ne trouves pas l'information dans le contexte ou si la demande dépasse ce que le contexte permet, n'invente rien et n'écris rien au client : écris seulement le marqueur technique JE_NE_SAIS_PAS, seul. Le client ne reçoit alors aucun message de ta part : sa demande est traitée par ailleurs. Ne parle jamais au client de gérant, de responsable, de transmission ni de vérification.
+- Si le contexte invite le client à « contacter la boutique », à « nous écrire », à « appeler » ou à s'adresser à un conseiller pour obtenir une information, cela signifie que cette information n'est pas disponible : tu es déjà le canal de contact du client. Ne recopie JAMAIS cette consigne au client : écris seulement JE_NE_SAIS_PAS, comme pour toute escalade.
 
 # Suite de conversation
 - Si la conversation est déjà en cours (il y a un historique de messages), ne resalue PAS le client. Pas de « Bonjour », pas de « Bienvenue », pas de formule d'accueil. Va directement à la réponse. Les salutations ne se font qu'au premier message d'un échange.

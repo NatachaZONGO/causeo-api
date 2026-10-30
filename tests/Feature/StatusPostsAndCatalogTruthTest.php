@@ -135,8 +135,9 @@ class StatusPostsAndCatalogTruthTest extends TestCase
         $this->receive('wamid.1', 'La robe longue noire à paillettes est à combien ?');
 
         $this->assertCount(2, $this->claudeRequests());
-        $this->assertSame(['Nous vérifions et revenons vers vous très vite'], FakeWhatsAppService::$sent);
+        $this->assertSame([], FakeWhatsAppService::$sent);
         $this->assertSame(1, Escalation::count());
+        $this->assertTrue(Escalation::sole()->silent);
     }
 
     public function test_a_size_given_by_the_customer_and_catalog_prices_pass_the_check(): void

@@ -467,7 +467,7 @@ class ReplyStyleTest extends TestCase
 
         $stable = $this->sentRequest()['system'][0]['text'];
         $this->assertStringContainsString("- Tu parles au nom de l'entreprise : utilise toujours « nous », « notre », « nos », jamais « je », « moi », « mon ».", $stable);
-        $this->assertStringContainsString('« Nous vérifions et revenons vers vous très vite »', $stable);
+        $this->assertStringNotContainsString('Je ne trouve pas', $stable);
         $this->assertStringNotContainsString('Je vérifie', $stable);
         $this->assertStringNotContainsString('Laissez-moi', $stable);
     }

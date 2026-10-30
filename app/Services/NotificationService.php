@@ -41,7 +41,7 @@ class NotificationService
             $customer = $conversation?->customer_name ?: $conversation?->customer_phone;
 
             $attributes = [
-                'title' => self::escalationTitle($escalation->reason, $customer, $followUp),
+                'title' => self::escalationTitle($escalation->reason, $customer, $followUp, (bool) $escalation->silent),
                 'body' => $escalation->customer_question,
                 'data' => array_filter([
                     'conversation_id' => $escalation->conversation_id,
@@ -117,7 +117,7 @@ class NotificationService
     }
 
     /** Titre de la notification d'escalade, selon son motif. */
-    public static function escalationTitle(?string $reason, ?string $customer, bool $followUp = false): string
+    public static function escalationTitle(?string $reason, ?string $customer, bool $followUp = false, bool $silent = false): string
     {
         $of = $customer ? " de {$customer}" : '';
 
@@ -132,7 +132,11 @@ class NotificationService
             Escalation::REASON_COMPLAINT => "Plainte{$of} à traiter",
             Escalation::REASON_PERSONAL => "Message personnel{$of}",
             Escalation::REASON_STATUS_REPLY => "Réponse{$of} à un statut à traiter",
-            default => $customer ? "Question de {$customer} à traiter" : 'Question client à traiter',
+            // Escalade silencieuse : le client n'a reçu aucune réponse et attend la vôtre.
+            default => match (true) {
+                $silent => $customer ? "{$customer} attend votre réponse" : 'Un client attend votre réponse',
+                default => $customer ? "Question de {$customer} à traiter" : 'Question client à traiter',
+            },
         };
     }
 
