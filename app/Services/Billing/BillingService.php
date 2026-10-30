@@ -16,6 +16,9 @@ use Illuminate\Support\Facades\Log;
  */
 class BillingService
 {
+    /** Formule Gratuit, lue une fois par instance (listes admin : pas une requête par business). */
+    private ?Plan $freePlan = null;
+
     /**
      * État effectif d'un business à l'instant présent.
      */
@@ -232,6 +235,8 @@ class BillingService
 
     private function free(?Subscription $subscription): BillingState
     {
-        return new BillingState(Plan::bySlug(Plan::FREE), 'free', $subscription, null, null);
+        $this->freePlan ??= Plan::bySlug(Plan::FREE);
+
+        return new BillingState($this->freePlan, 'free', $subscription, null, null);
     }
 }

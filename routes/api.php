@@ -6,6 +6,7 @@ use App\Http\Controllers\API\V1\Admin\AdminFeedbackController;
 use App\Http\Controllers\API\V1\Admin\AdminNotificationController;
 use App\Http\Controllers\API\V1\Admin\AdminPaymentController;
 use App\Http\Controllers\API\V1\Admin\AdminPlanController;
+use App\Http\Controllers\API\V1\Admin\AdminSignupController;
 use App\Http\Controllers\API\V1\AppointmentController;
 use App\Http\Controllers\API\V1\AuthController;
 use App\Http\Controllers\API\V1\BillingController;
@@ -149,6 +150,14 @@ Route::prefix('v1/admin')->middleware(['auth:sanctum', 'admin'])->group(function
     Route::get('users', [AdminDashboardController::class, 'users']);
     Route::put('users/{user}', [AdminDashboardController::class, 'updateUser']);
     Route::delete('users/{user}', [AdminDashboardController::class, 'deleteUser']);
+
+    // Suivi des inscrits : étape atteinte, usage, relances.
+    Route::get('signups', [AdminSignupController::class, 'index']);
+    Route::get('signups/export', [AdminSignupController::class, 'export']);
+    Route::patch('signups/{user}', [AdminSignupController::class, 'update']);
+    Route::get('signups/{user}/followups', [AdminSignupController::class, 'followups']);
+    Route::post('signups/{user}/followups', [AdminSignupController::class, 'storeFollowup']);
+
     Route::get('conversations', [AdminDashboardController::class, 'conversations']);
     Route::get('escalations', [AdminDashboardController::class, 'escalations']);
 

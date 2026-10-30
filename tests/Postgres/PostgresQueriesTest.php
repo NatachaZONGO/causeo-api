@@ -99,7 +99,7 @@ class PostgresQueriesTest extends PostgresTestCase
 
         Sanctum::actingAs(User::findOrFail($this->user('Admin', admin: true)));
 
-        foreach (['stats', 'businesses', 'users', 'conversations', 'escalations', 'ai-costs', 'payments', 'notifications', 'feedback'] as $page) {
+        foreach (['stats', 'businesses', 'users', 'conversations', 'escalations', 'ai-costs', 'payments', 'notifications', 'feedback', 'signups', 'signups?stage=bot_active&search=awa&trial_ending=1&followup_due=1'] as $page) {
             $this->getJson("/api/v1/admin/{$page}")->assertOk();
         }
     }

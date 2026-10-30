@@ -34,6 +34,7 @@ class GoogleAuthController extends Controller
             $user->update(['google_id' => $googleUser->getId()]);
         }
 
+        $user->recordLogin();
         $token = $user->createToken('causeo-app')->plainTextToken;
         $userData = urlencode(json_encode($user->load('businesses')));
         // config() et non env() : la configuration est mise en cache au démarrage.

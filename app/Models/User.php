@@ -60,6 +60,8 @@ class User extends Authenticatable
             'is_admin' => 'boolean',
             'whatsapp_alerts_enabled' => 'boolean',
             'whatsapp_alerts_consented_at' => 'datetime',
+            'last_login_at' => 'datetime',
+            'do_not_contact' => 'boolean',
         ];
     }
 
@@ -72,6 +74,16 @@ class User extends Authenticatable
     }
 
     /**
+     * Noter la connexion (e-mail ou Google) sans toucher updated_at.
+     */
+    public function recordLogin(): void
+    {
+        $this->forceFill(['last_login_at' => now()]);
+        static::query()->whereKey($this->getKey())->toBase()->update(['last_login_at' => $this->last_login_at]);
+        $this->syncOriginalAttribute('last_login_at');
+    }
+
+    /**
      * Get the businesses that belong to the user.
      *
      * @return HasMany<Business>
@@ -79,5 +91,15 @@ class User extends Authenticatable
     public function businesses(): HasMany
     {
         return $this->hasMany(Business::class);
+    }
+
+    /**
+     * Relances par le super admin (suivi des inscrits).
+     *
+     * @return HasMany<LeadFollowup, $this>
+     */
+    public function leadFollowups(): HasMany
+    {
+        return $this->hasMany(LeadFollowup::class);
     }
 }

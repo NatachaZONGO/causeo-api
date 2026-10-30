@@ -69,6 +69,7 @@ class AuthController extends Controller
             ]);
         }
 
+        $user->recordLogin();
         $token = $user->createToken('causeo-app')->plainTextToken;
 
         return response()->json([

@@ -20,6 +20,7 @@ class AppUrlsTest extends TestCase
             '2026_09_04_042020_create_businesses_table.php',
             '2026_09_11_162450_add_google_id_to_users_table.php',
             '2026_09_11_200158_add_is_admin_to_users_table.php',
+            '2026_10_30_110000_add_last_login_at_to_users.php',
         ] as $migration) {
             (require base_path("database/migrations/{$migration}"))->up();
         }
