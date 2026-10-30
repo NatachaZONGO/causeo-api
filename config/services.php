@@ -50,6 +50,9 @@ return [
         // Une pause plus longue que cette durée entre deux messages ouvre une nouvelle session :
         // l'historique envoyé à Claude s'arrête là.
         'session_gap_hours' => (float) env('AI_SESSION_GAP_HOURS', 6),
+        // Résumé des escalades pour le gérant (EscalationSummaryService), court : Haiku suffit.
+        'escalation_summary' => (bool) env('AI_ESCALATION_SUMMARY', true),
+        'summary_model' => env('ANTHROPIC_SUMMARY_MODEL', 'claude-haiku-4-5'),
         // Statistiques de coût de l'admin : prix publics en dollars par million de tokens
         // (platform.claude.com/docs/en/about-claude/pricing, relevés le 09/10/2026), par
         // modèle. Une réponse enregistrée avec un modèle absent de cette table est

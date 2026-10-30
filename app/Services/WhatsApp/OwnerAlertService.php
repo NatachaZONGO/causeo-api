@@ -35,6 +35,9 @@ class OwnerAlertService
     /** Longueur maximale de la question du client dans l'alerte d'escalade. */
     public const QUESTION_MAX_LENGTH = 100;
 
+    /** Longueur maximale du résumé de l'escalade, qui remplace alors la question. */
+    public const SUMMARY_MAX_LENGTH = 300;
+
     public function __construct(
         private readonly CauseoNotifyClient $client,
     ) {
@@ -78,7 +81,9 @@ class OwnerAlertService
         return match ($kind) {
             self::ESCALATION => ($escalation = Escalation::with('conversation')->find($id)) === null ? null : [
                 $this->businessName($escalation->business_id ?? $escalation->conversation?->business_id),
-                self::text($escalation->customer_question, self::QUESTION_MAX_LENGTH),
+                $escalation->summary
+                    ? self::text($escalation->summary, self::SUMMARY_MAX_LENGTH)
+                    : self::text($escalation->customer_question, self::QUESTION_MAX_LENGTH),
             ],
             self::ORDER => ($order = Order::find($id)) === null ? null : [
                 $this->businessName($order->business_id),

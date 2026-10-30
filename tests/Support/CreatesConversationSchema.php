@@ -132,6 +132,7 @@ trait CreatesConversationSchema
         (require base_path('database/migrations/2026_10_28_110000_create_status_posts.php'))->up();
         (require base_path('database/migrations/2026_10_29_100000_add_activity_profiles.php'))->up();
         (require base_path('database/migrations/2026_10_31_100000_add_silent_escalations.php'))->up();
+        (require base_path('database/migrations/2026_10_31_110000_add_summary_to_escalations.php'))->up();
     }
 
     /**

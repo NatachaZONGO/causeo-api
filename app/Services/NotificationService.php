@@ -42,12 +42,15 @@ class NotificationService
 
             $attributes = [
                 'title' => self::escalationTitle($escalation->reason, $customer, $followUp, (bool) $escalation->silent),
-                'body' => $escalation->customer_question,
+                // Le résumé (client, demande, ce qui manque, suggestion) remplace la question brute.
+                'body' => $escalation->summary ?: $escalation->customer_question,
                 'data' => array_filter([
                     'conversation_id' => $escalation->conversation_id,
                     'escalation_id' => $escalation->id,
                     'reason' => $escalation->reason,
                     'follow_up' => $followUp ?: null,
+                    'summary' => $escalation->summary,
+                    'question' => $escalation->summary ? $escalation->customer_question : null,
                 ]),
             ];
 

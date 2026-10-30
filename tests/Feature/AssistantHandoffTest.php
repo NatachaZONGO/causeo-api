@@ -17,8 +17,10 @@ use App\Services\WhatsApp\WhatsAppServiceFactory;
 use App\Support\EmojiStyle;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Http\Client\Request;
+use Illuminate\Log\Events\MessageLogged;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Facades\Schema;
@@ -57,6 +59,9 @@ class AssistantHandoffTest extends TestCase
 
     /** Réponses successives de Claude ; la dernière se répète. */
     private array $claudeAnswers = ['La robe wax Awa est à 12 500 FCFA.'];
+
+    /** Résumé renvoyé par Claude pour le gérant (null : erreur 500). */
+    private ?string $summary = "Awa (WhatsApp) demande si vous livrez à Koudougou.\nIl manque : vos zones et frais de livraison.\nSuggestion : indiquer le prix de la livraison à Koudougou.";
 
     /** Réponse de l'oEmbed TikTok (null : erreur 500). */
     private ?array $tiktokOembed = null;
@@ -104,6 +109,9 @@ class AssistantHandoffTest extends TestCase
             $url = $request->url();
 
             return match (true) {
+                self::isSummaryRequest($request) => $this->summary === null
+                    ? Http::response(['error' => ['message' => 'overloaded']], 529)
+                    : Http::response(['stop_reason' => 'end_turn', 'content' => [['type' => 'text', 'text' => $this->summary]]]),
                 str_contains($url, 'api.anthropic.com') => Http::response([
                     'stop_reason' => 'end_turn',
                     'content' => [['type' => 'text', 'text' => count($this->claudeAnswers) > 1 ? array_shift($this->claudeAnswers) : $this->claudeAnswers[0]]],
@@ -448,6 +456,93 @@ class AssistantHandoffTest extends TestCase
         $this->assertSame(self::FOLLOW_UP, end(FakeWhatsAppService::$sent));
     }
 
+    // --- Résumé pour le gérant -----------------------------------------------------------------------
+
+    public function test_the_owner_gets_a_short_summary_in_the_notification_and_the_whatsapp_alert(): void
+    {
+        config(['services.anthropic.escalation_summary' => true, 'services.anthropic.summary_model' => 'claude-haiku-test']);
+        $logged = [];
+        Log::listen(function (MessageLogged $log) use (&$logged) {
+            $logged[] = $log->message.' '.json_encode($log->context);
+        });
+        $this->claudeAnswers = ['Bonjour, que pouvons-nous faire pour vous ?', 'JE_NE_SAIS_PAS'];
+
+        $this->receive('wamid.0', 'Bonjour, je suis Awa, mon autre numéro est le 76 54 32 10.');
+        $this->receive('wamid.1', 'Vous livrez à Koudougou ?');
+
+        $escalation = Escalation::sole();
+        $this->assertSame($this->summary, $escalation->summary);
+
+        // Notification du dashboard : le résumé, et la question brute à côté.
+        $notification = Notification::where('type', 'escalation')->sole();
+        $this->assertSame($this->summary, $notification->body);
+        $this->assertSame($this->summary, $notification->data['summary']);
+        $this->assertSame($escalation->customer_question, $notification->data['question']);
+
+        // Alerte WhatsApp : le résumé sur une ligne à la place de la question.
+        $alert = Http::recorded()->first(fn (array $pair) => str_starts_with($pair[0]->url(), self::GRAPH.'CAUSEO-PHONE-ID/messages'))[0];
+        $this->assertSame(
+            'Awa (WhatsApp) demande si vous livrez à Koudougou. Il manque : vos zones et frais de livraison. Suggestion : indiquer le prix de la livraison à Koudougou.',
+            $alert['template']['components'][0]['parameters'][1]['text'],
+        );
+
+        // Claude Haiku reçoit le nom WhatsApp, la conversation, jamais un numéro.
+        $request = $this->summaryRequests()[0];
+        $this->assertSame('claude-haiku-test', $request['model']);
+        $this->assertLessThanOrEqual(200, $request['max_tokens']);
+        $content = $request['messages'][0]['content'];
+        $this->assertStringContainsString('Nom WhatsApp du client : Awa', $content);
+        $this->assertStringContainsString('Demande en attente : Vous livrez à Koudougou ?', $content);
+        $this->assertStringContainsString('Entreprise : NEEB-RATA MARKET', $content);
+        $this->assertStringNotContainsString(self::CUSTOMER, json_encode($request));
+        $this->assertStringNotContainsString('76 54 32 10', $content);
+        $this->assertStringContainsString('[numéro]', $content);
+
+        // Ni numéro ni résumé dans les logs.
+        foreach ($logged as $line) {
+            $this->assertStringNotContainsString(self::CUSTOMER, $line);
+            $this->assertStringNotContainsString('Koudougou', $line);
+        }
+    }
+
+    public function test_the_summary_never_keeps_a_phone_number_and_is_three_lines_at_most(): void
+    {
+        config(['services.anthropic.escalation_summary' => true]);
+        $this->summary = "**Résumé**\nAwa (WhatsApp, +226 70 00 00 01) veut une robe à 1 500 000 F.\nIl manque : le stock.\nSuggestion : la rappeler.\nMerci !";
+        $this->claudeAnswers = ['JE_NE_SAIS_PAS'];
+
+        $this->receive('wamid.1', 'Vous avez la robe de mariée ?');
+
+        $this->assertSame("Résumé\nAwa (WhatsApp, [numéro]) veut une robe à 1 500 000 F.\nIl manque : le stock.", Escalation::sole()->summary);
+    }
+
+    public function test_without_a_summary_the_escalation_still_alerts_the_owner_with_the_question(): void
+    {
+        config(['services.anthropic.escalation_summary' => true]);
+        $this->summary = null;
+        $this->claudeAnswers = ['JE_NE_SAIS_PAS'];
+
+        $this->receive('wamid.1', 'Vous livrez à Koudougou ?');
+
+        $this->assertNull(Escalation::sole()->summary);
+        $this->assertSame('Vous livrez à Koudougou ?', Notification::where('type', 'escalation')->sole()->body);
+        $this->assertSame(1, $this->alertsSent());
+        $this->assertSame([], FakeWhatsAppService::$sent);
+    }
+
+    public function test_no_summary_for_an_answered_or_personal_message(): void
+    {
+        config(['services.anthropic.escalation_summary' => true]);
+        $this->claudeAnswers = ['La robe wax Awa est à 12 500 FCFA.'];
+        $this->receive('wamid.1', 'La robe wax Awa est à combien ?');
+
+        $this->claudeAnswers = ["\nHORS_VENTE: personnel"];
+        $this->receive('wamid.2', 'Tonton, maman te salue, on a pris le lot.');
+
+        $this->assertSame([], $this->summaryRequests());
+        $this->assertNull(Escalation::sole()->summary);
+    }
+
     public function test_a_real_question_during_a_pending_escalation_is_still_answered(): void
     {
         $this->claudeAnswers = ['JE_NE_SAIS_PAS', 'La robe wax Awa est à 12 500 FCFA.'];
@@ -664,10 +759,23 @@ class AssistantHandoffTest extends TestCase
     /**
      * @return list<array<string, mixed>>
      */
+    private static function isSummaryRequest(Request $request): bool
+    {
+        return str_contains($request->url(), 'api.anthropic.com') && str_contains((string) json_encode($request->data()['system'] ?? '', JSON_UNESCAPED_UNICODE), 'résumé de 2 ou 3 lignes');
+    }
+
+    /**
+     * @return list<array<string, mixed>>
+     */
+    private function summaryRequests(): array
+    {
+        return Http::recorded()->filter(fn (array $pair) => self::isSummaryRequest($pair[0]))->map(fn (array $pair) => $pair[0]->data())->values()->all();
+    }
+
     private function claudeRequests(): array
     {
         return Http::recorded()
-            ->filter(fn (array $pair) => str_contains($pair[0]->url(), 'api.anthropic.com'))
+            ->filter(fn (array $pair) => str_contains($pair[0]->url(), 'api.anthropic.com') && ! self::isSummaryRequest($pair[0]))
             ->map(fn (array $pair) => $pair[0]->data())
             ->values()
             ->all();

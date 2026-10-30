@@ -50,6 +50,7 @@ class Escalation extends Model
         'silent',
         'fallback_due_at',
         'fallback_sent_at',
+        'summary',
     ];
 
     /** Motifs (reason) des escalades qui ne viennent pas d'une question écrite ; voice_* pour les vocaux. */

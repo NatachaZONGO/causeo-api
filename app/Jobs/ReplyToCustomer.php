@@ -10,6 +10,7 @@ use App\Models\Message;
 use App\Models\Order;
 use App\Services\AI\AIResponseService;
 use App\Services\AI\CustomerImageService;
+use App\Services\AI\EscalationSummaryService;
 use App\Services\Conversations\QuotedMessageService;
 use App\Services\Conversations\ReplyPacing;
 use App\Services\Conversations\SocialLinkService;
@@ -219,6 +220,11 @@ class ReplyToCustomer implements ShouldQueue
         $order = $paymentProof ? $this->attachPaymentProof($conversation, $photos->first()) : null;
 
         if ($escalated) {
+            // L'assistant ne sait pas : le gérant reçoit un résumé (client, demande, ce qui manque, suggestion).
+            $summary = $silent && ! $paymentProof && ($result['escalation_reason'] ?? null) !== Escalation::REASON_PERSONAL
+                ? app(EscalationSummaryService::class)->summarize($business, $conversation, $question, $result['escalation_reason'] ?? null)
+                : null;
+
             $escalation = Escalation::create([
                 'conversation_id' => $conversation->id,
                 'message_id' => $paymentProof ? $photos->first()->id : $newest->id,
@@ -235,6 +241,7 @@ class ReplyToCustomer implements ShouldQueue
                 },
                 'status' => 'pending',
                 'silent' => $silent,
+                'summary' => $summary,
                 'fallback_due_at' => $this->fallbackDueAt($business, $silent, $result['escalation_reason'] ?? null),
             ]);
 
