@@ -446,6 +446,73 @@ class MediaMessageTest extends TestCase
         $this->assertSame(['https://cdn.test/robe.jpg'], FakeWhatsAppService::$images);
     }
 
+    #[\PHPUnit\Framework\Attributes\DataProvider('noShowRequests')]
+    public function test_no_photo_is_sent_on_a_mere_keyword(string $question): void
+    {
+        [$robe] = $this->sendableMedia();
+        $this->claudeAnswer = "Nous avons plusieurs modèles, à partir de 10 000 FCFA.\nMEDIA:{$robe}";
+
+        $this->receiveRaw(['id' => 'wamid.1', 'type' => 'text', 'text' => ['body' => $question]]);
+
+        $this->assertSame([], FakeWhatsAppService::$images);
+        $this->assertSame(['Nous avons plusieurs modèles, à partir de 10 000 FCFA.'], FakeWhatsAppService::$sent);
+        $request = $this->claudeRequests()[0];
+        $this->assertStringNotContainsString('# Médias disponibles à envoyer', $request['system'][1]['text']);
+        $this->assertStringNotContainsString($robe, json_encode($request['messages']));
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function noShowRequests(): array
+    {
+        return [
+            'modèle' => ['Vous faites quels modèles ?'],
+            'coiffure' => ['C\'est combien la coiffure ?'],
+            'passer voir' => ['Je peux passer vous voir samedi ?'],
+        ];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('showRequests')]
+    public function test_photos_are_sent_on_an_explicit_request(string $question): void
+    {
+        [$robe] = $this->sendableMedia();
+        $this->claudeAnswer = "La voici.\nMEDIA:{$robe}";
+
+        $this->receiveRaw(['id' => 'wamid.1', 'type' => 'text', 'text' => ['body' => $question]]);
+
+        $this->assertSame(['https://cdn.test/robe.jpg'], FakeWhatsAppService::$images);
+        $this->assertStringContainsString('Envoie-en un seulement si le client demande explicitement à voir', $this->claudeRequests()[0]['system'][1]['text']);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function showRequests(): array
+    {
+        return [
+            'montrez-moi' => ['Montrez-moi vos modèles'],
+            'des photos' => ['Vous avez des photos ?'],
+            'catalogue' => ['Envoyez le catalogue svp'],
+            'je peux voir' => ['Je peux voir ?'],
+            'envoyez-moi les modèles' => ['Envoyez-moi les modèles'],
+        ];
+    }
+
+    public function test_a_precise_article_with_a_photo_can_be_shown(): void
+    {
+        $this->sendableMedia();
+        // Sans recherche par mots-clés ni vectorielle : seul le titre exact compte.
+        $this->app->instance(AIResponseService::class, new FixedContextAIResponseService(self::CONTEXT));
+        $robe = DB::table('business_media')->where('title', 'Robe wax Awa')->value('id');
+        $this->claudeAnswer = "La robe wax Awa est à 12 500 FCFA.\nMEDIA:{$robe}";
+
+        $this->receiveRaw(['id' => 'wamid.1', 'type' => 'text', 'text' => ['body' => 'La robe wax Awa est à combien ?']]);
+
+        $this->assertSame(['https://cdn.test/robe.jpg'], FakeWhatsAppService::$images);
+        $this->assertStringContainsString("Robe wax Awa (id: {$robe}", end($this->claudeRequests()[0]['messages'])['content']);
+    }
+
     // --- Réponses citées -------------------------------------------------------------------------
 
     public function test_a_reply_quoting_a_photo_sent_by_the_assistant_names_the_catalog_article(): void

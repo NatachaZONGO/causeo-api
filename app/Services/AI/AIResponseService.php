@@ -145,6 +145,20 @@ TEXT;
 
     private const PHOTO_CONTEXT_LIMIT = 8;
 
+    /**
+     * Demande explicite de voir (texte normalisé, voir asksToSee) : « montrez-moi », « vous avez des
+     * photos ? », « envoyez le catalogue », « je peux voir ? ». Un simple mot comme « modèle » ou
+     * « coiffure » n'en est pas une.
+     */
+    private const SHOW_REQUEST_PATTERNS = [
+        '/\b(montre|montres|montrez|montrer|photos?|images?|visuels?|catalogues?|videos?|apercu)\b/',
+        '/\b(je peux|puis je|peut on|on peut|pour|faire|laissez moi|laisse moi|veux|voudrais|aimerais|j aimerais) voir\b/',
+        '/\benvo(?:ie|ies|yez|yer)( moi| nous)?( le| la| les| vos| des| un| une| votre| ton| ta| tes)? (photo|photos|image|images|catalogue|menu|modele|modeles|articles?|tenues?|coiffures?)\b/',
+    ];
+
+    /** Mots ignorés quand on cherche si le client nomme précisément l'article d'un média. */
+    private const MEDIA_TITLE_STOPWORDS = ['les', 'des', 'une', 'pour', 'avec', 'sans', 'dans', 'sur', 'aux', 'par', 'copie', 'photo', 'image'];
+
     /** Médias du business listés comme catalogue quand le client envoie une photo. */
     private const PHOTO_CATALOG_LIMIT = 30;
 
@@ -392,7 +406,16 @@ TEXT,
                 : $this->findRelevantContext($business, $searchText);
             $hasContext = $context->isNotEmpty();
 
-            $media = $withPhotos ? $this->catalogMedia($business) : $this->findRelevantMedia($business, $searchText);
+            // Un média ne part que sur demande explicite (« montrez-moi », « des photos ? »…) ou pour
+            // l'article précis que nomme le client ; jamais sur un simple mot comme « modèle ».
+            $asksToSee = $this->asksToSee($withPhotos ? $this->withoutPhotoPlaceholders($question) : $question);
+            $namedMedia = $asksToSee || $withPhotos ? collect() : $this->namedMedia($business, $searchText);
+            $media = match (true) {
+                $withPhotos => $this->catalogMedia($business),
+                $asksToSee => $this->findRelevantMedia($business, $searchText),
+                default => $namedMedia,
+            };
+            $mayShowMedia = $asksToSee || $namedMedia->isNotEmpty();
 
             $messages = $this->buildConversationHistory($session, $conversation, $question);
 
@@ -468,14 +491,19 @@ TEXT,
                     .'Réponds directement à sa question sans resaluer.';
             }
 
-            if ($media->isNotEmpty()) {
+            if ($media->isNotEmpty() && $mayShowMedia) {
                 $systemPrompt .= "\n\n# Médias disponibles à envoyer\n"
                     ."Certains médias (images, documents, catalogues) peuvent être envoyés au client. "
-                    ."S'ils sont pertinents pour sa question (il demande à voir le menu, le catalogue, une photo, un document...), "
-                    ."mentionne-les naturellement dans ta réponse ET ajoute, tout à la fin de ta réponse, seul sur la dernière ligne, "
-                    ."la ligne spéciale : MEDIA:id1,id2 (les identifiants exacts des médias à envoyer, séparés par des virgules). "
-                    ."N'invente jamais d'identifiant et n'ajoute cette ligne que si un média listé est réellement utile. "
+                    ."Envoie-en un seulement si le client demande explicitement à voir (« montrez-moi », « vous avez des photos ? », "
+                    ."« envoyez le catalogue », « je peux voir ? ») ou s'il demande précisément l'article de ce média ; jamais sur un "
+                    ."simple mot comme « modèle » ou « coiffure ». Dans ce cas, mentionne-les naturellement dans ta réponse ET ajoute, "
+                    ."tout à la fin de ta réponse, seul sur la dernière ligne, la ligne spéciale : MEDIA:id1,id2 (les identifiants exacts "
+                    ."des médias à envoyer, séparés par des virgules). N'invente jamais d'identifiant. "
                     .'Cette ligne est technique : elle ne doit jamais apparaître dans une phrase adressée au client.';
+            } elseif ($withPhotos && $media->isNotEmpty()) {
+                $systemPrompt .= "\n\n# Médias du business\n"
+                    ."Les médias listés servent seulement à reconnaître l'article de la photo du client : n'en envoie aucun, "
+                    .'il n\'a pas demandé à en voir. N\'ajoute pas de ligne MEDIA.';
             }
 
             // Le catalogue fait foi : son résultat précède les documents, qui ne servent alors
@@ -520,7 +548,7 @@ TEXT,
                     ? $media->map(fn ($m) => '- '.$this->catalogLine($m, $productsByMedia))->implode("\n")
                     : $media->map(fn ($m) => "{$m->title} (id: {$m->id}, type: {$m->type})")->implode(', ');
                 $userMessage .= $withPhotos
-                    ? "\n\nMédias du business (catalogue illustré), aussi disponibles à envoyer au client :\n{$mediaList}"
+                    ? "\n\nMédias du business (catalogue illustré)".($mayShowMedia ? ', aussi disponibles à envoyer au client' : '')." :\n{$mediaList}"
                     : "\n\nMédias disponibles à envoyer au client : {$mediaList}";
             }
 
@@ -692,10 +720,17 @@ TEXT,
 
             // Extrait puis retire la ligne technique MEDIA:id1,id2 de la réponse.
             $mediaIds = [];
-            if ($media->isNotEmpty() && preg_match('/^\s*MEDIA\s*:\s*(.+)$/mi', $text, $matches)) {
+            if (preg_match('/^\s*MEDIA\s*:\s*(.+)$/mi', $text, $matches)) {
                 $requested = array_filter(array_map('trim', explode(',', $matches[1])));
-                $validIds = $media->pluck('id')->all();
+                $validIds = $mayShowMedia ? $media->pluck('id')->all() : [];
                 $mediaIds = $this->distinctMedia($business, $media, array_values(array_unique(array_intersect($requested, $validIds))));
+
+                if ($requested !== [] && ! $mayShowMedia) {
+                    Log::info('AIResponseService: média demandé par l\'assistant sans demande du client, non envoyé', [
+                        'business_id' => $business->id,
+                        'conversation_id' => $conversationId,
+                    ]);
+                }
 
                 $text = trim(preg_replace('/^\s*MEDIA\s*:.*$/mi', '', $text) ?? $text);
             }
@@ -2231,6 +2266,45 @@ PROMPT;
             array_map('trim', explode("\n", $question)),
             fn (string $line) => $line !== '' && ! in_array($line, MediaMessage::PLACEHOLDERS, true),
         )));
+    }
+
+    /**
+     * Le client demande-t-il explicitement à voir (photo, catalogue, « montrez-moi », « je peux voir ? ») ?
+     */
+    private function asksToSee(string $question): bool
+    {
+        $normalized = $this->normalize($question);
+
+        foreach (self::SHOW_REQUEST_PATTERNS as $pattern) {
+            if (preg_match($pattern, $normalized) === 1) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Médias dont le client nomme précisément l'article : tous les mots significatifs du titre
+     * (au moins deux) figurent dans son message (« la robe wax Awa » pour « Robe wax Awa »).
+     *
+     * @return Collection<int, \App\Models\BusinessMedia>
+     */
+    private function namedMedia(Business $business, string $question): Collection
+    {
+        $words = array_flip(explode(' ', $this->normalize($question)));
+
+        return $business->media()->active()->get()
+            ->filter(function ($media) use ($words) {
+                $title = array_values(array_filter(
+                    explode(' ', $this->normalize((string) $media->title)),
+                    fn (string $word) => mb_strlen($word) >= 3 && ! in_array($word, self::MEDIA_TITLE_STOPWORDS, true),
+                ));
+
+                return count($title) >= 2 && array_diff($title, array_keys($words)) === [];
+            })
+            ->take(3)
+            ->values();
     }
 
     /**
