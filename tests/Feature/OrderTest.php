@@ -112,7 +112,7 @@ class OrderTest extends TestCase
         $this->assertStringContainsString('- retrait en boutique (pickup)', $this->systemPrompt($requests[0]));
         $this->assertStringNotContainsString('(shipping)', $this->systemPrompt($requests[0]));
         $this->assertStringContainsString('# Prise de commande', $this->systemPrompt($requests[0]));
-        $this->assertStringContainsString('Je confirme la commande ?', $requests[0]['messages'][1]['content']);
+        $this->assertStringContainsString('Vous confirmez la commande ?', $requests[0]['messages'][1]['content']);
         $this->assertStringEndsWith('Question du client : oui', $requests[0]['messages'][2]['content']);
 
         // 2e appel : le tool_result porte la référence et le total recalculé.
@@ -137,12 +137,12 @@ class OrderTest extends TestCase
                 'fulfillment_type' => 'delivery',
                 'payment_method' => 'Orange Money',
             ]))
-            ->push($this->textResponse('Je vérifie ça et je reviens vers vous très vite 😊')),
+            ->push($this->textResponse('Nous vérifions et revenons vers vous très vite 😊')),
         ]);
 
         $result = $this->service()->answer($this->business, 'oui', $this->conversationId);
 
-        $this->assertSame('Je vérifie ça et je reviens vers vous très vite 😊', $result['answer']);
+        $this->assertSame('Nous vérifions et revenons vers vous très vite 😊', $result['answer']);
         $this->assertSame(0, Order::count());
         $this->assertSame(0, Notification::count());
 
@@ -273,7 +273,7 @@ class OrderTest extends TestCase
     {
         $this->seedRecapConversation();
         $this->business->update(['modules' => []]);
-        Http::fake(['api.anthropic.com/*' => Http::response($this->textResponse('Je vérifie ça et je reviens vers vous très vite 😊'))]);
+        Http::fake(['api.anthropic.com/*' => Http::response($this->textResponse('Nous vérifions et revenons vers vous très vite 😊'))]);
 
         $this->service()->answer($this->business, 'oui', $this->conversationId);
 
@@ -402,7 +402,7 @@ class OrderTest extends TestCase
     {
         $this->seedRecapConversation();
         $this->business->update(['delivery_enabled' => false, 'pickup_enabled' => false, 'shipping_enabled' => false]);
-        Http::fake(['api.anthropic.com/*' => Http::response($this->textResponse('Je vérifie ça et je reviens vers vous très vite 😊'))]);
+        Http::fake(['api.anthropic.com/*' => Http::response($this->textResponse('Nous vérifions et revenons vers vous très vite 😊'))]);
 
         $this->service()->answer($this->business, 'Je veux un pagne wax', $this->conversationId);
 
@@ -482,7 +482,7 @@ class OrderTest extends TestCase
 
         $result = $this->service()->answer($this->business, 'oui', $this->conversationId);
 
-        $this->assertSame('Je vérifie ça et je reviens vers vous très vite 😊', $result['answer']);
+        $this->assertSame('Nous vérifions et revenons vers vous très vite 😊', $result['answer']);
         $this->assertTrue($result['should_escalate']);
         $this->assertTrue($result['tool_trace']['blocked_claim']);
         $this->assertSame(0, Order::count());
@@ -578,7 +578,7 @@ class OrderTest extends TestCase
     public function test_recap_questions_and_future_tense_are_not_treated_as_claims(): void
     {
         Http::fake(['api.anthropic.com/*' => Http::response($this->textResponse(
-            "Voici le récapitulatif de votre commande :\n2 × Pagne wax : 15 000 FCFA\nVotre commande sera enregistrée après votre confirmation. Je confirme la commande ?"
+            "Voici le récapitulatif de votre commande :\n2 × Pagne wax : 15 000 FCFA\nVotre commande sera enregistrée après votre confirmation. Vous confirmez la commande ?"
         ))]);
 
         $result = $this->service()->answer($this->business, 'Je veux 2 pagnes wax', $this->conversationId);
@@ -690,7 +690,7 @@ class OrderTest extends TestCase
     {
         $messages = [
             ['inbound', 'Je veux 2 pagnes wax bleus, livraison secteur 15 à Ouaga, je paie par Orange Money. Awa Ouédraogo.'],
-            ['outbound', "Récapitulatif :\n2 × Pagne wax bleu à 7 500 FCFA\nFrais de livraison : 1 000 FCFA\nTotal : 16 000 FCFA\nJe confirme la commande ?"],
+            ['outbound', "Récapitulatif :\n2 × Pagne wax bleu à 7 500 FCFA\nFrais de livraison : 1 000 FCFA\nTotal : 16 000 FCFA\nVous confirmez la commande ?"],
             ['inbound', 'oui'],
         ];
 

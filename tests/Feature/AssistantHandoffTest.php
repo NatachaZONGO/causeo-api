@@ -46,7 +46,7 @@ class AssistantHandoffTest extends TestCase
 
     private const CONTEXT = 'Robe wax Awa : 12 500 FCFA, tailles 38 à 44, en stock.';
 
-    private const HANDOFF = 'Merci pour votre message, je le transmets au responsable qui vous répondra rapidement.';
+    private const HANDOFF = 'Merci pour votre message, nous le transmettons au responsable qui vous répondra rapidement.';
 
     private const FOLLOW_UP = 'Votre demande a bien été transmise au responsable, il vous répond dès que possible.';
 
@@ -293,7 +293,7 @@ class AssistantHandoffTest extends TestCase
 
     public function test_a_follow_up_on_a_pending_escalation_reassures_and_alerts_the_owner_again(): void
     {
-        $this->claudeAnswers = ["Je vérifie ça et je reviens vers vous très vite\nJE_NE_SAIS_PAS"];
+        $this->claudeAnswers = ["Nous vérifions et revenons vers vous très vite\nJE_NE_SAIS_PAS"];
         $this->receive('wamid.1', 'Vous livrez à Koudougou ?');
         $this->assertSame(1, $this->alertsSent());
 
@@ -323,7 +323,7 @@ class AssistantHandoffTest extends TestCase
 
     public function test_the_pending_question_is_given_to_the_assistant(): void
     {
-        $this->claudeAnswers = ["Je vérifie ça et je reviens vers vous très vite\nJE_NE_SAIS_PAS", self::FOLLOW_UP."\nRELANCE"];
+        $this->claudeAnswers = ["Nous vérifions et revenons vers vous très vite\nJE_NE_SAIS_PAS", self::FOLLOW_UP."\nRELANCE"];
         $this->receive('wamid.1', 'Vous livrez à Koudougou ?');
         $this->travel(2)->minutes();
         $this->receive('wamid.2', 'Le responsable a vu mon message de tout à l\'heure ?');
@@ -337,7 +337,7 @@ class AssistantHandoffTest extends TestCase
 
     public function test_a_real_question_during_a_pending_escalation_is_still_answered(): void
     {
-        $this->claudeAnswers = ["Je vérifie ça et je reviens vers vous très vite\nJE_NE_SAIS_PAS", 'La robe wax Awa est à 12 500 FCFA.'];
+        $this->claudeAnswers = ["Nous vérifions et revenons vers vous très vite\nJE_NE_SAIS_PAS", 'La robe wax Awa est à 12 500 FCFA.'];
         $this->receive('wamid.1', 'Vous livrez à Koudougou ?');
         $this->receive('wamid.2', 'Et la robe wax Awa, combien svp ?');
 
@@ -490,7 +490,7 @@ class AssistantHandoffTest extends TestCase
 
         $this->receive('wamid.1', 'Vous livrez à Koudougou ?');
 
-        $this->assertSame(['Merci pour votre message ! Je vérifie ça et je reviens vers vous très vite'], FakeWhatsAppService::$sent);
+        $this->assertSame(['Merci pour votre message ! Nous vérifions et revenons vers vous très vite'], FakeWhatsAppService::$sent);
     }
 
     // --- Outils -------------------------------------------------------------------------------------

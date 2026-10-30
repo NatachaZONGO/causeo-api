@@ -244,7 +244,7 @@ class MediaMessageTest extends TestCase
     public function test_a_question_with_a_photo_that_claude_cannot_answer_is_escalated_without_learning(): void
     {
         $this->files['MEDIA-1'] = ['image/jpeg', $this->jpeg(400, 300)];
-        $this->claudeAnswer = "Je vérifie ça et je reviens vers vous très vite 😊\nJE_NE_SAIS_PAS";
+        $this->claudeAnswer = "Nous vérifions et revenons vers vous très vite 😊\nJE_NE_SAIS_PAS";
 
         $this->receive('wamid.IMG1', 'image', ['id' => 'MEDIA-1', 'mime_type' => 'image/jpeg']);
 
@@ -267,7 +267,7 @@ class MediaMessageTest extends TestCase
         $this->receive('wamid.PAY', 'image', ['id' => 'MEDIA-1', 'mime_type' => 'image/jpeg']);
 
         // Jamais la confirmation écrite par Claude : un message fixe.
-        $this->assertSame(["Merci, j'ai bien reçu votre capture. Le responsable va vérifier le paiement et revient vers vous très vite."], FakeWhatsAppService::$sent);
+        $this->assertSame(["Merci, nous avons bien reçu votre capture. Le responsable va vérifier le paiement et revient vers vous très vite."], FakeWhatsAppService::$sent);
 
         $photo = Message::where('whatsapp_message_id', 'wamid.PAY')->sole();
         $this->assertSame('escalated', $photo->status);
@@ -297,7 +297,7 @@ class MediaMessageTest extends TestCase
 
         $this->receive('wamid.PAY', 'image', ['id' => 'MEDIA-1', 'mime_type' => 'image/jpeg']);
 
-        $this->assertSame(["Merci, j'ai bien reçu ta capture. Le responsable va vérifier le paiement et revient vers toi très vite."], FakeWhatsAppService::$sent);
+        $this->assertSame(["Merci, nous avons bien reçu ta capture. Le responsable va vérifier le paiement et revient vers toi très vite."], FakeWhatsAppService::$sent);
         $this->assertSame('Preuve de paiement reçue', Escalation::sole()->customer_question);
     }
 
@@ -335,7 +335,7 @@ class MediaMessageTest extends TestCase
 
         $this->receive('wamid.DOC', 'document', ['id' => 'MEDIA-DOC', 'mime_type' => 'application/pdf', 'filename' => 'devis.pdf']);
 
-        $this->assertSame(['Merci pour votre document ! Je le transmets tout de suite au responsable, qui vous répondra rapidement.'], FakeWhatsAppService::$sent);
+        $this->assertSame(['Merci pour votre document ! Nous le transmettons tout de suite au responsable, qui vous répondra rapidement.'], FakeWhatsAppService::$sent);
         $this->assertSame(['escalated' => true, 'media_fallback' => 'document'], Message::where('direction', 'outbound')->sole()->metadata);
         $this->assertSame(1, app(UsageService::class)->repliesSince($this->business, now()->subDay()));
     }

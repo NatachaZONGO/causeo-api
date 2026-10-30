@@ -94,6 +94,9 @@ TEXT,
 TEXT,
     ];
 
+    /** Première personne du singulier (« je », « j'ai ») : l'assistant parle au nom de l'entreprise, en « nous ». */
+    private const FIRST_PERSON_SINGULAR = '/(?<![\p{L}\'’-])(?:je(?![\p{L}\'’])|j[\'’](?=\p{L}))/iu';
+
     /** Sections d'avant le profil de style, pour l'évaluation avant / après. */
     private const LEGACY_STYLE_SECTIONS = [
         <<<'TEXT'
@@ -126,7 +129,7 @@ TEXT,
 # Demandes de rendez-vous ou de réservation
 Tu ne peux pas enregistrer de rendez-vous ni de réservation toi-même. Si le client veut prendre rendez-vous, réserver ou bloquer un créneau :
 - Ne dis jamais que le rendez-vous ou la réservation est noté, enregistré, pris, réservé ou confirmé, et ne fais pas de récapitulatif à confirmer.
-- Dis-lui simplement que tu transmets sa demande au gérant (avec la prestation, la date et l'heure souhaitées s'il les a données), qui reviendra vers lui pour la suite. C'est la seule exception à la règle qui interdit de parler de transmission.
+- Dis-lui simplement que nous transmettons sa demande au gérant (avec la prestation, la date et l'heure souhaitées s'il les a données), qui reviendra vers lui pour la suite. C'est la seule exception à la règle qui interdit de parler de transmission.
 - Puis ajoute le marqueur JE_NE_SAIS_PAS, seul sur la dernière ligne.
 TEXT;
 
@@ -134,9 +137,9 @@ TEXT;
     private const PAYMENT_PROOF_MARKER = 'PREUVE_PAIEMENT';
 
     /** Réponse au client pour une preuve de paiement : jamais de confirmation du paiement. */
-    private const PAYMENT_PROOF_REPLY = "Merci, j'ai bien reçu votre capture 🙏 Le responsable va vérifier le paiement et revient vers vous très vite.";
+    private const PAYMENT_PROOF_REPLY = 'Merci, nous avons bien reçu votre capture 🙏 Le responsable va vérifier le paiement et revient vers vous très vite.';
 
-    private const PAYMENT_PROOF_REPLY_TU = "Merci, j'ai bien reçu ta capture 🙏 Le responsable va vérifier le paiement et revient vers toi très vite.";
+    private const PAYMENT_PROOF_REPLY_TU = 'Merci, nous avons bien reçu ta capture 🙏 Le responsable va vérifier le paiement et revient vers toi très vite.';
 
     /** Recherche documentaire pour une photo sans légende : les pages de catalogue et de prix. */
     private const PHOTO_CONTEXT_QUERY = 'catalogue des articles, produits, modèles, prix et disponibilité';
@@ -153,7 +156,7 @@ Le catalogue de la boutique se consulte avec l'outil search_catalog. Il fait foi
 1. Avec la question, tu reçois le résultat d'une première recherche dans le catalogue. Dès que le client parle d'un article, d'un prix, d'une taille, d'une couleur ou d'une disponibilité, appuie-toi sur ce résultat, ou appelle search_catalog (avec les filtres utiles) s'il ne suffit pas, avant de répondre.
 2. N'annonce que ce que renvoie le catalogue : le nom, le prix et la disponibilité (« disponible », « dernières pièces », « en rupture »). Ne donne jamais un nombre de pièces en stock.
 3. Un article, un prix ou une variante qui figure dans un document mais pas au catalogue ne se vend pas : ne le propose pas et ne donne pas ce prix. Si un document et le catalogue donnent des prix différents, seul le prix du catalogue compte.
-4. Si l'article demandé n'est pas au catalogue, dis-le simplement (« Je ne trouve pas cet article dans notre catalogue ») et propose les articles proches que renvoie le catalogue (même catégorie, même usage). S'il n'y en a aucun, ou si la demande reste floue, applique la règle d'escalade.
+4. Si l'article demandé n'est pas au catalogue, dis-le simplement (« Nous n'avons pas cet article dans notre catalogue ») et propose les articles proches que renvoie le catalogue (même catégorie, même usage). S'il n'y en a aucun, ou si la demande reste floue, applique la règle d'escalade.
 5. En rupture : dis-le simplement et propose une autre variante disponible du même article, ou un article proche renvoyé par le catalogue.
 6. Ne choisis JAMAIS une taille, une couleur, une quantité ou une autre option à la place du client, et ne fais pas comme s'il l'avait donnée (pas de « en taille S, c'est bien ça ? » s'il n'a parlé d'aucune taille). Demande-la, en une seule question, avec les options disponibles du catalogue : « Quelle taille souhaitez-vous : S, M, L ou XL ? ».
 7. Les prix, les tailles, les couleurs et les disponibilités ne viennent JAMAIS de l'historique de la conversation : tes réponses précédentes peuvent être fausses. Avant de citer un prix ou de récapituler une commande, appelle search_catalog (ou appuie-toi sur le résultat du catalogue reçu avec la question), même si le prix figure déjà plus haut.
@@ -181,12 +184,12 @@ TEXT;
     ];
 
     /** Message d'attente envoyé quand une réponse est bloquée puis escaladée. */
-    private const WAITING_MESSAGE = 'Je vérifie ça et je reviens vers vous très vite 😊';
+    private const WAITING_MESSAGE = 'Nous vérifions et revenons vers vous très vite 😊';
 
     /** Message hors vente ou demande que l'assistant ne peut pas traiter : passé au gérant, en une phrase. */
-    private const HANDOFF_REPLY = 'Merci pour votre message, je le transmets au responsable qui vous répondra rapidement.';
+    private const HANDOFF_REPLY = 'Merci pour votre message, nous le transmettons au responsable qui vous répondra rapidement.';
 
-    private const HANDOFF_REPLY_TU = 'Merci pour ton message, je le transmets au responsable qui te répondra rapidement.';
+    private const HANDOFF_REPLY_TU = 'Merci pour ton message, nous le transmettons au responsable qui te répondra rapidement.';
 
     /** Relance du client alors qu'une escalade attend la réponse du gérant. */
     private const FOLLOW_UP_REPLY = 'Votre demande a bien été transmise au responsable, il vous répond dès que possible.';
@@ -251,8 +254,8 @@ Certains messages ne sont pas des demandes d'achat. Repère-les :
 - personnel : message personnel ou interne destiné au gérant ou à l'équipe (nouvelles de quelqu'un, compte rendu, argent remis, « on a pris le lot »…), qui ne s'adresse manifestement pas au service client.
 Pour ces messages :
 1. N'invente rien : ni état d'une commande, ni délai, ni geste commercial, et ne décris pas une photo jointe.
-2. partenariat : écris seulement « Merci pour votre message, je le transmets au responsable qui vous répondra rapidement. »
-3. reclamation ou plainte : 2 ou 3 phrases au plus. Des excuses une seule fois au plus, sans les répéter ; dis que tu transmets au responsable, qui revient vers le client rapidement. Ne pose pas de question.
+2. partenariat : écris seulement « Merci pour votre message, nous le transmettons au responsable qui vous répondra rapidement. »
+3. reclamation ou plainte : 2 ou 3 phrases au plus. Des excuses une seule fois au plus, sans les répéter ; dis que nous transmettons au responsable, qui revient vers le client rapidement. Ne pose pas de question.
 4. personnel : n'écris rien au client.
 5. Termine par la ligne technique HORS_VENTE: suivie du motif (partenariat, reclamation, plainte ou personnel), seule sur la dernière ligne. Dans ces cas seulement, tu peux parler du responsable et de transmission.
 
@@ -277,7 +280,7 @@ TEXT;
     private const PROFILE_INSTRUCTIONS = [
         ActivityProfile::RESTAURANT => <<<'TEXT'
 # Menu du restaurant
-Ce catalogue est le menu du restaurant : parle de « plats » et du « menu », pas d'articles (« Je ne trouve pas ce plat sur notre menu »).
+Ce catalogue est le menu du restaurant : parle de « plats » et du « menu », pas d'articles (« Nous n'avons pas ce plat sur notre menu »).
 - Disponibilité : un plat est « disponible aujourd'hui » ou « épuisé aujourd'hui », jamais « en rupture de stock » ; s'il est épuisé, propose un autre plat disponible du menu.
 - Options : portion et accompagnement se choisissent comme une taille ; les suppléments (champ extras) ont un prix en plus (« supplément fromage +500 FCFA »), ajouté au prix du plat seulement si le client le choisit. Ne propose jamais un supplément absent du menu.
 - Délai de préparation (champ preparation) : indicatif, « environ 20 min », jamais une heure garantie.
@@ -285,7 +288,7 @@ Ce catalogue est le menu du restaurant : parle de « plats » et du « menu », 
 TEXT,
         ActivityProfile::SERVICES => <<<'TEXT'
 # Prestations
-Ce catalogue est la liste des prestations : parle de « prestations », pas d'articles (« Je ne trouve pas cette prestation dans nos services »).
+Ce catalogue est la liste des prestations : parle de « prestations », pas d'articles (« Nous ne proposons pas cette prestation »).
 - Chaque prestation a une durée (champ duration) et un prix : « cette prestation dure 2 h et coûte 15 000 FCFA ». Ne parle jamais de stock ni de rupture.
 - Options : la durée et le niveau se choisissent comme une taille, jamais à la place du client.
 - Pour une prise de rendez-vous, passe à create_appointment le product_id (et le variant_id choisi) renvoyés par search_catalog : le nom, la durée et le prix sont repris de la prestation.
@@ -342,7 +345,7 @@ TEXT,
         $session = $this->sessionRows($conversationId);
         $lastBotMessage = $session->last(fn (object $row) => $row->direction === 'outbound');
 
-        // Après une question du bot (« J'enregistre votre demande ? »), « Ok merci » ou
+        // Après une question du bot (« Nous enregistrons votre demande ? »), « Ok merci » ou
         // « D'accord merci » répondent à cette question : seule l'IA peut appeler l'outil.
         $awaitsAnswer = $lastBotMessage !== null && str_contains((string) $lastBotMessage->content, '?');
 
@@ -509,7 +512,7 @@ TEXT,
                     ."Si le client pose une question technique ou spécifique sur un produit / service / prix / horaire "
                     .($catalogAvailable ? "que l'outil search_catalog ne trouve pas non plus (appelle-le d'abord pour tout article ou prix), " : '')
                     ."que tu ne connais pas, ne confirme rien et n'infirme rien : réponds par un message d'attente court, "
-                    ."par exemple « Je vérifie ça et je reviens vers vous très vite », sans mentionner d'équipe, "
+                    ."par exemple « Nous vérifions et revenons vers vous très vite », sans mentionner d'équipe, "
                     ."de responsable ni de transmission, puis ajoute JE_NE_SAIS_PAS seul sur la dernière ligne.";
 
                 $userMessage = ($catalogBlock.$quotesBlock) !== '' ? "{$catalogBlock}{$quotesBlock}Question du client : {$question}" : $question;
@@ -636,31 +639,6 @@ TEXT,
                 }
             }
 
-            // Un tutoiement alors que le business vouvoie : un seul nouvel essai. S'il tutoie encore
-            // (ou que la réécriture pose un autre problème), la première réponse part quand même.
-            if ($this->addressOf($business) === 'vous' && $this->usesTu($text)) {
-                Log::warning('AIResponseService: tutoiement alors que le business vouvoie, réponse réécrite', [
-                    'business_id' => $business->id,
-                    'conversation_id' => $conversationId,
-                ]);
-
-                $request['messages'][] = ['role' => 'assistant', 'content' => $payload['content']];
-                $request['messages'][] = ['role' => 'user', 'content' => '[Message système, pas du client : ne le mentionne pas dans ta réponse] '
-                    .'Ta réponse précédente tutoie le client. Réécris exactement la même réponse en le vouvoyant (« vous », « votre », « vos »).'];
-
-                $retry = $this->converse($request, $business, $conversation, $trace);
-                $rewritten = $this->extractText($retry);
-
-                if ($rewritten !== '' && ! $this->usesTu($rewritten) && $this->unverifiedOrderClaim($rewritten, $trace, $conversation, $appointmentsAvailable) === null) {
-                    $text = $rewritten;
-                } else {
-                    Log::warning('AIResponseService: réécriture au vouvoiement échouée, première réponse gardée', [
-                        'business_id' => $business->id,
-                        'conversation_id' => $conversationId,
-                    ]);
-                }
-            }
-
             // Un prix qui ne correspond à aucune variante de l'article, ou une taille que le client n'a pas
             // donnée (souvent reprise d'une ancienne réponse) : un seul nouvel essai, puis escalade.
             if ($catalogAvailable) {
@@ -693,6 +671,42 @@ TEXT,
                             'tool_trace' => $this->traceForMetadata($trace),
                         ];
                     }
+                }
+            }
+
+            // Un tutoiement alors que le business vouvoie, ou un « je » au lieu du « nous » de l'entreprise :
+            // un seul nouvel essai. Si le problème reste (ou que la réécriture en pose un autre), la
+            // première réponse part quand même.
+            $addressIssues = fn (string $reply) => array_keys(array_filter([
+                'tu' => $this->addressOf($business) === 'vous' && $this->usesTu($reply),
+                'je' => $this->usesJe($reply),
+            ]));
+            $issues = $addressIssues($text);
+
+            if ($issues !== []) {
+                Log::warning('AIResponseService: tutoiement ou « je » dans la réponse, réponse réécrite', [
+                    'business_id' => $business->id,
+                    'conversation_id' => $conversationId,
+                    'issues' => $issues,
+                ]);
+
+                $request['messages'][] = ['role' => 'assistant', 'content' => $payload['content']];
+                $request['messages'][] = ['role' => 'user', 'content' => '[Message système, pas du client : ne le mentionne pas dans ta réponse] '
+                    .implode(' ', array_map(fn (string $issue) => match ($issue) {
+                        'tu' => 'Ta réponse précédente tutoie le client. Réécris exactement la même réponse en le vouvoyant (« vous », « votre », « vos »).',
+                        'je' => 'Ta réponse précédente parle à la première personne du singulier (« je », « j\' »). Réécris exactement la même réponse au nom de l\'entreprise, avec « nous », « notre », « nos », jamais « je », « moi » ni « mon ».',
+                    }, $issues))];
+
+                $retry = $this->converse($request, $business, $conversation, $trace);
+                $rewritten = $this->extractText($retry);
+
+                if ($rewritten !== '' && $addressIssues($rewritten) === [] && $this->unverifiedOrderClaim($rewritten, $trace, $conversation, $appointmentsAvailable) === null) {
+                    $text = $rewritten;
+                } else {
+                    Log::warning('AIResponseService: réécriture (vouvoiement, « nous ») échouée, première réponse gardée', [
+                        'business_id' => $business->id,
+                        'conversation_id' => $conversationId,
+                    ]);
                 }
             }
 
@@ -1086,7 +1100,7 @@ TEXT,
         if (! $appointmentsAvailable && str_contains($reason, 'module Rendez-vous inactif')) {
             return "[Message système, pas du client : ne le mentionne pas dans ta réponse] Ta réponse précédente n'a pas été envoyée ({$reason}). "
                 ."Tu ne peux pas enregistrer de rendez-vous : ne dis jamais qu'un rendez-vous ou une réservation est noté, enregistré, pris, réservé ou confirmé. "
-                ."Dis au client que tu transmets sa demande au gérant, qui reviendra vers lui, puis ajoute JE_NE_SAIS_PAS seul sur la dernière ligne. "
+                ."Dis au client que nous transmettons sa demande au gérant, qui reviendra vers lui, puis ajoute JE_NE_SAIS_PAS seul sur la dernière ligne. "
                 .'Réécris ta réponse au client en conséquence.';
         }
 
@@ -1275,7 +1289,7 @@ TEXT,
                 ]);
 
                 $results[] = $result + [
-                    'content' => "Erreur technique : rien n'a été enregistré. N'annonce aucun enregistrement ; dis au client que tu vérifies et ajoute JE_NE_SAIS_PAS seul sur la dernière ligne.",
+                    'content' => "Erreur technique : rien n'a été enregistré. N'annonce aucun enregistrement ; dis au client que nous vérifions et ajoute JE_NE_SAIS_PAS seul sur la dernière ligne.",
                     'is_error' => true,
                 ];
             }
@@ -1351,7 +1365,7 @@ Tu peux enregistrer une demande de rendez-vous avec l'outil create_appointment. 
 5. Le nom du client : ne le demande pas et ne l'écris jamais dans tes réponses. Pour le champ customer_name de l'outil, reprends le nom donné dans « Nom du client pour l'outil » ; s'il n'y en a pas, demande-le une seule fois, juste avant le récapitulatif.
 6. Convertis les dates relatives (« demain », « samedi prochain ») en date précise à partir de la date du jour, et répète-la au client en toutes lettres (par exemple « samedi 10 octobre »). Ne propose jamais une date passée.
 7. Utilise uniquement le prix indiqué dans le contexte pour cette prestation. N'invente JAMAIS un prix : s'il n'y figure pas, n'annonce aucun prix et laisse price vide.
-8. Dès que tu as la prestation, la date et l'heure, fais un récapitulatif court, en une ou deux phrases : prestation, date en toutes lettres, heure, lieu et participants s'il y a lieu, prix s'il est connu. Termine par une demande de confirmation explicite, par exemple « J'enregistre votre demande ? ».
+8. Dès que tu as la prestation, la date et l'heure, fais un récapitulatif court, en une ou deux phrases : prestation, date en toutes lettres, heure, lieu et participants s'il y a lieu, prix s'il est connu. Termine par une demande de confirmation explicite, par exemple « Nous enregistrons votre demande ? ».
 9. N'appelle create_appointment qu'après un « oui » clair du client à ce récapitulatif, et appelle-le alors dans ce même échange. Si le client modifie quelque chose, refais le récapitulatif et redemande confirmation. N'appelle jamais l'outil deux fois pour la même demande.
 10. Une fois l'outil exécuté, dis au client que sa demande est enregistrée, donne la référence renvoyée par l'outil, et précise que le créneau lui sera confirmé très vite. Ne dis JAMAIS que le rendez-vous est réservé, confirmé, bloqué ou garanti, et ne décris aucune procédure absente du contexte (appel, acompte, rappel…).
 11. Si l'outil renvoie une erreur, demande au client l'information manquante ou une autre date. N'annonce jamais une demande comme enregistrée si l'outil ne l'a pas confirmé dans ce même échange.
@@ -1515,7 +1529,7 @@ Tu peux enregistrer une commande avec l'outil create_order. Procède ainsi :
 1. Collecte les informations manquantes, sans redemander ce que le client a déjà donné : les articles (nom, options comme la taille ou la couleur si elles existent, quantité), le nom du client, le mode de remise et le mode de paiement. Pose une seule question par message, jamais une liste de questions : la suivante viendra après sa réponse. Ne choisis jamais une option ou une quantité à sa place : demande-la. Si le client n'a pas dit comment il souhaite recevoir sa commande, demande-le-lui en citant uniquement les modes proposés ci-dessus. Ne propose que des articles, options, villes et modes de paiement présents dans le contexte ; sinon, applique la règle d'escalade.
 2. Selon le mode de remise : pour une livraison, demande la ville et l'adresse ; pour une expédition, demande la ville de destination ; pour un retrait en boutique, ne demande pas d'adresse, mais donne au client l'adresse et les horaires de la boutique figurant dans les informations générales (ne les invente pas s'ils n'y figurent pas).
 3. Utilise uniquement les prix du contexte, ou ceux d'un récapitulatif déjà fait dans cette conversation. N'invente JAMAIS un prix absent : dans ce cas, n'enregistre pas la commande et applique la règle d'escalade. Si le contexte indique des frais de livraison ou d'expédition pour la ville du client, ajoute-les comme une ligne « Frais de livraison » (quantité 1). Ne facture JAMAIS de frais de livraison pour un retrait en boutique.
-4. Fais un récapitulatif clair : chaque article avec sa quantité et son prix unitaire, le total (somme des quantités × prix unitaires), le mode de remise et le paiement. Termine en demandant une confirmation explicite, par exemple « Je confirme la commande ? ».
+4. Fais un récapitulatif clair : chaque article avec sa quantité et son prix unitaire, le total (somme des quantités × prix unitaires), le mode de remise et le paiement. Termine en demandant une confirmation explicite, par exemple « Vous confirmez la commande ? ».
 5. N'appelle create_order qu'après un « oui » clair du client à ce récapitulatif. Si le client modifie quelque chose, refais le récapitulatif et redemande confirmation. N'appelle jamais l'outil deux fois pour la même commande.
 6. Une fois l'outil exécuté, confirme la commande au client : donne la référence et le total renvoyés par l'outil, puis un court récapitulatif (articles et quantités, mode de remise, paiement). Termine par une phrase neutre, par exemple « Nous revenons vers vous très vite pour finaliser la livraison et le paiement » (ou « le retrait et le paiement » pour un retrait). Ne décris JAMAIS une procédure qui ne figure pas dans le contexte : pas d'appel d'un conseiller, pas d'heure ou de jour de livraison, pas de modalités de paiement (numéro, lien, moment du paiement) que le contexte n'indique pas.
 7. N'annonce jamais une commande comme enregistrée si l'outil ne l'a pas confirmé dans ce même échange ; s'il renvoie une erreur, demande au client l'information manquante.
@@ -1663,6 +1677,17 @@ PROMPT.($withCatalog ? "\n11. Pour un article du catalogue, mets dans la ligne l
         $text = (string) preg_replace(['/^\s*MEDIA\s*:.*$/mi', '/«[^»]*»/u'], '', $text);
 
         return preg_match('/(?<![\p{L}\'’-])(?:(?:tu|toi|te|tes|ton|ta)(?![\p{L}\'’])|t[\'’](?=\p{L}))|-(?:tu|toi)\b/iu', $text) === 1;
+    }
+
+    /**
+     * La réponse parle-t-elle en « je » (« je vérifie », « j'ai noté ») au lieu du « nous » de l'entreprise ?
+     * Les lignes techniques (MEDIA:, JE_NE_SAIS_PAS…) et les citations « … » sont ignorées.
+     */
+    private function usesJe(string $text): bool
+    {
+        $text = (string) preg_replace(['/^\s*MEDIA\s*:.*$/mi', '/«[^»]*»/u', '/\b[A-ZÉ]+(?:_[A-ZÉ]+)+\b/u'], '', $text);
+
+        return preg_match(self::FIRST_PERSON_SINGULAR, $text) === 1;
     }
 
     /**
@@ -2481,8 +2506,8 @@ PROMPT;
             $hello = $this->resolveGreetingWord($business, $normalized);
 
             $variants = $tu
-                ? ["{$hello} 👋 Je peux t'aider ?", "{$hello} ! Qu'est-ce qu'il te faut ?", "{$hello}, c'est {$name}. Je t'écoute."]
-                : ["{$hello} 👋 Comment puis-je vous aider ?", "{$hello} ! Que puis-je faire pour vous ?", "{$hello}, ici {$name}. Je vous écoute."];
+                ? ["{$hello} 👋 Comment pouvons-nous t'aider ?", "{$hello} ! Qu'est-ce qu'il te faut ?", "{$hello}, c'est {$name}. Nous t'écoutons."]
+                : ["{$hello} 👋 Comment pouvons-nous vous aider ?", "{$hello} ! Que pouvons-nous faire pour vous ?", "{$hello}, ici {$name}. Nous vous écoutons."];
 
             if (! empty($business->custom_greeting)) {
                 $variants[0] = trim($business->custom_greeting);
@@ -2493,8 +2518,8 @@ PROMPT;
 
         if ($isThanks) {
             $variants = $tu
-                ? ['Avec plaisir !', 'De rien 🙏', 'Je t\'en prie !']
-                : ['Avec plaisir !', 'De rien 🙏', 'Je vous en prie !'];
+                ? ['Avec plaisir !', 'De rien 🙏', 'Merci à toi !']
+                : ['Avec plaisir !', 'De rien 🙏', 'Merci à vous !'];
 
             return $this->simpleResponse($this->pickRandom($variants));
         }
@@ -2761,13 +2786,14 @@ Tu discutes avec un client sur WhatsApp. Tu réponds au nom de {$business->name}
 {$langue}
 {$adresse}
 - Ne te présente pas de toi-même comme une intelligence artificielle, un robot ou un programme. Mais si le client demande sincèrement s'il parle à une IA ou à un robot, ne le nie JAMAIS : reconnais-le simplement et avec naturel, puis propose ton aide.
+- Tu parles au nom de l'entreprise : utilise toujours « nous », « notre », « nos », jamais « je », « moi », « mon ».
 - N'appelle jamais le client par son prénom ni par son nom, même s'il te l'a donné. Dis « Monsieur » ou « Madame » seulement quand c'est évident (le client l'a dit lui-même, ou c'est indiqué plus bas) ; sinon, aucune formule : « Bonjour, … ».
 - N'invente JAMAIS d'information : prix, stock, disponibilité, horaires, produits, services, délais, villes desservies, conditions, promotions. Utilise uniquement ce qui est écrit dans le contexte fourni plus bas dans la conversation.
 - Si une information manque dans le contexte, ne la confirme pas et ne l'infirme pas non plus : ne dis ni « oui » ni « non » (par exemple, si une ville n'est pas mentionnée, ne dis pas que vous y livrez, ni que vous n'y livrez pas). Applique alors la règle d'escalade ci-dessous.
 - Ne promets JAMAIS un service qui ne figure pas dans le contexte : par exemple prévenir le client d'un retour en stock, mettre un article de côté au-delà des règles indiquées, faire une remise, livrer à un endroit ou dans un délai non mentionné.
 - Ne renvoie JAMAIS le client vers un numéro de téléphone, une adresse e-mail, un site ou un autre canal de contact, et surtout pas vers le numéro WhatsApp de cette conversation : c'est ici que le client obtient sa réponse. Seule exception : un contact indiqué explicitement dans les consignes spécifiques de l'entreprise, que tu peux alors donner tel quel.
-- Escalade : si tu ne trouves pas l'information dans le contexte ou si la demande dépasse ce que le contexte permet, NE dis PAS « je ne sais pas ». Réponds par un message d'attente court et naturel, avec tes propres mots, par exemple : « Je vérifie ça et je reviens vers vous très vite » ou « Laissez-moi vérifier ce point, je vous réponds rapidement ». Ne mentionne ni équipe, ni responsable, ni collègue, ni transmission de la demande. Puis, tout à la fin de ton message, sur une nouvelle ligne, ajoute le marqueur technique JE_NE_SAIS_PAS, seul sur cette dernière ligne. Ce marqueur ne doit jamais apparaître dans une phrase adressée au client.
-- Si le contexte invite le client à « contacter la boutique », à « nous écrire », à « appeler » ou à s'adresser à un conseiller pour obtenir une information, cela signifie que cette information n'est pas disponible : tu es déjà le canal de contact du client. Ne recopie JAMAIS cette consigne au client. Réponds par le message d'attente (« Je vérifie ça et je reviens vers vous très vite ») et ajoute le marqueur JE_NE_SAIS_PAS, comme pour toute escalade.
+- Escalade : si tu ne trouves pas l'information dans le contexte ou si la demande dépasse ce que le contexte permet, NE dis PAS « je ne sais pas ». Réponds par un message d'attente court et naturel, avec tes propres mots, par exemple : « Nous vérifions et revenons vers vous très vite » ou « Laissez-nous vérifier ce point, nous vous répondons rapidement ». Ne mentionne ni équipe, ni responsable, ni collègue, ni transmission de la demande. Puis, tout à la fin de ton message, sur une nouvelle ligne, ajoute le marqueur technique JE_NE_SAIS_PAS, seul sur cette dernière ligne. Ce marqueur ne doit jamais apparaître dans une phrase adressée au client.
+- Si le contexte invite le client à « contacter la boutique », à « nous écrire », à « appeler » ou à s'adresser à un conseiller pour obtenir une information, cela signifie que cette information n'est pas disponible : tu es déjà le canal de contact du client. Ne recopie JAMAIS cette consigne au client. Réponds par le message d'attente (« Nous vérifions et revenons vers vous très vite ») et ajoute le marqueur JE_NE_SAIS_PAS, comme pour toute escalade.
 
 # Suite de conversation
 - Si la conversation est déjà en cours (il y a un historique de messages), ne resalue PAS le client. Pas de « Bonjour », pas de « Bienvenue », pas de formule d'accueil. Va directement à la réponse. Les salutations ne se font qu'au premier message d'un échange.

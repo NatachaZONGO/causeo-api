@@ -66,7 +66,7 @@ class ConversationSessionTest extends TestCase
     public function test_messages_before_a_pause_longer_than_6_hours_are_not_sent(): void
     {
         $this->addMessage('2026-10-08 08:00:00', 'inbound', 'Je veux 2 pagnes wax bleus.');
-        $this->addMessage('2026-10-08 08:01:00', 'outbound', "Récapitulatif : 2 × Pagne wax bleu, 15 000 FCFA. Je confirme la commande ?");
+        $this->addMessage('2026-10-08 08:01:00', 'outbound', "Récapitulatif : 2 × Pagne wax bleu, 15 000 FCFA. Vous confirmez la commande ?");
         $this->addMessage('2026-10-08 18:00:00', 'inbound', 'Vous avez des sacs ?');
 
         $this->service()->answer($this->business, 'Vous avez des sacs ?', $this->conversationId);
@@ -132,7 +132,7 @@ class ConversationSessionTest extends TestCase
     public function test_greeting_alone_after_a_pause_does_not_resume_the_old_topic(): void
     {
         $this->addMessage('2026-10-06 10:00:00', 'inbound', 'Je veux 2 pagnes wax bleus.');
-        $this->addMessage('2026-10-06 10:01:00', 'outbound', 'Récapitulatif : 2 × Pagne wax bleu, 15 000 FCFA. Je confirme la commande ?');
+        $this->addMessage('2026-10-06 10:01:00', 'outbound', 'Récapitulatif : 2 × Pagne wax bleu, 15 000 FCFA. Vous confirmez la commande ?');
 
         $this->addMessage('2026-10-08 18:00:00', 'inbound', 'Bonsoir');
         $greeting = $this->service()->answer($this->business, 'Bonsoir', $this->conversationId);
@@ -153,7 +153,7 @@ class ConversationSessionTest extends TestCase
     public function test_longer_opening_after_a_pause_gets_the_new_exchange_rule(): void
     {
         $this->addMessage('2026-10-06 10:00:00', 'inbound', 'Je veux 2 pagnes wax bleus.');
-        $this->addMessage('2026-10-06 10:01:00', 'outbound', 'Récapitulatif : 2 × Pagne wax bleu, 15 000 FCFA. Je confirme la commande ?');
+        $this->addMessage('2026-10-06 10:01:00', 'outbound', 'Récapitulatif : 2 × Pagne wax bleu, 15 000 FCFA. Vous confirmez la commande ?');
         $question = "Bonsoir, j'espère que vous allez bien, j'avais une petite question pour vous";
         $this->addMessage('2026-10-08 18:00:00', 'inbound', $question);
 

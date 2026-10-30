@@ -124,7 +124,7 @@ class AppointmentTest extends TestCase
     {
         $this->seedRecapConversation();
         $this->business->update(['modules' => []]);
-        Http::fake(['api.anthropic.com/*' => Http::response($this->textResponse('Je vérifie ça et je reviens vers vous très vite 😊'))]);
+        Http::fake(['api.anthropic.com/*' => Http::response($this->textResponse('Nous vérifions et revenons vers vous très vite 😊'))]);
 
         $this->service()->answer($this->business, 'oui', $this->conversationId);
 
@@ -209,7 +209,7 @@ class AppointmentTest extends TestCase
 
         $result = $this->service()->answer($this->business, 'oui', $this->conversationId);
 
-        $this->assertSame('Je vérifie ça et je reviens vers vous très vite 😊', $result['answer']);
+        $this->assertSame('Nous vérifions et revenons vers vous très vite 😊', $result['answer']);
         $this->assertTrue($result['should_escalate']);
         $this->assertTrue($result['tool_trace']['blocked_claim']);
         $this->assertSame(0, Appointment::count());
@@ -233,16 +233,16 @@ class AppointmentTest extends TestCase
     public function test_recap_question_and_future_confirmation_are_allowed(): void
     {
         Http::fake(['api.anthropic.com/*' => Http::sequence()
-            ->push($this->textResponse("Tresses, samedi 10 octobre à 15h, 15 000 FCFA. Je confirme le rendez-vous ?\nLe créneau sera confirmé par le salon."))
-            ->push($this->textResponse('Je vous confirme le rendez-vous de samedi.'))
-            ->push($this->textResponse('Très bien, je note.')),
+            ->push($this->textResponse("Tresses, samedi 10 octobre à 15h, 15 000 FCFA. Nous confirmons le rendez-vous ?\nLe créneau sera confirmé par le salon."))
+            ->push($this->textResponse('Nous vous confirmons le rendez-vous de samedi.'))
+            ->push($this->textResponse('Très bien, nous notons.')),
         ]);
 
         $recap = $this->service()->answer($this->business, 'Je veux des tresses samedi à 15h', $this->conversationId);
         $blocked = $this->service()->answer($this->business, 'Je veux des tresses samedi à 15h', $this->conversationId);
 
         $this->assertStringStartsWith('Tresses, samedi 10 octobre', $recap['answer']);
-        $this->assertSame('Très bien, je note.', $blocked['answer']);
+        $this->assertSame('Très bien, nous notons.', $blocked['answer']);
         Http::assertSentCount(3);
     }
 
@@ -438,7 +438,7 @@ class AppointmentTest extends TestCase
     // --- Cas qui faisaient perdre des demandes -----------------------------------------------------
 
     /**
-     * « Ok merci » après « J'enregistre votre demande ? » recevait la réponse toute faite
+     * « Ok merci » après « Nous enregistrons votre demande ? » recevait la réponse toute faite
      * « Avec plaisir ! », sans appel à Claude : la demande n'était jamais enregistrée.
      */
     public function test_ok_merci_after_the_recap_is_a_confirmation_handled_by_claude(): void
@@ -480,12 +480,12 @@ class AppointmentTest extends TestCase
         $this->seedRecapConversation();
         Http::fake(['api.anthropic.com/*' => Http::sequence()
             ->push($this->textResponse($claim))
-            ->push($this->textResponse('Tresses, samedi 10 octobre à 15h. J\'enregistre votre demande ?')),
+            ->push($this->textResponse('Tresses, samedi 10 octobre à 15h. Nous enregistrons votre demande ?')),
         ]);
 
         $result = $this->service()->answer($this->business, 'oui', $this->conversationId);
 
-        $this->assertSame('Tresses, samedi 10 octobre à 15h. J\'enregistre votre demande ?', $result['answer']);
+        $this->assertSame('Tresses, samedi 10 octobre à 15h. Nous enregistrons votre demande ?', $result['answer']);
         Http::assertSentCount(2);
         $this->assertSame(0, Appointment::count());
     }
@@ -525,8 +525,8 @@ class AppointmentTest extends TestCase
         return [
             'créneau déjà pris' => ['Désolé, ce créneau est déjà pris. 16h vous irait ?'],
             'horaires' => ['Les rendez-vous sont pris du mardi au samedi, de 9h à 19h.'],
-            'question de récapitulatif' => ['Tresses samedi 10 octobre à 15h : je note votre rendez-vous ?'],
-            'je note' => ['Très bien, je note.'],
+            'question de récapitulatif' => ['Tresses samedi 10 octobre à 15h : nous notons votre rendez-vous ?'],
+            'nous notons' => ['Très bien, nous notons.'],
         ];
     }
 
@@ -535,19 +535,19 @@ class AppointmentTest extends TestCase
         $this->business->update(['modules' => []]);
         Http::fake(['api.anthropic.com/*' => Http::sequence()
             ->push($this->textResponse('C\'est noté pour samedi à 15h !'))
-            ->push($this->textResponse("Je transmets votre demande pour samedi à 15h au gérant, qui reviendra vers vous.\nJE_NE_SAIS_PAS")),
+            ->push($this->textResponse("Nous transmettons votre demande pour samedi à 15h au gérant, qui reviendra vers vous.\nJE_NE_SAIS_PAS")),
         ]);
 
         $result = $this->service()->answer($this->business, 'Je veux des tresses samedi à 15h', $this->conversationId);
 
-        $this->assertSame('Je transmets votre demande pour samedi à 15h au gérant, qui reviendra vers vous.', $result['answer']);
+        $this->assertSame('Nous transmettons votre demande pour samedi à 15h au gérant, qui reviendra vers vous.', $result['answer']);
         $this->assertTrue($result['should_escalate']);
         $this->assertSame(0, Appointment::count());
 
         $requests = Http::recorded()->map(fn (array $pair) => $pair[0]->data());
         $this->assertArrayNotHasKey('tools', $requests[0]);
         $this->assertStringContainsString('# Demandes de rendez-vous ou de réservation', $this->systemPrompt($requests[0]));
-        $this->assertStringContainsString('tu transmets sa demande au gérant', $this->systemPrompt($requests[0]));
+        $this->assertStringContainsString('nous transmettons sa demande au gérant', $this->systemPrompt($requests[0]));
         $correction = collect($requests[1]['messages'])->last()['content'];
         $this->assertStringContainsString('module Rendez-vous inactif', $correction);
         $this->assertStringContainsString('JE_NE_SAIS_PAS', $correction);
@@ -564,7 +564,7 @@ class AppointmentTest extends TestCase
 
         $result = $this->service()->answer($this->business->fresh(), 'Je veux des tresses samedi à 15h', $this->conversationId);
 
-        $this->assertSame('Je vérifie ça et je reviens vers vous très vite 😊', $result['answer']);
+        $this->assertSame('Nous vérifions et revenons vers vous très vite 😊', $result['answer']);
         $this->assertTrue($result['should_escalate']);
         $this->assertStringContainsString('# Demandes de rendez-vous ou de réservation', $this->systemPrompt(Http::recorded()[0][0]->data()));
     }
@@ -690,7 +690,7 @@ class AppointmentTest extends TestCase
     {
         $messages = [
             ['inbound', 'Je veux des tresses samedi à 15h. Je suis Awa Ouédraogo.'],
-            ['outbound', "Récapitulatif :\nTresses, samedi 10 octobre à 15h : 15 000 FCFA\nJ'enregistre votre demande ?"],
+            ['outbound', "Récapitulatif :\nTresses, samedi 10 octobre à 15h : 15 000 FCFA\nNous enregistrons votre demande ?"],
             ['inbound', $confirmation],
         ];
 
@@ -719,7 +719,7 @@ class AppointmentTest extends TestCase
             'role' => 'assistant',
             'stop_reason' => 'tool_use',
             'content' => [
-                ['type' => 'text', 'text' => "J'enregistre votre demande."],
+                ['type' => 'text', 'text' => "Nous enregistrons votre demande."],
                 ['type' => 'tool_use', 'id' => 'toolu_1', 'name' => 'create_appointment', 'input' => $input],
             ],
         ];

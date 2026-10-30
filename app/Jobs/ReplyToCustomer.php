@@ -210,7 +210,7 @@ class ReplyToCustomer implements ShouldQueue
         // Message personnel destiné au gérant : escaladé sans réponse au client.
         $silent = $escalated && ! empty($result['silent']);
         $answer = EmojiStyle::apply($business, $escalated
-            ? ($result['answer'] ?? 'Merci pour votre message ! Je vérifie ça et je reviens vers vous très vite 😊')
+            ? ($result['answer'] ?? 'Merci pour votre message ! Nous vérifions et revenons vers vous très vite 😊')
             : (string) $result['answer']);
 
         // Relance sur une demande déjà transmise : pas de nouvelle escalade, le gérant est alerté de nouveau.

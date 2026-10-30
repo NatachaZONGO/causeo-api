@@ -67,7 +67,7 @@ class AppointmentLeadTest extends TestCase
         Http::fake(['api.anthropic.com/*' => Http::sequence()
             ->push($this->text('Avec plaisir. Pour une tenue sur mesure, il faut prendre vos mesures en boutique : on fixe un rendez-vous ?'))
             ->push($this->text('Très bien. Demain samedi 31 octobre à 10h ou lundi 2 novembre à 15h ?'))
-            ->push($this->text("{$service}, lundi 2 novembre à 15h. J'enregistre votre demande ?"))
+            ->push($this->text("{$service}, lundi 2 novembre à 15h. Nous enregistrons votre demande ?"))
             ->push($this->toolUse(['service' => $service, 'requested_date' => '2026-11-02', 'requested_time' => '15h']))
             ->push($this->text('Votre demande est enregistrée. Le créneau vous sera confirmé très vite.')),
         ]);
@@ -75,7 +75,7 @@ class AppointmentLeadTest extends TestCase
         $this->turn('Bonjour, je veux une tenue sur mesure');
         $this->turn("J'aimerais passer voir");
         $slots = $this->turn('Lundi 15h');
-        $this->assertStringContainsString("J'enregistre votre demande ?", $slots['answer']);
+        $this->assertStringContainsString("Nous enregistrons votre demande ?", $slots['answer']);
         $this->assertSame(0, Appointment::count());
 
         $result = $this->turn('Oui');

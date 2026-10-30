@@ -215,7 +215,7 @@ class ReplyPacingTest extends TestCase
     public function test_an_escalated_burst_creates_one_escalation_with_all_the_messages(): void
     {
         Queue::fake([ReplyToCustomer::class, SendCustomerReply::class]);
-        $this->claudeAnswer = "Je vérifie ça et je reviens vers vous très vite 😊\nJE_NE_SAIS_PAS";
+        $this->claudeAnswer = "Nous vérifions et revenons vers vous très vite 😊\nJE_NE_SAIS_PAS";
 
         $this->receive('Vous livrez à Bobo ?', 'wamid.1');
         $this->travel(2)->seconds();
@@ -228,7 +228,7 @@ class ReplyPacingTest extends TestCase
         $this->assertSame("Vous livrez à Bobo ?\nEt à Koudougou ?", $escalation->customer_question);
         $this->assertSame(Message::where('whatsapp_message_id', 'wamid.2')->value('id'), $escalation->message_id);
         $this->assertSame(['escalated', 'escalated'], Message::where('direction', 'inbound')->orderBy('created_at')->pluck('status')->all());
-        $this->assertSame(['Je vérifie ça et je reviens vers vous très vite'], FakeWhatsAppService::$sent);
+        $this->assertSame(['Nous vérifions et revenons vers vous très vite'], FakeWhatsAppService::$sent);
     }
 
     public function test_without_a_fake_queue_the_reply_goes_out_in_the_same_flow(): void

@@ -29,8 +29,8 @@ final class MediaMessage
 
     /** Réponse par défaut au client quand le gérant a activé la réponse aux médias non traités. */
     public const FALLBACK_MESSAGES = [
-        'document' => 'Merci pour votre document ! Je le transmets tout de suite au responsable, qui vous répondra rapidement.',
-        'video' => 'Merci pour votre vidéo ! Je la transmets tout de suite au responsable, qui vous répondra rapidement.',
+        'document' => 'Merci pour votre document ! Nous le transmettons tout de suite au responsable, qui vous répondra rapidement.',
+        'video' => 'Merci pour votre vidéo ! Nous la transmettons tout de suite au responsable, qui vous répondra rapidement.',
     ];
 
     /**

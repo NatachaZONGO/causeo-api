@@ -238,7 +238,7 @@ class VoiceMessageTest extends TestCase
     public function test_the_default_text_ends_with_a_single_period(): void
     {
         $this->assertSame(
-            'Merci pour votre message vocal ! Je le transmets tout de suite au responsable, qui vous répondra rapidement.',
+            'Merci pour votre message vocal ! Nous le transmettons tout de suite au responsable, qui vous répondra rapidement.',
             WebhookController::VOICE_FALLBACK_MESSAGE,
         );
         $this->assertDoesNotMatchRegularExpression('/\.\.$/', WebhookController::VOICE_FALLBACK_MESSAGE);

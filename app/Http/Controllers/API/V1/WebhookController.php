@@ -50,7 +50,7 @@ class WebhookController extends Controller
     public const VOICE_PLACEHOLDER = '🎤 Message vocal';
 
     /** Réponse au client quand son vocal va au gérant (autre langue, incompréhensible, trop long). */
-    public const VOICE_FALLBACK_MESSAGE = 'Merci pour votre message vocal ! Je le transmets tout de suite au responsable, qui vous répondra rapidement.';
+    public const VOICE_FALLBACK_MESSAGE = 'Merci pour votre message vocal ! Nous le transmettons tout de suite au responsable, qui vous répondra rapidement.';
 
     public function __construct(
         private readonly WhatsAppService $whatsApp,

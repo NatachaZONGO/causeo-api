@@ -43,7 +43,7 @@ class StatusPostsAndCatalogTruthTest extends TestCase
 
     private const ROBE = 'Robe longue noire à paillettes';
 
-    private const HANDOFF = 'Merci pour votre message, je le transmets au responsable qui vous répondra rapidement.';
+    private const HANDOFF = 'Merci pour votre message, nous le transmettons au responsable qui vous répondra rapidement.';
 
     private User $owner;
 
@@ -135,7 +135,7 @@ class StatusPostsAndCatalogTruthTest extends TestCase
         $this->receive('wamid.1', 'La robe longue noire à paillettes est à combien ?');
 
         $this->assertCount(2, $this->claudeRequests());
-        $this->assertSame(['Je vérifie ça et je reviens vers vous très vite'], FakeWhatsAppService::$sent);
+        $this->assertSame(['Nous vérifions et revenons vers vous très vite'], FakeWhatsAppService::$sent);
         $this->assertSame(1, Escalation::count());
     }
 
@@ -191,7 +191,7 @@ class StatusPostsAndCatalogTruthTest extends TestCase
         $this->assertSame([], $this->claudeRequests());
 
         // Une nouvelle demande de service passe par l'assistant.
-        $this->claudeAnswers = ['Je vérifie ça et je reviens vers vous très vite'."\nJE_NE_SAIS_PAS"];
+        $this->claudeAnswers = ['Nous vérifions et revenons vers vous très vite'."\nJE_NE_SAIS_PAS"];
         $this->receive('wamid.N1', 'Vous faites des retouches ?', '22672000001');
         $this->assertCount(1, $this->claudeRequests());
     }

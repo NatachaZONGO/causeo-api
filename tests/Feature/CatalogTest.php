@@ -395,14 +395,14 @@ class CatalogTest extends TestCase
         $system = $this->systemPrompt($request);
         $this->assertStringContainsString('Les documents ne servent qu\'aux informations générales', $system);
         $this->assertStringContainsString('Si un document et le catalogue donnent des prix différents, seul le prix du catalogue compte.', $system);
-        $this->assertStringContainsString('« Je ne trouve pas cet article dans notre catalogue »', $system);
+        $this->assertStringContainsString("« Nous n'avons pas cet article dans notre catalogue »", $system);
         $this->assertStringContainsString('Les articles et leurs prix viennent uniquement du catalogue, jamais d\'un document.', $system);
     }
 
     public function test_an_article_missing_from_the_catalog_is_not_sold_from_a_document(): void
     {
         $this->product('Robe de soiree', 15000, [['options' => ['taille' => 'M']]], 'Robes');
-        Http::fake(['api.anthropic.com/*' => Http::response($this->text('Je ne trouve pas cet article dans notre catalogue.'))]);
+        Http::fake(['api.anthropic.com/*' => Http::response($this->text("Nous n'avons pas cet article dans notre catalogue."))]);
 
         (new FixedContextAIResponseService('Sac à main en cuir : 20 000 FCFA.'))
             ->answer($this->business, 'Vous avez des sacs à main en cuir ?', $this->conversationId);

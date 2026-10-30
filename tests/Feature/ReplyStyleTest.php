@@ -347,7 +347,7 @@ class ReplyStyleTest extends TestCase
         $thanks = $this->service()->answer($this->business->fresh(), 'Merci');
         $hello = $this->service()->answer($this->business->fresh(), 'Bonjour');
 
-        $this->assertContains($thanks['answer'], ['Avec plaisir !', 'De rien 🙏', 'Je t\'en prie !']);
+        $this->assertContains($thanks['answer'], ['Avec plaisir !', 'De rien 🙏', 'Merci à toi !']);
         $this->assertDoesNotMatchRegularExpression('/vous|\*/u', $hello['answer']);
         Http::assertNothingSent();
     }
@@ -366,11 +366,11 @@ class ReplyStyleTest extends TestCase
 
         // Les messages envoyés au client sont nettoyés, sans casser la ponctuation française.
         $business = $this->business->fresh();
-        $this->assertSame("Merci, j'ai bien reçu votre capture. Le responsable va vérifier.", EmojiStyle::apply($business, "Merci, j'ai bien reçu votre capture 🙏 Le responsable va vérifier."));
+        $this->assertSame("Merci, nous avons bien reçu votre capture. Le responsable va vérifier.", EmojiStyle::apply($business, "Merci, nous avons bien reçu votre capture 🙏 Le responsable va vérifier."));
         $this->assertSame('Parfait. Il vous faut autre chose ?', EmojiStyle::apply($business, 'Parfait 👍 Il vous faut autre chose ?'));
         $this->assertSame('Super ! Elle est disponible.', EmojiStyle::apply($business, 'Super 😊😊 ! Elle est disponible.'));
         $this->assertSame('Bonsoir 👋 Comment puis-je vous aider ?', EmojiStyle::apply($business, 'Bonsoir 👋👋 Comment puis-je vous aider ? ❤️'));
-        $this->assertSame('Je vérifie ça et je reviens vers vous très vite', EmojiStyle::apply($business, 'Je vérifie ça et je reviens vers vous très vite 😊'));
+        $this->assertSame('Nous vérifions et revenons vers vous très vite', EmojiStyle::apply($business, 'Nous vérifions et revenons vers vous très vite 😊'));
     }
 
     public function test_the_owner_can_still_choose_sometimes_or_often(): void
@@ -405,7 +405,7 @@ class ReplyStyleTest extends TestCase
         $this->assertGreaterThan(strpos($stable, 'Tu tutoies, tu écris court'), strrpos($stable, 'Vouvoie toujours'));
 
         $thanks = $this->service()->answer($business, 'Merci');
-        $this->assertContains($thanks['answer'], ['Avec plaisir !', 'De rien 🙏', 'Je vous en prie !']);
+        $this->assertContains($thanks['answer'], ['Avec plaisir !', 'De rien 🙏', 'Merci à vous !']);
     }
 
     /**
@@ -457,6 +457,92 @@ class ReplyStyleTest extends TestCase
             'mots contenant ta, te, tu' => ['Nous sommes à Karpala, la boutique est ouverte : venez tester la tunique en coton.'],
             'citation du client' => ['Vous parlez du modèle « tu vas adorer » ? Il est à 12 000 F.'],
         ];
+    }
+
+    // --- « Nous » au nom de l'entreprise ----------------------------------------------------------
+
+    public function test_the_prompt_speaks_for_the_business_with_nous(): void
+    {
+        $this->service()->answer($this->business->fresh(), 'Vous avez le pagne bleu ?');
+
+        $stable = $this->sentRequest()['system'][0]['text'];
+        $this->assertStringContainsString("- Tu parles au nom de l'entreprise : utilise toujours « nous », « notre », « nos », jamais « je », « moi », « mon ».", $stable);
+        $this->assertStringContainsString('« Nous vérifions et revenons vers vous très vite »', $stable);
+        $this->assertStringNotContainsString('Je vérifie', $stable);
+        $this->assertStringNotContainsString('Laissez-moi', $stable);
+    }
+
+    public function test_a_reply_that_says_je_is_rewritten_with_nous(): void
+    {
+        $this->claudeReplies = ["Je vérifie la couleur et je reviens vers vous. J'ai noté le pagne bleu.", 'Nous vérifions la couleur et revenons vers vous. Nous avons noté le pagne bleu.'];
+
+        $result = $this->service()->answer($this->business->fresh(), 'Vous avez le pagne bleu ?');
+
+        $this->assertSame('Nous vérifions la couleur et revenons vers vous. Nous avons noté le pagne bleu.', $result['answer']);
+        $requests = Http::recorded()->map(fn (array $pair) => $pair[0]->data())->values();
+        $this->assertCount(2, $requests);
+        $correction = collect($requests[1]['messages'])->last()['content'];
+        $this->assertStringContainsString('avec « nous », « notre », « nos », jamais « je », « moi » ni « mon »', $correction);
+        $this->assertStringNotContainsString('vouvoyant', $correction);
+    }
+
+    public function test_tu_and_je_are_fixed_in_a_single_rewrite(): void
+    {
+        $this->claudeReplies = ['Je te réserve la chemise ?', 'Nous vous réservons la chemise ?'];
+
+        $this->assertSame('Nous vous réservons la chemise ?', $this->service()->answer($this->business->fresh(), 'Je veux une chemise')['answer']);
+        $requests = Http::recorded()->map(fn (array $pair) => $pair[0]->data())->values();
+        $this->assertCount(2, $requests);
+        $correction = collect($requests[1]['messages'])->last()['content'];
+        $this->assertStringContainsString('en le vouvoyant', $correction);
+        $this->assertStringContainsString('au nom de l\'entreprise', $correction);
+    }
+
+    public function test_the_first_reply_is_kept_if_the_rewrite_still_says_je(): void
+    {
+        $this->claudeReplies = ['Je regarde ça.', 'Je vérifie.'];
+
+        $this->assertSame('Je regarde ça.', $this->service()->answer($this->business->fresh(), 'Vous avez le pagne bleu ?')['answer']);
+        Http::assertSentCount(2);
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('repliesWithoutJe')]
+    public function test_replies_with_nous_are_sent_without_rewrite(string $reply): void
+    {
+        $this->claudeReplies = [$reply];
+
+        $this->service()->answer($this->business->fresh(), 'Vous avez le pagne bleu ?');
+
+        Http::assertSentCount(1);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function repliesWithoutJe(): array
+    {
+        return [
+            'nous' => ['Oui, nous l\'avons en bleu à 7 500 FCFA.'],
+            'mots contenant je' => ['Le jean et le projet de jeudi : nous livrons aujourd\'hui.'],
+            'citation du client' => ['Vous parlez du modèle « je t\'aime » ? Il est à 12 000 F.'],
+            'marqueur technique' => ["Nous vérifions et revenons vers vous très vite.\nJE_NE_SAIS_PAS"],
+        ];
+    }
+
+    public function test_canned_replies_never_say_je(): void
+    {
+        foreach (['vous', 'tu'] as $address) {
+            $this->business->update(['reply_style' => ['address' => $address]]);
+
+            foreach (['Bonjour', 'Merci', 'Au revoir'] as $message) {
+                for ($i = 0; $i < 10; $i++) {
+                    $answer = $this->service()->answer($this->business->fresh(), $message)['answer'];
+                    $this->assertDoesNotMatchRegularExpression('/(?<![\p{L}\'’-])(?:je(?![\p{L}\'’])|j[\'’](?=\p{L}))/iu', $answer);
+                }
+            }
+        }
+
+        Http::assertNothingSent();
     }
 
     public function test_with_tu_chosen_nothing_is_rewritten(): void
