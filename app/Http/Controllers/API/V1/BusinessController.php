@@ -10,6 +10,7 @@ use App\Support\ActivityProfile;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 
 class BusinessController extends Controller
 {
@@ -38,6 +39,11 @@ class BusinessController extends Controller
             ? $this->normalizeModules($data['modules'])
             : Business::defaultModulesFor($data['type']);
         $data['activity_profile'] ??= ActivityProfile::forType($data['type']);
+
+        // « Autre » : le gérant choisit son activité, jamais boutique par défaut.
+        if ($data['activity_profile'] === null) {
+            throw ValidationException::withMessages(['activity_profile' => ActivityProfile::CHOICE_REQUIRED_MESSAGE]);
+        }
 
         $business = auth()->user()->businesses()->create($data);
 

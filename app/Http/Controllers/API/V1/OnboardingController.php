@@ -12,6 +12,8 @@ use App\Support\ActivityProfile;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 
 class OnboardingController extends Controller
 {
@@ -31,6 +33,8 @@ class OnboardingController extends Controller
             'phone' => ['nullable', 'string', 'max:20'],
             'address' => ['nullable', 'string', 'max:255'],
             'city' => ['nullable', 'string', 'max:100'],
+            // Activité choisie par le gérant : obligatoire pour le modèle « Autre » (activity_question).
+            'activity_profile' => ['nullable', Rule::in(ActivityProfile::AVAILABLE)],
         ], [
             'template_id.required' => 'Le template est obligatoire.',
             'template_id.exists' => 'Le template sélectionné n\'existe pas.',
@@ -39,6 +43,7 @@ class OnboardingController extends Controller
             'phone.max' => 'Le téléphone ne doit pas dépasser 20 caractères.',
             'address.max' => 'L\'adresse ne doit pas dépasser 255 caractères.',
             'city.max' => 'La ville ne doit pas dépasser 100 caractères.',
+            'activity_profile.in' => ActivityProfile::CHOICE_REQUIRED_MESSAGE,
         ]);
 
         $user = $request->user();
@@ -46,6 +51,11 @@ class OnboardingController extends Controller
         abort_if($user->businesses()->exists(), 422, 'Vous avez déjà une entreprise enregistrée.');
 
         $template = BusinessTemplate::findOrFail($data['template_id']);
+        $profile = $data['activity_profile'] ?? ActivityProfile::forType($template->type);
+
+        if ($profile === null) {
+            throw ValidationException::withMessages(['activity_profile' => ActivityProfile::CHOICE_REQUIRED_MESSAGE]);
+        }
 
         $business = $user->businesses()->create([
             'name' => $data['business_name'],
@@ -59,7 +69,7 @@ class OnboardingController extends Controller
             'is_active' => true,
             // Le catalogue (Catalogue, Menu ou Prestations) est toujours activé, soumis à la formule.
             'modules' => Business::defaultModulesFor($template->type, $template->default_modules ?? []),
-            'activity_profile' => ActivityProfile::forType($template->type),
+            'activity_profile' => $profile,
         ]);
 
         // Essai Pro (TRIAL_DAYS jours ou TRIAL_UNITS unités), sauf si l'utilisateur a déjà eu un essai.

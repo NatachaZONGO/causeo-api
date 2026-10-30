@@ -52,7 +52,8 @@ return new class extends Migration
         foreach (DB::table('businesses')->get(['id', 'type', 'modules']) as $business) {
             $modules = json_decode((string) $business->modules, true) ?: [];
             DB::table('businesses')->where('id', $business->id)->update([
-                'activity_profile' => ActivityProfile::forType($business->type),
+                // Entreprises existantes « Autre » : boutique, comme avant (les nouvelles choisissent).
+                'activity_profile' => ActivityProfile::forType($business->type) ?? ActivityProfile::BOUTIQUE,
                 'modules' => json_encode(array_values(array_unique([...$modules, 'catalog']))),
             ]);
         }

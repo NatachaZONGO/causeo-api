@@ -214,14 +214,15 @@ class Business extends Model
 
     /**
      * Profil d'activité (boutique, restaurant, services) : celui choisi par le gérant, sinon celui
-     * du modèle choisi à l'inscription.
+     * du modèle choisi à l'inscription. Une ancienne entreprise « Autre » sans choix reste en boutique,
+     * comme avant ; une nouvelle choisit toujours (ActivityProfile::CHOICE_QUESTION).
      */
     public function activityProfile(): string
     {
         $profile = $this->getAttribute('activity_profile');
         $type = $this->type instanceof \BackedEnum ? $this->type->value : $this->type;
 
-        return in_array($profile, ActivityProfile::AVAILABLE, true) ? $profile : ActivityProfile::forType($type);
+        return in_array($profile, ActivityProfile::AVAILABLE, true) ? $profile : (ActivityProfile::forType($type) ?? ActivityProfile::BOUTIQUE);
     }
 
     /**

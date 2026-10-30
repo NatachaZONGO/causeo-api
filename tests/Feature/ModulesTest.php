@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Models\Business;
 use App\Models\BusinessTemplate;
 use App\Models\User;
+use App\Support\ActivityProfile;
 use Database\Seeders\PlanSeeder;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\DB;
@@ -159,6 +160,58 @@ class ModulesTest extends TestCase
             ->assertJsonPath('business.modules', ['catalog'])
             ->assertJsonPath('business.activity_profile', 'services')
             ->assertJsonPath('business.activity.module_label', 'Prestations');
+    }
+
+    public function test_the_other_template_asks_the_activity_instead_of_defaulting_to_boutique(): void
+    {
+        (require base_path(self::MODULES_MIGRATION))->up();
+        (require base_path('database/migrations/2026_10_29_100000_add_activity_profiles.php'))->up();
+        $other = $this->insertTemplate('autre', 'other', ['catalog']);
+        $this->insertTemplate('boutique', 'boutique', ['orders']);
+
+        $this->assertNull(ActivityProfile::forType('other'));
+        $this->assertNull(ActivityProfile::forType('autre'));
+        $this->assertNull(ActivityProfile::forType(null));
+        $this->assertSame('services', ActivityProfile::forType('salon'));
+
+        // L'API d'onboarding renvoie la question pour « Autre » seulement.
+        $templates = collect($this->getJson('/api/v1/templates')->assertOk()->json())->keyBy('slug');
+        $this->assertNull($templates['boutique']['activity_question']);
+        $this->assertSame([
+            'label' => 'Que propose votre activité ?',
+            'options' => [
+                ['value' => 'boutique', 'label' => 'Je vends des produits'],
+                ['value' => 'services', 'label' => 'Je propose des prestations'],
+                ['value' => 'restaurant', 'label' => 'Restauration'],
+            ],
+        ], $templates['autre']['activity_question']);
+
+        // Sans choix : refusé, jamais boutique par défaut.
+        Sanctum::actingAs($this->makeUser());
+        $this->postJson('/api/v1/onboarding', ['template_id' => $other, 'business_name' => 'Chez Ali'])
+            ->assertUnprocessable()
+            ->assertJsonValidationErrors(['activity_profile' => 'Choisissez votre activité : « Je vends des produits » (boutique), « Je propose des prestations » (services) ou « Restauration » (restaurant).']);
+        $this->postJson('/api/v1/onboarding', ['template_id' => $other, 'business_name' => 'Chez Ali', 'activity_profile' => 'hotel'])
+            ->assertUnprocessable()->assertJsonValidationErrors('activity_profile');
+        $this->assertSame(0, Business::count());
+
+        $this->postJson('/api/v1/onboarding', ['template_id' => $other, 'business_name' => 'Chez Ali', 'activity_profile' => 'services'])
+            ->assertCreated()
+            ->assertJsonPath('business.activity_profile', 'services')
+            ->assertJsonPath('business.activity.module_label', 'Prestations');
+
+        // Même règle à la création directe.
+        Sanctum::actingAs($this->makeUser());
+        $this->postJson('/api/v1/businesses', ['name' => 'Divers', 'type' => 'other'])
+            ->assertUnprocessable()->assertJsonValidationErrors('activity_profile');
+        $this->postJson('/api/v1/businesses', ['name' => 'Divers', 'type' => 'other', 'activity_profile' => 'restaurant'])
+            ->assertCreated()->assertJsonPath('business.activity.module_label', 'Menu');
+
+        // Le choix explicite prime aussi sur un modèle connu.
+        Sanctum::actingAs($this->makeUser());
+        $boutique = DB::table('business_templates')->where('slug', 'boutique')->value('id');
+        $this->postJson('/api/v1/onboarding', ['template_id' => $boutique, 'business_name' => 'Joyce', 'activity_profile' => 'services'])
+            ->assertCreated()->assertJsonPath('business.activity_profile', 'services');
     }
 
     public function test_business_creation_uses_the_modules_of_the_template_of_the_same_type(): void

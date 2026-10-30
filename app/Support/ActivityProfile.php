@@ -116,11 +116,40 @@ final class ActivityProfile
         ],
     ];
 
-    /** Profil d'un modèle d'inscription ; boutique pour un modèle inconnu. */
-    public static function forType(?string $type): string
+    /**
+     * Question posée à l'inscription quand le modèle ne dit pas l'activité (« Autre ») : le gérant
+     * choisit, la réponse va dans activity_profile.
+     */
+    public const CHOICE_QUESTION = [
+        'label' => 'Que propose votre activité ?',
+        'options' => [
+            ['value' => self::BOUTIQUE, 'label' => 'Je vends des produits'],
+            ['value' => self::SERVICES, 'label' => 'Je propose des prestations'],
+            ['value' => self::RESTAURANT, 'label' => 'Restauration'],
+        ],
+    ];
+
+    /**
+     * Profil d'un modèle d'inscription, ou null quand le modèle ne le dit pas (« Autre », modèle
+     * inconnu) : le gérant le choisit alors (CHOICE_QUESTION), jamais boutique par défaut.
+     */
+    public static function forType(?string $type): ?string
     {
-        return self::BY_TYPE[$type ?? ''] ?? self::BOUTIQUE;
+        return self::BY_TYPE[$type ?? ''] ?? null;
     }
+
+    /**
+     * Question à poser pour ce modèle (voir CHOICE_QUESTION), ou null si le modèle donne l'activité.
+     *
+     * @return array{label: string, options: list<array{value: string, label: string}>}|null
+     */
+    public static function choiceQuestion(?string $type): ?array
+    {
+        return self::forType($type) === null ? self::CHOICE_QUESTION : null;
+    }
+
+    /** Message d'erreur quand le gérant n'a pas choisi son activité (modèle « Autre »). */
+    public const CHOICE_REQUIRED_MESSAGE = 'Choisissez votre activité : « Je vends des produits » (boutique), « Je propose des prestations » (services) ou « Restauration » (restaurant).';
 
     /**
      * Définition complète d'un profil, telle que l'API la renvoie (clé comprise).

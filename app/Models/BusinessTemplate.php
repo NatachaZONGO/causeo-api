@@ -2,6 +2,8 @@
 
 namespace App\Models;
 
+use App\Support\ActivityProfile;
+use Illuminate\Database\Eloquent\Casts\Attribute;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
@@ -30,6 +32,13 @@ class BusinessTemplate extends Model
     ];
 
     /**
+     * @var list<string>
+     */
+    protected $appends = [
+        'activity_question',
+    ];
+
+    /**
      * Get the attributes that should be cast.
      *
      * @return array<string, string>
@@ -41,5 +50,16 @@ class BusinessTemplate extends Model
             'default_modules' => 'array',
             'is_active' => 'boolean',
         ];
+    }
+
+    /**
+     * Question à poser à l'inscription quand le modèle ne dit pas l'activité (« Autre ») : libellé et
+     * options (value à renvoyer dans activity_profile). Null pour les autres modèles.
+     *
+     * @return Attribute<?array<string, mixed>, never>
+     */
+    protected function activityQuestion(): Attribute
+    {
+        return Attribute::get(fn () => ActivityProfile::choiceQuestion($this->type));
     }
 }
