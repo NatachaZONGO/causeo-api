@@ -105,6 +105,72 @@ class BusinessMediaTest extends TestCase
     /**
      * @param  array<string, mixed>  $extra
      */
+    // --- Modification sans renvoyer le fichier ----------------------------------------------------
+
+    public function test_the_owner_edits_the_name_description_and_keywords_without_the_file(): void
+    {
+        $this->upload(UploadedFile::fake()->image('robe.jpg', 800, 600), ['title' => 'Robe', 'keywords' => '["robe"]'])->assertCreated();
+        $media = BusinessMedia::sole();
+        $file = $media->file_path;
+
+        // Nouvelle description : l'embedding est recalculé avec les mots-clés, le nom et la description.
+        $this->mock(EmbeddingService::class)->shouldReceive('embed')->once()
+            ->with('robe, wax. Robe wax Awa. Robe longue en wax rouge')->andReturn([0.1, 0.2]);
+
+        $this->patchJson("/api/v1/businesses/{$this->business->id}/media/{$media->id}", [
+            'title' => 'Robe wax Awa',
+            'description' => 'Robe longue en wax rouge',
+            'keywords' => ['robe', ' wax ', ''],
+        ])->assertOk()
+            ->assertJsonPath('message', 'Le média a été mis à jour.')
+            ->assertJsonPath('media.title', 'Robe wax Awa')
+            ->assertJsonPath('media.description', 'Robe longue en wax rouge')
+            ->assertJsonPath('media.keywords', ['robe', 'wax'])
+            ->assertJsonPath('media.file_path', $file);
+
+        Storage::disk('supabase_media')->assertExists($file);
+        $this->assertSame(1, BusinessMedia::count());
+    }
+
+    public function test_keywords_can_be_sent_as_text_and_an_unchanged_media_is_not_reembedded(): void
+    {
+        $this->upload(UploadedFile::fake()->image('robe.jpg'), ['title' => 'Robe', 'description' => 'Rouge', 'keywords' => '["robe"]'])->assertCreated();
+        $media = BusinessMedia::sole();
+
+        // Deux recalculs en tout : pas pour la modification sans changement.
+        $this->mock(EmbeddingService::class)->shouldReceive('embed')->twice()->andReturn([0.1]);
+        $this->patchJson("/api/v1/businesses/{$this->business->id}/media/{$media->id}", ['title' => 'Robe', 'description' => 'Rouge', 'keywords' => 'robe'])
+            ->assertOk()->assertJsonPath('media.keywords', ['robe']);
+
+        $this->patchJson("/api/v1/businesses/{$this->business->id}/media/{$media->id}", ['keywords' => 'robe, wax , pagne'])
+            ->assertOk()->assertJsonPath('media.keywords', ['robe', 'wax', 'pagne'])->assertJsonPath('media.title', 'Robe');
+
+        // Description effacée.
+        $this->patchJson("/api/v1/businesses/{$this->business->id}/media/{$media->id}", ['description' => null])
+            ->assertOk()->assertJsonPath('media.description', null);
+    }
+
+    public function test_media_edits_are_validated_and_private(): void
+    {
+        $this->upload(UploadedFile::fake()->image('robe.jpg'))->assertCreated();
+        $media = BusinessMedia::sole();
+
+        $this->patchJson("/api/v1/businesses/{$this->business->id}/media/{$media->id}", ['title' => ''])
+            ->assertUnprocessable()->assertJsonValidationErrors(['title' => 'Le nom est obligatoire.']);
+        $this->patchJson("/api/v1/businesses/{$this->business->id}/media/{$media->id}", ['title' => str_repeat('a', 256)])
+            ->assertUnprocessable()->assertJsonValidationErrors('title');
+
+        // Un média d'une autre entreprise, même la sienne en paramètre : introuvable.
+        $otherId = (string) Str::uuid();
+        DB::table('businesses')->insert(['id' => $otherId, 'user_id' => $this->owner->id, 'name' => 'Autre boutique', 'modules' => '[]']);
+        $this->patchJson("/api/v1/businesses/{$otherId}/media/{$media->id}", ['title' => 'X'])->assertNotFound();
+
+        // L'entreprise d'un autre gérant : interdit.
+        Sanctum::actingAs(User::forceCreate(['name' => 'Intrus', 'email' => 'intrus@example.test', 'password' => 'x']));
+        $this->patchJson("/api/v1/businesses/{$this->business->id}/media/{$media->id}", ['title' => 'X'])->assertForbidden();
+        $this->assertSame('Média', $media->fresh()->title);
+    }
+
     private function upload(UploadedFile $file, array $extra = []): TestResponse
     {
         return $this->post(

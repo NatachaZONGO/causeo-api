@@ -81,6 +81,8 @@ Route::prefix('v1')->middleware('auth:sanctum')->group(function () {
     Route::apiResource('businesses.documents', \App\Http\Controllers\API\V1\DocumentController::class)->shallow()->except('update');
     Route::apiResource('businesses.media', \App\Http\Controllers\API\V1\BusinessMediaController::class)
         ->shallow()->except('update')->parameters(['media' => 'media']);
+    // Nom, description et mots-clés d'un média, sans renvoyer le fichier.
+    Route::patch('businesses/{business}/media/{media}', [\App\Http\Controllers\API\V1\BusinessMediaController::class, 'update']);
 
     Route::get('businesses/{business}/conversations', [ConversationController::class, 'index']);
     Route::get('conversations/{conversation}', [ConversationController::class, 'show']);

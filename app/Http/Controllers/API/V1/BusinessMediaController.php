@@ -124,6 +124,43 @@ class BusinessMediaController extends Controller
     }
 
     /**
+     * Modifier le nom (title), la description et les mots-clés d'un média, sans renvoyer le fichier.
+     * L'embedding (mots-clés, titre et description) est recalculé si l'un d'eux change.
+     */
+    public function update(Request $request, Business $business, BusinessMedia $media): JsonResponse
+    {
+        $this->checkOwnership($business);
+        abort_if($media->business_id !== $business->id, 404, 'Ce média est introuvable.');
+
+        $data = $request->validate([
+            'title' => ['sometimes', 'required', 'string', 'max:255'],
+            'description' => ['sometimes', 'nullable', 'string'],
+            'keywords' => ['sometimes', 'nullable'],
+        ], [
+            'title.required' => 'Le nom est obligatoire.',
+            'title.max' => 'Le nom ne doit pas dépasser 255 caractères.',
+            'description.string' => 'La description doit être un texte.',
+        ]);
+
+        if ($request->has('keywords')) {
+            $data['keywords'] = $this->normalizeKeywords($request->input('keywords'));
+        }
+
+        $media->fill($data);
+        $reembed = $media->isDirty(['title', 'description', 'keywords']);
+        $media->save();
+
+        if ($reembed) {
+            $this->embedKeywords($media);
+        }
+
+        return response()->json([
+            'message' => 'Le média a été mis à jour.',
+            'media' => $media->fresh(),
+        ]);
+    }
+
+    /**
      * Supprimer un média et son fichier.
      */
     public function destroy(BusinessMedia $media): JsonResponse
