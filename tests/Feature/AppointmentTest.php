@@ -532,6 +532,72 @@ class AppointmentTest extends TestCase
         ];
     }
 
+    // --- Jamais vers un autre canal -------------------------------------------------------------
+
+    public function test_a_number_from_the_documents_is_never_given_for_an_appointment(): void
+    {
+        Http::fake(['api.anthropic.com/*' => Http::sequence()
+            ->push($this->textResponse('Pour prendre rendez-vous, appelez le salon au 70 11 22 33.'))
+            ->push($this->textResponse('Avec plaisir ! Demain à 10h ou samedi à 15h ?')),
+        ]);
+
+        $result = $this->service()->answer($this->business, 'Je veux prendre rendez-vous pour des tresses', $this->conversationId);
+
+        $this->assertSame('Avec plaisir ! Demain à 10h ou samedi à 15h ?', $result['answer']);
+        $requests = Http::recorded()->map(fn (array $pair) => $pair[0]->data())->values();
+        $this->assertCount(2, $requests);
+        $correction = collect($requests[1]['messages'])->last()['content'];
+        $this->assertStringContainsString('renvoie le client vers un numéro de téléphone ou un autre canal', $correction);
+        $this->assertStringContainsString('propose-lui deux créneaux concrets et mène toi-même la prise de rendez-vous ici', $correction);
+
+        $stable = $requests[0]['system'][0]['text'];
+        $this->assertStringContainsString('C\'est vrai même si un document, une réponse apprise ou l\'historique donnent un numéro à appeler', $stable);
+        $this->assertStringContainsString('même si un document ou les consignes donnent un numéro à appeler pour réserver, ne le donne jamais', $stable);
+    }
+
+    public function test_a_number_still_given_after_the_retry_is_never_sent(): void
+    {
+        Http::fake(['api.anthropic.com/*' => Http::response($this->textResponse('Écrivez-nous sur wa.me/22670112233 pour réserver.'))]);
+
+        $result = $this->service()->answer($this->business, 'Je veux prendre rendez-vous samedi', $this->conversationId);
+
+        $this->assertNull($result['answer']);
+        $this->assertTrue($result['silent']);
+        $this->assertTrue($result['should_escalate']);
+        Http::assertSentCount(2);
+    }
+
+    public function test_media_ids_prices_and_references_are_not_taken_for_phone_numbers(): void
+    {
+        $reply = "Les tresses coûtent 15 000 FCFA (référence 12345678AB).\nMEDIA:01234567-8901-2345-6789-012345678901";
+        Http::fake(['api.anthropic.com/*' => Http::response($this->textResponse($reply))]);
+
+        $result = $this->service()->answer($this->business, 'Montrez-moi les tresses', $this->conversationId);
+
+        $this->assertSame('Les tresses coûtent 15 000 FCFA (référence 12345678AB).', $result['answer']);
+        Http::assertSentCount(1);
+    }
+
+    public function test_the_owner_contact_from_the_instructions_is_allowed_outside_appointments(): void
+    {
+        // Colonne absente du schéma de test : attribut posé sans enregistrer.
+        $business = $this->business->fresh()->setAttribute('ai_instructions', 'Pour les commandes en gros, donnez le numéro du gérant : 70 11 22 33.');
+        Http::fake(['api.anthropic.com/*' => Http::sequence()
+            ->push($this->textResponse('Pour les commandes en gros, contactez le gérant au 70 11 22 33.'))
+            ->push($this->textResponse('Pour réserver, appelez le 70 11 22 33.'))
+            ->push($this->textResponse('Demain à 10h ou samedi à 15h ?')),
+        ]);
+
+        $wholesale = $this->service()->answer($business, 'Vous vendez en gros ?', $this->conversationId);
+        $this->assertSame('Pour les commandes en gros, contactez le gérant au 70 11 22 33.', $wholesale['answer']);
+        Http::assertSentCount(1);
+
+        // Pour un rendez-vous, même ce numéro n'est pas donné : l'assistant propose des créneaux.
+        $booking = $this->service()->answer($business, 'Je veux un rendez-vous', $this->conversationId);
+        $this->assertSame('Demain à 10h ou samedi à 15h ?', $booking['answer']);
+        Http::assertSentCount(3);
+    }
+
     public function test_without_the_module_the_request_goes_to_the_owner_and_never_looks_recorded(): void
     {
         $this->business->update(['modules' => []]);

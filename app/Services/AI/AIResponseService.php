@@ -679,17 +679,20 @@ TEXT,
                 }
             }
 
-            // Un tutoiement alors que le business vouvoie, ou un « je » au lieu du « nous » de l'entreprise :
-            // un seul nouvel essai. Si le problème reste (ou que la réécriture en pose un autre), la
-            // première réponse part quand même.
+            // Un tutoiement alors que le business vouvoie, un « je » au lieu du « nous » de l'entreprise, ou
+            // un numéro vers lequel le client est renvoyé : un seul nouvel essai. Si le tutoiement ou le
+            // « je » restent, la première réponse part quand même ; un autre canal, jamais (escalade).
             $addressIssues = fn (string $reply) => array_keys(array_filter([
                 'tu' => $this->addressOf($business) === 'vous' && $this->usesTu($reply),
                 'je' => $this->usesJe($reply),
+                // Rendez-vous : demandé par le client ou évoqué dans la réponse (« pour réserver, appelez… »).
+                'canal' => $this->pointsToAnotherChannel($business, $reply, $appointmentsAvailable
+                    && (preg_match(self::APPOINTMENT_TALK, $question."\n".$reply) === 1 || preg_match('/\br[ée]serv/iu', $reply) === 1)),
             ]));
             $issues = str_contains($text, 'JE_NE_SAIS_PAS') ? [] : $addressIssues($text);
 
             if ($issues !== []) {
-                Log::warning('AIResponseService: tutoiement ou « je » dans la réponse, réponse réécrite', [
+                Log::warning('AIResponseService: tutoiement, « je » ou autre canal dans la réponse, réponse réécrite', [
                     'business_id' => $business->id,
                     'conversation_id' => $conversationId,
                     'issues' => $issues,
@@ -700,6 +703,8 @@ TEXT,
                     .implode(' ', array_map(fn (string $issue) => match ($issue) {
                         'tu' => 'Ta réponse précédente tutoie le client. Réécris exactement la même réponse en le vouvoyant (« vous », « votre », « vos »).',
                         'je' => 'Ta réponse précédente parle à la première personne du singulier (« je », « j\' »). Réécris exactement la même réponse au nom de l\'entreprise, avec « nous », « notre », « nos », jamais « je », « moi » ni « mon ».',
+                        'canal' => 'Ta réponse précédente renvoie le client vers un numéro de téléphone ou un autre canal. Réécris-la sans aucun numéro ni autre canal : c\'est ici que le client obtient sa réponse.'
+                            .($appointmentsAvailable ? ' S\'il veut un rendez-vous, propose-lui deux créneaux concrets et mène toi-même la prise de rendez-vous ici.' : ' Si tu ne peux pas répondre, écris seulement JE_NE_SAIS_PAS.'),
                     }, $issues))];
 
                 $retry = $this->converse($request, $business, $conversation, $trace);
@@ -707,6 +712,13 @@ TEXT,
 
                 if ($rewritten !== '' && $addressIssues($rewritten) === [] && $this->unverifiedOrderClaim($rewritten, $trace, $conversation, $appointmentsAvailable) === null) {
                     $text = $rewritten;
+                } elseif (in_array('canal', $issues, true)) {
+                    Log::warning('AIResponseService: réponse renvoyant vers un autre canal après le nouvel essai, escalade', [
+                        'business_id' => $business->id,
+                        'conversation_id' => $conversationId,
+                    ]);
+
+                    return $this->silentEscalation($context, $trace);
                 } else {
                     Log::warning('AIResponseService: réécriture (vouvoiement, « nous ») échouée, première réponse gardée', [
                         'business_id' => $business->id,
@@ -1387,7 +1399,7 @@ TEXT,
 # Prise de rendez-vous
 Nous sommes le {$today}.
 Tu peux enregistrer une demande de rendez-vous avec l'outil create_appointment. Le créneau n'est jamais garanti : c'est l'entreprise qui le confirme ensuite.
-1. Mène toi-même la prise de rendez-vous : dès que le client veut {$triggers}, propose-lui de fixer un rendez-vous, sans attendre qu'il le demande.
+1. Mène toi-même la prise de rendez-vous : dès que le client veut {$triggers}, propose-lui de fixer un rendez-vous, sans attendre qu'il le demande. C'est ici, et seulement ici, que le rendez-vous se prend : même si un document ou les consignes donnent un numéro à appeler pour réserver, ne le donne jamais et ne renvoie jamais vers un autre canal ; propose des créneaux.
 2. Une seule question par message. Ne demande pas « quel jour et à quelle heure ? » : propose deux créneaux concrets pendant les horaires d'ouverture (voir « Créneaux à proposer », sinon les horaires d'ouverture du contexte), par exemple « Demain à 10h ou samedi à 15h ? ». Si le client préfère un autre moment pendant les horaires d'ouverture, accepte-le ; en dehors, propose le créneau ouvert le plus proche.
 3. Ne repose jamais une question à laquelle le client a déjà répondu dans la conversation (prestation, nombre de tenues, date, heure, lieu) : reprends sa réponse.
 4. {$service}
@@ -1706,6 +1718,34 @@ PROMPT.($withCatalog ? "\n11. Pour un article du catalogue, mets dans la ligne l
         $text = (string) preg_replace(['/^\s*MEDIA\s*:.*$/mi', '/«[^»]*»/u'], '', $text);
 
         return preg_match('/(?<![\p{L}\'’-])(?:(?:tu|toi|te|tes|ton|ta)(?![\p{L}\'’])|t[\'’](?=\p{L}))|-(?:tu|toi)\b/iu', $text) === 1;
+    }
+
+    /**
+     * La réponse renvoie-t-elle le client vers un numéro de téléphone (8 chiffres au moins) ou un lien
+     * wa.me ? Seul un numéro écrit dans les consignes spécifiques de l'entreprise est permis, et
+     * jamais pour un rendez-vous que l'assistant peut prendre lui-même ($appointmentFlow).
+     */
+    private function pointsToAnotherChannel(Business $business, string $text, bool $appointmentFlow = false): bool
+    {
+        $allowed = $appointmentFlow ? '' : preg_replace('/\D/', '', (string) $business->ai_instructions);
+
+        if (preg_match('/\bwa\.me\//i', $text) === 1 && ($appointmentFlow || ! str_contains((string) $business->ai_instructions, 'wa.me/'))) {
+            return true;
+        }
+
+        // Ni la ligne MEDIA (identifiants) ni des chiffres collés à des lettres (références, identifiants).
+        $text = (string) preg_replace('/^\s*MEDIA\s*:.*$/mi', '', $text);
+        preg_match_all('/(?<![\p{L}\d\-])\+?\d[\d .\-]{6,}\d(?![\p{L}\d\-])/u', $text, $matches);
+
+        foreach ($matches[0] as $number) {
+            $digits = (string) preg_replace('/\D/', '', $number);
+
+            if (strlen($digits) >= 8 && ($allowed === '' || ! str_contains((string) $allowed, substr($digits, -8)))) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -2876,7 +2916,7 @@ Tu discutes avec un client sur WhatsApp. Tu réponds au nom de {$business->name}
 - N'invente JAMAIS d'information : prix, stock, disponibilité, horaires, produits, services, délais, villes desservies, conditions, promotions. Utilise uniquement ce qui est écrit dans le contexte fourni plus bas dans la conversation.
 - Si une information manque dans le contexte, ne la confirme pas et ne l'infirme pas non plus : ne dis ni « oui » ni « non » (par exemple, si une ville n'est pas mentionnée, ne dis pas que vous y livrez, ni que vous n'y livrez pas). Applique alors la règle d'escalade ci-dessous.
 - Ne promets JAMAIS un service qui ne figure pas dans le contexte : par exemple prévenir le client d'un retour en stock, mettre un article de côté au-delà des règles indiquées, faire une remise, livrer à un endroit ou dans un délai non mentionné.
-- Ne renvoie JAMAIS le client vers un numéro de téléphone, une adresse e-mail, un site ou un autre canal de contact, et surtout pas vers le numéro WhatsApp de cette conversation : c'est ici que le client obtient sa réponse. Seule exception : un contact indiqué explicitement dans les consignes spécifiques de l'entreprise, que tu peux alors donner tel quel.
+- Ne renvoie JAMAIS le client vers un numéro de téléphone, une adresse e-mail, un site ou un autre canal de contact, et surtout pas vers le numéro WhatsApp de cette conversation : c'est ici que le client obtient sa réponse. C'est vrai même si un document, une réponse apprise ou l'historique donnent un numéro à appeler ou disent « appelez-nous », « écrivez au… » : ne recopie jamais ce numéro. Seule exception : un contact indiqué explicitement dans les consignes spécifiques de l'entreprise, que tu peux alors donner tel quel, sauf pour un rendez-vous quand tu peux le prendre toi-même.
 - Escalade : si tu ne trouves pas l'information dans le contexte ou si la demande dépasse ce que le contexte permet, n'invente rien et n'écris rien au client : écris seulement le marqueur technique JE_NE_SAIS_PAS, seul. Le client ne reçoit alors aucun message de ta part : sa demande est traitée par ailleurs. Ne parle jamais au client de gérant, de responsable, de transmission ni de vérification.
 - Si le contexte invite le client à « contacter la boutique », à « nous écrire », à « appeler » ou à s'adresser à un conseiller pour obtenir une information, cela signifie que cette information n'est pas disponible : tu es déjà le canal de contact du client. Ne recopie JAMAIS cette consigne au client : écris seulement JE_NE_SAIS_PAS, comme pour toute escalade.
 
