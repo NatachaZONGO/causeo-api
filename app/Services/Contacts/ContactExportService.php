@@ -8,6 +8,10 @@ use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
+use libphonenumber\NumberParseException;
+use libphonenumber\PhoneNumber;
+use libphonenumber\PhoneNumberFormat;
+use libphonenumber\PhoneNumberUtil;
 
 /**
  * Contacts clients d'un business, exportés en vCard 3.0 pour que le gérant les enregistre dans
@@ -27,6 +31,9 @@ class ContactExportService
 
     /** vCard : 75 octets par ligne au plus, la suite repliée sur la ligne suivante. */
     private const LINE_MAX_BYTES = 75;
+
+    /** Pays d'un business sans pays valide, pour l'indicatif des numéros locaux. */
+    private const DEFAULT_COUNTRY = 'BF';
 
     /**
      * @return array{total: int, new_since_last_export: int, last_exported_at: ?string}
@@ -91,7 +98,7 @@ class ContactExportService
 
     private function vcard(Business $business, Conversation $client): string
     {
-        $digits = $this->digits($client->customer_phone);
+        $digits = $this->digits($business, $client->customer_phone);
         $label = $this->escape($this->displayName($business, $client, $digits));
         $firstAt = Carbon::parse($client->messages_min_created_at ?? $client->created_at)->setTimezone($business->localTimezone());
 
@@ -117,12 +124,38 @@ class ContactExportService
         return $name.' · '.trim((string) $business->name);
     }
 
-    /** Numéro WhatsApp en chiffres, indicatif compris (226 pour un numéro local à 8 chiffres). */
-    private function digits(string $phone): string
+    /**
+     * Numéro en chiffres, indicatif compris. Un wa_id contient déjà son indicatif et reste tel
+     * quel ; seul un numéro local sans indicatif reçoit celui du pays de l'entreprise (Burkina par
+     * défaut). Un numéro que libphonenumber ne reconnaît pas reste tel quel.
+     */
+    private function digits(Business $business, string $phone): string
     {
         $digits = preg_replace('/\D/', '', $phone) ?? '';
+        $util = PhoneNumberUtil::getInstance();
+        $international = $this->parse("+{$digits}", null);
 
-        return strlen($digits) === 8 ? "226{$digits}" : $digits;
+        if ($international !== null && $util->isValidNumber($international)) {
+            return $digits;
+        }
+
+        $local = $this->parse($digits, strtoupper(trim((string) $business->country)) ?: self::DEFAULT_COUNTRY)
+            ?? $this->parse($digits, self::DEFAULT_COUNTRY);
+
+        if ($local !== null && $util->isValidNumber($local)) {
+            return ltrim($util->format($local, PhoneNumberFormat::E164), '+');
+        }
+
+        return $digits;
+    }
+
+    private function parse(string $number, ?string $region): ?PhoneNumber
+    {
+        try {
+            return PhoneNumberUtil::getInstance()->parse($number, $region);
+        } catch (NumberParseException) {
+            return null;
+        }
     }
 
     /** Échappement vCard des valeurs texte : \ ; , et retour à la ligne. */

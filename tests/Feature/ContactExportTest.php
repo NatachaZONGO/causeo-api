@@ -87,6 +87,32 @@ class ContactExportTest extends TestCase
         }
     }
 
+    public function test_whatsapp_numbers_keep_their_country_code_and_only_local_numbers_get_the_business_one(): void
+    {
+        $this->client('2250701020304', 'Ivoirienne', '2026-10-01 10:00:00');
+        $this->client('33612345678', 'Française', '2026-10-02 10:00:00');
+        $this->client('12025550123', 'Américain', '2026-10-03 10:00:00');
+        $this->client('70123456', 'Burkinabè', '2026-10-04 10:00:00');
+
+        $body = $this->exportAs('all')->assertOk()->getContent();
+
+        foreach (['+2250701020304', '+33612345678', '+12025550123', '+22670123456'] as $phone) {
+            $this->assertStringContainsString("TEL;TYPE=CELL:{$phone}\r\n", $body);
+        }
+        $this->assertStringNotContainsString('+226225', $body);
+        $this->assertStringNotContainsString('+22633', $body);
+    }
+
+    public function test_a_local_number_gets_the_country_code_of_the_business_not_226(): void
+    {
+        DB::table('businesses')->where('id', $this->business->id)->update(['country' => 'CI']);
+        $this->client('0701020304', 'Cliente', '2026-10-01 10:00:00');
+
+        $body = $this->exportAs('all')->assertOk()->getContent();
+
+        $this->assertStringContainsString("TEL;TYPE=CELL:+2250701020304\r\n", $body);
+    }
+
     public function test_scope_new_exports_new_customers_once_then_answers_204(): void
     {
         $this->client('22670000001', 'Awa', '2026-10-01 10:00:00');
