@@ -16,6 +16,7 @@ use App\Services\Conversations\QuotedMessageService;
 use App\Services\OrderService;
 use App\Services\WhatsApp\MediaMessage;
 use App\Support\ActivityProfile;
+use App\Support\OpeningHours;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
@@ -113,6 +114,12 @@ TEXT,
 - Si le client dit « Merci », « Ok merci », « C'est noté »… : réponds poliment (« Avec plaisir ! »), et propose ton aide pour autre chose. N'ajoute pas le marqueur JE_NE_SAIS_PAS dans ce cas.
 TEXT,
     ];
+
+    /** Réponse qui parle de rendez-vous, de créneau ou de passage en boutique. */
+    private const APPOINTMENT_TALK = '/\b(?:rendez-vous|rdv|cr[ée]neaux?|passer\s+(?:vous\s+)?voir|passer\s+(?:à|a|en|au|chez)\s+(?:la\s+)?(?:boutique|magasin)|passage\s+en\s+boutique|venir\s+(?:en|à\s+la)\s+boutique)\b/iu';
+
+    /** Réponses de suite qui en parlent sans appel à create_appointment avant le log warning. */
+    private const APPOINTMENT_STALL_TURNS = 3;
 
     /** Consignes quand l'outil create_appointment n'est pas proposé (module inactif ou hors formule). */
     private const NO_APPOINTMENT_INSTRUCTIONS = <<<'TEXT'
@@ -414,7 +421,7 @@ TEXT,
             $appointmentsAvailable = $conversation !== null && $business->hasModule('appointments');
             if ($appointmentsAvailable) {
                 $stablePrompt .= "\n\n".$this->appointmentInstructions($business);
-                $tools[] = $this->createAppointmentTool($catalogAvailable);
+                $tools[] = $this->createAppointmentTool($business, $catalogAvailable, self::profileName($conversation->customer_name) !== null);
             } else {
                 // Sans l'outil, une demande de rendez-vous va au gérant : jamais de « c'est noté ».
                 $stablePrompt .= "\n\n".self::NO_APPOINTMENT_INSTRUCTIONS;
@@ -444,6 +451,10 @@ TEXT,
             $clarificationBlock = $this->clarificationBlock($clarifications);
             if ($clarificationBlock !== null) {
                 $systemPrompt .= "\n\n".$clarificationBlock;
+            }
+
+            if ($appointmentsAvailable) {
+                $systemPrompt .= "\n\n".$this->appointmentContextBlock($business, $conversation);
             }
 
             $civility = self::customerCivility($conversation?->customer_name);
@@ -697,6 +708,9 @@ TEXT,
 
             // Jamais le prénom ni le nom du client ; puis les lignes techniques (hors vente, relance, précision).
             $text = self::withoutCustomerName($text, $conversation?->customer_name);
+            if ($appointmentsAvailable && $trace['appointments'] === []) {
+                $this->warnIfAppointmentStalls($business, $conversation, $text);
+            }
             [$text, $offSales, $followUp, $asksPrecision] = $this->extractMarkers($text);
             $escalated = fn (array $result) => $result + [
                 'confidence' => 0.2,
@@ -1275,8 +1289,10 @@ TEXT,
      *
      * @return array<string, mixed>
      */
-    private function createAppointmentTool(bool $withCatalog = false): array
+    private function createAppointmentTool(Business $business, bool $withCatalog = false, bool $knowsName = false): array
     {
+        $boutique = $business->activityProfile() === ActivityProfile::BOUTIQUE;
+
         $catalog = $withCatalog ? [
             'product_id' => ['type' => 'string', 'description' => 'Identifiant de la prestation renvoyé par search_catalog : son nom, sa durée et son prix sont repris.'],
             'variant_id' => ['type' => 'string', 'description' => 'Variante choisie (durée, niveau…) renvoyée par search_catalog, s\'il y en a plusieurs.'],
@@ -1290,16 +1306,21 @@ TEXT,
             'input_schema' => [
                 'type' => 'object',
                 'properties' => [
-                    'service' => ['type' => 'string', 'description' => 'Prestation demandée, telle qu\'elle figure dans le contexte.'],
+                    'service' => ['type' => 'string', 'description' => $boutique
+                        ? 'Prestation demandée, telle qu\'elle figure dans le contexte, ou décrite librement pour une prise de mesures, un essayage ou une tenue sur mesure (par exemple « prise de mesures pour 3 ensembles sur mesure »).'
+                        : 'Prestation demandée, telle qu\'elle figure dans le contexte.'],
                     'requested_date' => ['type' => 'string', 'description' => 'Date souhaitée au format AAAA-MM-JJ (jamais dans le passé).'],
                     'requested_time' => ['type' => 'string', 'description' => 'Heure ou moment souhaité, par exemple « 15h » ou « après-midi ».'],
-                    'customer_name' => ['type' => 'string', 'description' => 'Nom du client.'],
+                    'customer_name' => ['type' => 'string', 'description' => $knowsName
+                        ? 'Nom du client : celui de « Nom du client pour l\'outil », sans le lui demander.'
+                        : 'Nom du client.'],
                     'location' => ['type' => 'string', 'description' => 'Lieu de la prestation, si elle n\'a pas lieu chez l\'entreprise.'],
                     'participants' => ['type' => 'integer', 'minimum' => 1, 'description' => 'Nombre de personnes concernées, si utile.'],
                     'price' => ['type' => 'number', 'minimum' => 0, 'description' => 'Prix en FCFA indiqué dans le contexte pour cette prestation. À omettre s\'il n\'y figure pas.'],
                     'notes' => ['type' => 'string', 'description' => 'Précisions utiles du client, facultatif.'],
                 ] + $catalog,
-                'required' => ['service', 'requested_date', 'requested_time', 'customer_name'],
+                // Sans customer_name, le serveur reprend le nom WhatsApp de la conversation.
+                'required' => $knowsName ? ['service', 'requested_date', 'requested_time'] : ['service', 'requested_date', 'requested_time', 'customer_name'],
             ],
         ];
     }
@@ -1311,18 +1332,95 @@ TEXT,
     {
         $today = CarbonImmutable::now($this->businessTimezone($business))->locale('fr')->isoFormat('dddd D MMMM YYYY');
 
+        $boutique = $business->activityProfile() === ActivityProfile::BOUTIQUE;
+        $triggers = $boutique
+            ? 'une tenue sur mesure, faire prendre ses mesures, faire un essayage ou « passer voir » la boutique'
+            : 'une prestation, ou « passer » chez l\'entreprise';
+        $service = $boutique
+            ? 'La prestation : pour un article ou une prestation du catalogue, reprends ce que renvoie search_catalog. Pour une prise de mesures, un essayage ou une tenue sur mesure, aucune prestation au catalogue n\'est nécessaire : décris-la librement dans service avec les mots du client (par exemple « prise de mesures pour 3 ensembles sur mesure »), sans prix sauf s\'il figure dans le contexte. Pour toute autre demande absente du contexte, applique la règle d\'escalade.'
+            : 'La prestation : ne propose que des prestations présentes dans le contexte ; sinon, applique la règle d\'escalade.';
+
         return <<<PROMPT
 # Prise de rendez-vous
 Nous sommes le {$today}.
 Tu peux enregistrer une demande de rendez-vous avec l'outil create_appointment. Le créneau n'est jamais garanti : c'est l'entreprise qui le confirme ensuite.
-1. Collecte les informations manquantes, sans redemander ce que le client a déjà donné : la prestation, la date, l'heure ou le moment de la journée, son nom, et selon la prestation le lieu et le nombre de participants. Ne propose que des prestations présentes dans le contexte ; sinon, applique la règle d'escalade.
-2. Convertis les dates relatives (« demain », « samedi prochain ») en date précise à partir de la date du jour, et répète-la au client en toutes lettres (par exemple « samedi 10 octobre »). Ne propose jamais une date passée.
-3. Utilise uniquement le prix indiqué dans le contexte pour cette prestation. N'invente JAMAIS un prix : s'il n'y figure pas, n'annonce aucun prix et laisse price vide.
-4. Fais un récapitulatif : prestation, date en toutes lettres, heure, lieu et participants s'il y a lieu, prix s'il est connu. Termine en demandant une confirmation explicite, par exemple « J'enregistre votre demande ? ».
-5. N'appelle create_appointment qu'après un « oui » clair du client à ce récapitulatif. Si le client modifie quelque chose, refais le récapitulatif et redemande confirmation. N'appelle jamais l'outil deux fois pour la même demande.
-6. Une fois l'outil exécuté, dis au client que sa demande est enregistrée, donne la référence renvoyée par l'outil, et précise que le créneau lui sera confirmé très vite. Ne dis JAMAIS que le rendez-vous est réservé, confirmé, bloqué ou garanti, et ne décris aucune procédure absente du contexte (appel, acompte, rappel…).
-7. Si l'outil renvoie une erreur, demande au client l'information manquante ou une autre date. N'annonce jamais une demande comme enregistrée si l'outil ne l'a pas confirmé dans ce même échange.
+1. Mène toi-même la prise de rendez-vous : dès que le client veut {$triggers}, propose-lui de fixer un rendez-vous, sans attendre qu'il le demande.
+2. Une seule question par message. Ne demande pas « quel jour et à quelle heure ? » : propose deux créneaux concrets pendant les horaires d'ouverture (voir « Créneaux à proposer », sinon les horaires d'ouverture du contexte), par exemple « Demain à 10h ou samedi à 15h ? ». Si le client préfère un autre moment pendant les horaires d'ouverture, accepte-le ; en dehors, propose le créneau ouvert le plus proche.
+3. Ne repose jamais une question à laquelle le client a déjà répondu dans la conversation (prestation, nombre de tenues, date, heure, lieu) : reprends sa réponse.
+4. {$service}
+5. Le nom du client : ne le demande pas et ne l'écris jamais dans tes réponses. Pour le champ customer_name de l'outil, reprends le nom donné dans « Nom du client pour l'outil » ; s'il n'y en a pas, demande-le une seule fois, juste avant le récapitulatif.
+6. Convertis les dates relatives (« demain », « samedi prochain ») en date précise à partir de la date du jour, et répète-la au client en toutes lettres (par exemple « samedi 10 octobre »). Ne propose jamais une date passée.
+7. Utilise uniquement le prix indiqué dans le contexte pour cette prestation. N'invente JAMAIS un prix : s'il n'y figure pas, n'annonce aucun prix et laisse price vide.
+8. Dès que tu as la prestation, la date et l'heure, fais un récapitulatif court, en une ou deux phrases : prestation, date en toutes lettres, heure, lieu et participants s'il y a lieu, prix s'il est connu. Termine par une demande de confirmation explicite, par exemple « J'enregistre votre demande ? ».
+9. N'appelle create_appointment qu'après un « oui » clair du client à ce récapitulatif, et appelle-le alors dans ce même échange. Si le client modifie quelque chose, refais le récapitulatif et redemande confirmation. N'appelle jamais l'outil deux fois pour la même demande.
+10. Une fois l'outil exécuté, dis au client que sa demande est enregistrée, donne la référence renvoyée par l'outil, et précise que le créneau lui sera confirmé très vite. Ne dis JAMAIS que le rendez-vous est réservé, confirmé, bloqué ou garanti, et ne décris aucune procédure absente du contexte (appel, acompte, rappel…).
+11. Si l'outil renvoie une erreur, demande au client l'information manquante ou une autre date. N'annonce jamais une demande comme enregistrée si l'outil ne l'a pas confirmé dans ce même échange.
 PROMPT;
+    }
+
+    /**
+     * Partie du prompt qui change à chaque message : les créneaux à proposer (d'après les horaires
+     * d'ouverture et la date du jour) et le nom WhatsApp, réservé au champ customer_name.
+     */
+    private function appointmentContextBlock(Business $business, Conversation $conversation): string
+    {
+        $now = CarbonImmutable::now($this->businessTimezone($business));
+        $slots = array_map(fn (CarbonImmutable $slot) => OpeningHours::describe($slot, $now), OpeningHours::suggestSlots($business->opening_hours, $now));
+
+        $block = $slots === []
+            ? "# Créneaux à proposer\nAucun créneau calculé : propose deux moments concrets pris dans les horaires d'ouverture du contexte (un jour et une heure chacun)."
+            : "# Créneaux à proposer\nPendant les horaires d'ouverture : ".implode(' ou ', $slots).'.';
+
+        $name = self::profileName($conversation->customer_name);
+        if ($name !== null) {
+            $block .= "\n\n# Nom du client pour l'outil\n"
+                ."Nom de profil WhatsApp : « {$name} ». Utilise-le uniquement pour le champ customer_name de create_appointment : ne le demande pas, ne l'écris jamais au client et ne t'adresse jamais à lui par ce nom.";
+        }
+
+        return $block;
+    }
+
+    /**
+     * Repérer les prises de rendez-vous qui n'aboutissent pas : la réponse parle de rendez-vous,
+     * de créneau ou de passage en boutique pour la troisième fois de suite sans que
+     * create_appointment ait été appelé. Le log ne contient aucune donnée du client.
+     */
+    private function warnIfAppointmentStalls(Business $business, Conversation $conversation, string $text): void
+    {
+        if (! preg_match(self::APPOINTMENT_TALK, $text)) {
+            return;
+        }
+
+        $turns = 1;
+        $previous = $conversation->messages()
+            ->where('direction', 'outbound')
+            ->where('sender_type', 'ai')
+            ->latest()
+            ->limit(self::APPOINTMENT_STALL_TURNS - 1)
+            ->get(['content', 'metadata']);
+
+        foreach ($previous as $message) {
+            if (data_get($message->metadata, 'appointments') || ! preg_match(self::APPOINTMENT_TALK, (string) $message->content)) {
+                break;
+            }
+            $turns++;
+        }
+
+        if ($turns >= self::APPOINTMENT_STALL_TURNS) {
+            Log::warning('AIResponseService: rendez-vous évoqué sans appel à create_appointment', [
+                'business_id' => $business->id,
+                'conversation_id' => $conversation->id,
+                'turns' => $turns,
+            ]);
+        }
+    }
+
+    /** Nom de profil WhatsApp réduit à une ligne courte, ou null s'il est vide. */
+    private static function profileName(?string $name): ?string
+    {
+        $name = trim(preg_replace('/[\p{C}«»"]+/u', ' ', (string) $name) ?? '');
+
+        return $name === '' ? null : Str::limit(preg_replace('/\s+/u', ' ', $name) ?? $name, 60, '');
     }
 
     /**
