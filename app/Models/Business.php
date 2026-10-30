@@ -154,6 +154,7 @@ class Business extends Model
             'ai_pause_hours' => 'integer',
             'catalog_daily_reset' => 'boolean',
             'dine_in_enabled' => 'boolean',
+            'contacts_exported_at' => 'datetime',
         ];
     }
 

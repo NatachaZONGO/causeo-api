@@ -94,6 +94,9 @@ Route::prefix('v1')->middleware('auth:sanctum')->group(function () {
     Route::get('businesses/{business}/status-posts', [\App\Http\Controllers\API\V1\StatusPostController::class, 'index']);
     Route::post('businesses/{business}/status-posts', [\App\Http\Controllers\API\V1\StatusPostController::class, 'store']);
     Route::delete('status-posts/{statusPost}', [\App\Http\Controllers\API\V1\StatusPostController::class, 'destroy']);
+    // Export des contacts clients (vCard), pour les enregistrer dans le téléphone du gérant.
+    Route::get('businesses/{business}/contacts/summary', [\App\Http\Controllers\API\V1\ContactExportController::class, 'summary']);
+    Route::get('businesses/{business}/contacts/export', [\App\Http\Controllers\API\V1\ContactExportController::class, 'export']);
     Route::post('escalations/{escalation}/resolve', [\App\Http\Controllers\API\V1\EscalationController::class, 'resolve']);
 
     Route::get('businesses/{business}/billing', [BillingController::class, 'show']);
