@@ -72,6 +72,8 @@ class WhatsAppSetupController extends Controller
                 'whatsapp_waba_id' => $data['waba_id'],
                 'whatsapp_token' => $token,
                 'whatsapp_display_name' => $phoneInfo['verified_name'] ?? $phoneInfo['display_phone_number'] ?? null,
+                // Numéro des liens courts des statuts (wa.me), chiffres seulement.
+                'whatsapp_number' => preg_replace('/\D/', '', (string) ($phoneInfo['display_phone_number'] ?? '')) ?: null,
                 'whatsapp_verified' => true,
                 'whatsapp_connected_at' => now(),
             ]);

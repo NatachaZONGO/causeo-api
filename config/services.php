@@ -115,6 +115,12 @@ return [
         'status_probe' => (bool) env('LOG_STATUS_PROBE', false),
     ],
 
+    // Liens courts des statuts WhatsApp (getcauseo.com/c/neeb12), servis par l'API sur le domaine
+    // du dashboard (deploy/nginx/dashboard.conf, location /c/).
+    'status_links' => [
+        'url' => env('SHORT_LINK_URL', 'https://getcauseo.com'),
+    ],
+
     // Alertes WhatsApp aux gérants, envoyées depuis le numéro Causeo avec le token
     // de l'utilisateur système (services.whatsapp.token) et des modèles approuvés.
     'causeo_notify' => [

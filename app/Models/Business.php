@@ -113,6 +113,7 @@ class Business extends Model
         'catalog_daily_reset',
         'dine_in_enabled',
         'escalation_fallback_minutes',
+        'whatsapp_number',
     ];
 
     /**

@@ -80,6 +80,10 @@ class DeployConfigTest extends TestCase
         preg_match('/^listen = (\S+)$/m', $this->file('deploy/php/causeo-pool.conf'), $listen);
 
         $this->assertStringContainsString("fastcgi_pass unix:{$listen[1]};", $this->file('deploy/nginx/api.conf'));
+
+        // Liens courts des statuts (getcauseo.com/c/…) : servis par Laravel, sans journal d'accès (pas d'IP).
+        $dashboard = $this->file('deploy/nginx/dashboard.conf');
+        $this->assertMatchesRegularExpression('/location \^~ \/c\/ \{\s*access_log off;[^}]*fastcgi_param SCRIPT_FILENAME \/var\/www\/causeo-api\/public\/index\.php;[^}]*fastcgi_pass unix:'.preg_quote($listen[1], '/').';/', $dashboard);
     }
 
     public function test_the_database_is_backed_up_before_new_migrations(): void

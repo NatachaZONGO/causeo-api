@@ -2,7 +2,9 @@
 
 namespace App\Models;
 
+use App\Support\StatusLink;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\Casts\Attribute;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -33,6 +35,22 @@ class StatusPost extends Model
     ];
 
     /**
+     * Lien court et légende prête à copier (StatusLink), renvoyés avec le statut.
+     *
+     * @var list<string>
+     */
+    protected $appends = [
+        'short_url',
+        'caption_suggestion',
+    ];
+
+    /** Référence et short_code attribués à la création (voir StatusLink::assign). */
+    protected static function booted(): void
+    {
+        static::creating(fn (StatusPost $post) => StatusLink::assign($post));
+    }
+
+    /**
      * @return array<string, string>
      */
     protected function casts(): array
@@ -40,7 +58,21 @@ class StatusPost extends Model
         return [
             'posted_at' => 'datetime',
             'expires_at' => 'datetime',
+            'reference' => 'integer',
+            'clicks' => 'integer',
         ];
+    }
+
+    /** @return Attribute<string, never> */
+    protected function shortUrl(): Attribute
+    {
+        return Attribute::get(fn () => StatusLink::url($this));
+    }
+
+    /** @return Attribute<string, never> */
+    protected function captionSuggestion(): Attribute
+    {
+        return Attribute::get(fn () => StatusLink::captionSuggestion($this));
     }
 
     /**

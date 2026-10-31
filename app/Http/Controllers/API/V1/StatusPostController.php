@@ -8,6 +8,7 @@ use App\Models\StatusPost;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\Rule;
 
@@ -21,6 +22,9 @@ class StatusPostController extends Controller
     /** Image envoyée au client en message « image » WhatsApp : JPEG ou PNG, 5 Mo au plus. */
     public const IMAGE_MAX_KB = BusinessMediaController::IMAGE_MAX_KB;
 
+    /** Article (prix des variantes pour la légende) et image, renvoyés avec chaque statut. */
+    private const RELATIONS = ['product:id,name,base_price,media_ids', 'product.variants:id,product_id,price', 'media:id,public_url'];
+
     /**
      * Statuts actifs, le plus récent d'abord, avec l'article et l'image.
      */
@@ -29,7 +33,7 @@ class StatusPostController extends Controller
         $this->checkOwnership($business);
 
         return response()->json([
-            'data' => $business->statusPosts()->active()->with(['product:id,name,base_price,media_ids', 'media:id,public_url'])->get(),
+            'data' => $business->statusPosts()->active()->with(self::RELATIONS)->get(),
         ]);
     }
 
@@ -65,9 +69,14 @@ class StatusPostController extends Controller
         $caption = isset($data['caption']) && trim($data['caption']) !== '' ? trim($data['caption']) : null;
         $posts = [];
 
-        foreach (array_unique($data['product_ids'] ?? []) as $productId) {
-            $posts[] = $business->statusPosts()->create(['product_id' => $productId, 'caption' => $caption] + $dates);
-        }
+        // Références 1, 2, 3… par business (StatusLink::assign) : une seule création à la fois.
+        DB::transaction(function () use ($business, $data, $caption, $dates, &$posts) {
+            Business::query()->whereKey($business->id)->lockForUpdate()->first();
+
+            foreach (array_unique($data['product_ids'] ?? []) as $productId) {
+                $posts[] = $business->statusPosts()->create(['product_id' => $productId, 'caption' => $caption] + $dates);
+            }
+        });
 
         if ($request->hasFile('image')) {
             $file = $request->file('image');
@@ -85,13 +94,16 @@ class StatusPostController extends Controller
                 'is_active' => false,
             ]);
 
-            $posts[] = $business->statusPosts()->create(['media_id' => $media->id, 'caption' => $caption] + $dates);
+            DB::transaction(function () use ($business, $media, $caption, $dates, &$posts) {
+                Business::query()->whereKey($business->id)->lockForUpdate()->first();
+                $posts[] = $business->statusPosts()->create(['media_id' => $media->id, 'caption' => $caption] + $dates);
+            });
         }
 
         return response()->json([
             'message' => count($posts) > 1 ? 'Vos statuts ont été enregistrés.' : 'Votre statut a été enregistré.',
             'data' => StatusPost::whereKey(array_map(fn (StatusPost $post) => $post->id, $posts))
-                ->with(['product:id,name,base_price,media_ids', 'media:id,public_url'])->orderBy('created_at')->get(),
+                ->with(self::RELATIONS)->orderBy('reference')->get(),
         ], 201);
     }
 

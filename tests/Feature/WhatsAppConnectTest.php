@@ -62,6 +62,8 @@ class WhatsAppConnectTest extends TestCase
         $this->assertSame('PNID-1', $business->whatsapp_phone_number_id);
         $this->assertSame('WABA-1', $business->whatsapp_waba_id);
         $this->assertTrue($business->whatsapp_verified);
+        // Numéro des liens courts des statuts (wa.me), chiffres seulement.
+        $this->assertSame('22670000000', $business->whatsapp_number);
 
         Http::assertSent(fn (Request $request) => $request->method() === 'GET'
             && str_starts_with($request->url(), self::GRAPH.'oauth/access_token?')
