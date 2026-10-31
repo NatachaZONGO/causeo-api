@@ -299,6 +299,155 @@ class StatusPostsAndCatalogTruthTest extends TestCase
         $this->assertCount(4, FakeWhatsAppService::$images);
     }
 
+    // --- 4. Article non précisé (Meta n'envoie aucune référence au statut) -------------------------
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('unnamedArticleQuestions')]
+    public function test_an_unnamed_article_without_status_of_the_day_goes_silently_to_the_owner(string $question): void
+    {
+        config(['services.anthropic.escalation_summary' => true]);
+
+        $this->receive('wamid.1', $question);
+
+        // Ni prix, ni article, ni photo : rien n'est envoyé et Claude n'est pas appelé.
+        $this->assertSame([], FakeWhatsAppService::$sent);
+        $this->assertSame([], FakeWhatsAppService::$images);
+        $this->assertSame([], $this->claudeRequests());
+
+        $escalation = Escalation::sole();
+        $this->assertTrue($escalation->silent);
+        $this->assertSame(Escalation::REASON_STATUS_REPLY, $escalation->reason);
+        $this->assertSame("Le client demande « {$question} » sur un article non précisé, probablement un statut.", $escalation->summary);
+        $this->assertSame($escalation->summary, Notification::where('type', 'escalation')->sole()->body);
+        $this->assertSame(1, Notification::where('type', 'status')->count());
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function unnamedArticleQuestions(): array
+    {
+        return [
+            'combien' => ["C'est combien ?"],
+            'disponible en XL' => ["C'est disponible en XL ?"],
+            'cet haut' => ['Cet haut est à combien ?'],
+            'celle-ci' => ['Vous avez celle-ci en rouge ?'],
+        ];
+    }
+
+    public function test_an_unnamed_article_with_statuses_of_the_day_gets_their_photos_and_one_question(): void
+    {
+        $extra = app(CatalogService::class)->saveProduct($this->business, ['name' => 'Pagne wax bleu', 'base_price' => 5000, 'media_ids' => [$this->photo('pagne')]], null, [['options' => []]]);
+        $boubou = app(CatalogService::class)->saveProduct($this->business, ['name' => 'Boubou bazin', 'base_price' => 25000, 'media_ids' => [$this->photo('boubou')]], null, [['options' => []]]);
+        foreach ([$this->robe, $this->sac, $extra, $boubou] as $i => $product) {
+            StatusPost::create(['business_id' => $this->business->id, 'product_id' => $product->id, 'posted_at' => now()->subMinutes($i + 1), 'expires_at' => now()->addHours(23)]);
+        }
+
+        // Aucune référence au statut dans le webhook (pas de context).
+        $this->receive('wamid.1', "C'est disponible en XL ?");
+
+        $this->assertSame([], $this->claudeRequests());
+        $this->assertSame(["C'est pour l'un de ces articles ?"], FakeWhatsAppService::$sent);
+        // 3 photos au plus, les statuts les plus récents.
+        $this->assertSame(['https://cdn.test/robe.jpg', 'https://cdn.test/sac.jpg', 'https://cdn.test/pagne.jpg'], FakeWhatsAppService::$images);
+        $this->assertSame(0, Escalation::count());
+
+        // Toujours pas d'article nommé : le gérant prend le relais, sans rien envoyer.
+        $this->travel(1)->minutes();
+        $this->receive('wamid.2', 'Vous savez bien');
+        $this->assertCount(1, FakeWhatsAppService::$sent);
+        $this->assertTrue(Escalation::sole()->silent);
+        $this->assertSame([], $this->claudeRequests());
+    }
+
+    public function test_with_two_statuses_of_the_day_both_photos_are_sent(): void
+    {
+        foreach ([$this->robe, $this->sac] as $i => $product) {
+            StatusPost::create(['business_id' => $this->business->id, 'product_id' => $product->id, 'posted_at' => now()->subMinutes($i + 1), 'expires_at' => now()->addHours(23)]);
+        }
+
+        $this->receive('wamid.1', "C'est combien ?");
+
+        $this->assertSame(["C'est pour l'un de ces articles ?"], FakeWhatsAppService::$sent);
+        $this->assertSame(['https://cdn.test/robe.jpg', 'https://cdn.test/sac.jpg'], FakeWhatsAppService::$images);
+    }
+
+    public function test_a_named_catalog_article_is_answered_normally_with_its_price(): void
+    {
+        app(CatalogService::class)->saveProduct($this->business, ['name' => 'Chemise lin cassé', 'base_price' => 9000, 'category' => 'Chemises'], null, [['options' => ['taille' => 'L']]]);
+        $this->claudeAnswers = ['La chemise lin cassé est à 9 000 FCFA.'];
+
+        $this->receive('wamid.1', 'La chemise lin cassé c\'est combien ?');
+
+        $this->assertSame(['La chemise lin cassé est à 9 000 FCFA.'], FakeWhatsAppService::$sent);
+        $this->assertSame(0, Escalation::count());
+        $this->assertStringContainsString("- Si le client parle d'un article sans le nommer (« c'est combien ? », « disponible en XL ? », « cet haut », « celle-ci ») et qu'aucun article précis n'a été identifié dans les derniers messages de la conversation, ne devine JAMAIS de quel article il s'agit : ni prix, ni disponibilité, ni photo, ni nom d'article. Écris seulement JE_NE_SAIS_PAS.", $this->claudeRequests()[0]['system'][0]['text']);
+    }
+
+    public function test_a_category_designates_articles_and_is_answered_with_the_catalog(): void
+    {
+        app(CatalogService::class)->saveProduct($this->business, ['name' => 'Chemise lin cassé', 'base_price' => 9000, 'category' => 'Chemises'], null, [['options' => ['taille' => 'XL']]]);
+        $this->claudeAnswers = ['Oui, la chemise lin cassé existe en XL à 9 000 FCFA.'];
+
+        $this->receive('wamid.1', 'Vous avez des chemises en XL ?');
+
+        $this->assertSame(['Oui, la chemise lin cassé existe en XL à 9 000 FCFA.'], FakeWhatsAppService::$sent);
+        $this->assertCount(1, $this->claudeRequests());
+        $this->assertSame(0, Escalation::count());
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('discoveryRequests')]
+    public function test_a_request_to_discover_the_offer_gets_a_normal_presentation(string $question): void
+    {
+        $robePhoto = $this->robe->media_ids[0];
+        $answer = 'Nous avons la robe longue noire à paillettes à 15 000 FCFA et le sac à main cuir à 8 000 FCFA.';
+        $this->claudeAnswers = ["{$answer}\nMEDIA:{$robePhoto}"];
+
+        $this->receive('wamid.1', $question);
+
+        $this->assertSame([$answer], FakeWhatsAppService::$sent);
+        $this->assertSame(0, Escalation::count());
+        $this->assertCount(1, $this->claudeRequests());
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function discoveryRequests(): array
+    {
+        return [
+            "qu'est-ce que vous avez" => ["Qu'est-ce que vous avez ?"],
+            'quoi comme modèles' => ['Vous avez quoi comme modèles ?'],
+            'nouveautés' => ['Montrez-moi vos nouveautés'],
+        ];
+    }
+
+    public function test_an_article_named_earlier_in_the_conversation_can_be_priced(): void
+    {
+        $this->history(['Vous avez le sac à main cuir ?', 'Oui, le sac à main cuir est disponible.']);
+        $this->claudeAnswers = ['Le sac à main cuir est à 8 000 FCFA.'];
+
+        $this->receive('wamid.1', "C'est combien ?");
+
+        $this->assertSame(['Le sac à main cuir est à 8 000 FCFA.'], FakeWhatsAppService::$sent);
+        $this->assertSame(0, Escalation::count());
+    }
+
+    public function test_an_invented_article_price_or_photo_is_never_sent(): void
+    {
+        // Le message ne nomme aucun article du catalogue : Claude en invente un, avec son prix et sa photo.
+        $robePhoto = $this->robe->media_ids[0];
+        $this->claudeAnswers = ["La robe longue noire à paillettes est disponible en XL à 15 000 FCFA.\nMEDIA:{$robePhoto}"];
+
+        $this->receive('wamid.1', 'Et pour le mariage de samedi ?');
+
+        $this->assertCount(1, $this->claudeRequests());
+        $this->assertSame([], FakeWhatsAppService::$sent);
+        $this->assertSame([], FakeWhatsAppService::$images);
+        $escalation = Escalation::sole();
+        $this->assertTrue($escalation->silent);
+        $this->assertSame('Le client demande « Et pour le mariage de samedi ? » sur un article non précisé, probablement un statut.', $escalation->summary);
+    }
+
     public function test_the_owner_lists_and_deletes_statuses_and_only_active_ones_count(): void
     {
         Sanctum::actingAs($this->owner);

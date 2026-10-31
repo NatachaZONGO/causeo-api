@@ -156,6 +156,68 @@ TEXT;
         '/\benvo(?:ie|ies|yez|yer)( moi| nous)?( le| la| les| vos| des| un| une| votre| ton| ta| tes)? (photo|photos|image|images|catalogue|menu|modele|modeles|articles?|tenues?|coiffures?)\b/',
     ];
 
+    /**
+     * Article non précisé (texte normalisé) : le client parle d'un article (prix, disponibilité,
+     * taille, « vous avez ») sans le nommer, ou en le désignant (« cet haut », « celle-ci »).
+     */
+    private const ARTICLE_QUESTION_WORDS = [
+        'combien', 'prix', 'coute', 'coutent', 'cout', 'tarif', 'dispo', 'dispos', 'disponible', 'disponibles',
+        'reste', 'restent', 'stock', 'taille', 'tailles', 'pointure', 'couleur', 'couleurs', 'avez', 'auriez', 'existe',
+    ];
+
+    private const DEMONSTRATIVES = ['cet', 'cette', 'ces', 'celui', 'celle', 'celles', 'ceux', 'ca', 'ci'];
+
+    /** Mots qui ne désignent pas un article : retirés avant de chercher si le client en nomme un. */
+    private const NON_ARTICLE_WORDS = [
+        'c', 'est', 'cest', 'ce', 'le', 'la', 'les', 'l', 'un', 'une', 'des', 'du', 'de', 'd', 'en', 'au', 'aux', 'a', 'et', 'ou',
+        'il', 'ils', 'elle', 'elles', 'on', 'y', 'vous', 'tu', 'te', 't', 'me', 'm', 'moi', 'je', 'j', 'nous', 'svp', 'stp', 'plait',
+        'bonjour', 'bonsoir', 'salut', 'slt', 'merci', 'ok', 'oui', 'non', 'que', 'qu', 'qui', 'quoi', 'quel', 'quelle', 'quels',
+        'quelles', 'sont', 'pour', 'par', 'avec', 'sur', 'dans', 'encore', 'aussi', 'toujours', 'aujourd', 'hui', 'deja', 'bien',
+        'alors', 'donc', 'mais', 'si', 'pas', 'ne', 'n', 'veux', 'voudrais', 'aimerais', 'prendre', 'avoir', 'peux', 'pouvez',
+        'fcfa', 'cfa', 'f', 'francs', 'franc', 'mon', 'ma', 'mes', 'son', 'sa', 'ses', 'votre', 'vos', 'meme',
+        'xs', 's', 'xl', 'xxl', 'xxxl', '2xl', '3xl', '4xl',
+        'rouge', 'bleu', 'bleue', 'vert', 'verte', 'noir', 'noire', 'blanc', 'blanche', 'jaune', 'rose', 'gris', 'grise',
+        'marron', 'beige', 'violet', 'violette', 'orange', 'dore', 'doree', 'argent', 'argente',
+    ];
+
+    /**
+     * Mots de catégorie (au singulier, texte normalisé) : « vous avez des chemises en XL ? » désigne
+     * des articles, comme les catégories du catalogue et du profil d'activité (ActivityProfile).
+     */
+    private const CATEGORY_WORDS = [
+        'chemise', 'robe', 'tunique', 'ensemble', 'chaussure', 'basket', 'sandale', 'costume', 'pantalon', 'jupe', 'jean',
+        'veste', 'boubou', 'pagne', 'tenue', 'haut', 'sac', 'accessoire', 'bijou', 'parfum', 'perruque', 'meche',
+        'plat', 'menu', 'boisson', 'jus', 'dessert', 'entree', 'formule', 'pizza', 'burger', 'poulet', 'poisson',
+        'coiffure', 'tresse', 'soin', 'maquillage', 'ongle', 'massage', 'prestation', 'service',
+    ];
+
+    /**
+     * Demande de découvrir l'offre (texte normalisé) : « qu'est-ce que vous avez ? », « vous avez quoi
+     * comme modèles ? », « montrez-moi vos nouveautés ». Une présentation normale, jamais une escalade.
+     */
+    private const DISCOVERY_PATTERNS = [
+        '/\bqu est ce que vous (avez|proposez|vendez|faites)\b/',
+        '/\bqu (avez|proposez|vendez) vous\b/',
+        '/\bvous (avez|proposez|vendez|faites) quoi\b/',
+        '/\bquoi comme\b/',
+        '/\bce que vous (avez|proposez|vendez)\b/',
+        '/\b(nouveautes?|nouvel arrivage|nouveaux? arrivages?|nouvelle collection)\b/',
+        '/\b(quels?|quelles?) (articles?|modeles?|produits?|plats?|prestations?|services?)\b/',
+        '/\bvos (articles|modeles|produits|plats|prestations|services|collections?)\b/',
+    ];
+
+    /** Seule question posée quand le client parle d'un article non précisé et qu'il y a des statuts du jour. */
+    public const UNSPECIFIED_ARTICLE_QUESTION = "C'est pour l'un de ces articles ?";
+
+    /** Photos de statuts du jour envoyées au plus pour un article non précisé. */
+    private const UNSPECIFIED_ARTICLE_PHOTOS = 3;
+
+    /** Messages récents de la conversation où l'on cherche un article déjà identifié. */
+    private const ARTICLE_LOOKBACK_MESSAGES = 6;
+
+    /** Prix dans une réponse : « 15 000 FCFA », « 7 500 F », « 2000 francs ». */
+    private const PRICE_IN_REPLY = '/\d[\d\x{00A0}\x{202F} .]*\s*(?:f\s?cfa|fcfa|cfa|francs?|f)(?![\p{L}])/iu';
+
     /** Mots ignorés quand on cherche si le client nomme précisément l'article d'un média. */
     private const MEDIA_TITLE_STOPWORDS = ['les', 'des', 'une', 'pour', 'avec', 'sans', 'dans', 'sur', 'aux', 'par', 'copie', 'photo', 'image'];
 
@@ -387,6 +449,14 @@ TEXT,
         $deterministic = $this->statusOrClaimResponse($business, $conversation, $question, $quotes, $withPhotos, $catalogAvailable, $clarifications);
         if ($deterministic !== null) {
             return $deterministic;
+        }
+
+        // Article non précisé (« C'est disponible en XL ? » en réponse à un statut, sans référence)
+        // et aucun article identifié dans la conversation : jamais deviné.
+        $vagueArticle = ! $withPhotos && $this->refersToUnnamedArticle($question);
+        $articleKnown = fn () => $this->articleIdentified($business, $question, $session, $quotes, $catalogAvailable);
+        if ($vagueArticle && ! $articleKnown()) {
+            return $this->unspecifiedArticleResponse($business, $conversation, $question);
         }
 
         $context = collect();
@@ -811,6 +881,22 @@ TEXT,
             // escalation_fallback_minutes sans sa réponse (ReplyToCustomer, SendEscalationFallback).
             // Réponse à un statut publié hors Causeo : le résumé au gérant le précise, et il est invité
             // à enregistrer ses statuts.
+            // Garde-fou : un prix ou une photo pour un article que ni le client ni la conversation n'ont
+            // identifié (« la robe de soirée est disponible en XL à 15 000 FCFA ») ne part jamais.
+            $sendsMedia = $mediaIds !== [] && ! $asksToSee;
+            $citesPrice = preg_match(self::PRICE_IN_REPLY, $text) === 1 && ($vagueArticle || $this->namesCatalogArticle($business, $text));
+            if (! str_contains($text, 'JE_NE_SAIS_PAS') && ($sendsMedia || $citesPrice) && ! $articleKnown()) {
+                Log::warning('AIResponseService: prix ou photo pour un article non précisé, réponse non envoyée', [
+                    'business_id' => $business->id,
+                    'conversation_id' => $conversationId,
+                    'media' => count($mediaIds),
+                    'price' => $citesPrice,
+                ]);
+
+                return $this->unspecifiedArticleResponse($business, $conversation, $question)
+                    + ['context_used' => $context->pluck('id')->all(), 'tool_trace' => $this->traceForMetadata($trace)];
+            }
+
             $statusReply = in_array(QuotedMessageService::KIND_UNKNOWN, array_column($quotes, 'kind'), true);
             $statusHint = $statusReply ? ['status_hint' => true] : [];
 
@@ -1893,6 +1979,202 @@ PROMPT.($withCatalog ? "\n11. Pour un article du catalogue, mets dans la ligne l
         return null;
     }
 
+    /**
+     * Le client parle-t-il d'un article sans le nommer (« C'est combien ? », « Disponible en XL ? »)
+     * ou en le désignant seulement (« cet haut », « celle-ci ») ?
+     */
+    private function refersToUnnamedArticle(string $question): bool
+    {
+        if ($this->isDiscoveryRequest($question)) {
+            return false;
+        }
+
+        $words = explode(' ', $this->normalize($question));
+
+        if (array_intersect($words, self::ARTICLE_QUESTION_WORDS) === [] && array_intersect($words, self::DEMONSTRATIVES) === []) {
+            return false;
+        }
+
+        return $this->articleWords($question) === [] || array_intersect($words, self::DEMONSTRATIVES) !== [];
+    }
+
+    /**
+     * Mots d'un texte qui peuvent désigner un article : sans mots de liaison, de question, de
+     * taille, de couleur ni nombres (« c'est disponible en XL ? » n'en a aucun).
+     *
+     * @return list<string>
+     */
+    private function articleWords(string $text): array
+    {
+        return array_values(array_filter(
+            explode(' ', $this->normalize($text)),
+            fn (string $word) => $word !== '' && ! ctype_digit($word) && mb_strlen($word) > 1
+                && ! in_array($word, [...self::NON_ARTICLE_WORDS, ...self::ARTICLE_QUESTION_WORDS, ...self::DEMONSTRATIVES], true),
+        ));
+    }
+
+    /**
+     * Un article précis est-il identifié : nommé dans le message (catalogue ou titre d'un média),
+     * désigné par le message cité (photo, statut du jour…), ou nommé, montré ou commandé dans les
+     * derniers messages de la conversation ?
+     *
+     * @param  Collection<int, object>  $session
+     * @param  list<array<string, mixed>>  $quotes
+     */
+    private function articleIdentified(Business $business, string $question, Collection $session, array $quotes, bool $catalogAvailable): bool
+    {
+        // Découvrir l'offre, ou une catégorie (« des chemises en XL ») : la réponse présente les articles.
+        // Pas « cet haut » : le démonstratif désigne un article précis que l'assistant ne voit pas.
+        $demonstrative = array_intersect(explode(' ', $this->normalize($question)), self::DEMONSTRATIVES) !== [];
+        if ($this->isDiscoveryRequest($question) || (! $demonstrative && $this->mentionsCategory($business, $question))) {
+            return true;
+        }
+
+        // Un message cité connu (photo envoyée, statut du jour…) dit de quel article il s'agit.
+        if (collect($quotes)->contains(fn (array $quote) => ($quote['kind'] ?? null) !== QuotedMessageService::KIND_UNKNOWN)) {
+            return true;
+        }
+
+        $texts = [$question];
+        foreach ($session->reverse()->take(self::ARTICLE_LOOKBACK_MESSAGES) as $row) {
+            $metadata = is_string($row->metadata) ? (array) json_decode($row->metadata, true) : (array) $row->metadata;
+
+            if (! empty($metadata['sent_media']) || ! empty($metadata['orders']) || in_array($metadata['type'] ?? null, ['image'], true)) {
+                return true;
+            }
+
+            // Sans catalogue (articles des documents) : un prix déjà donné par l'assistant, ou un article
+            // nommé par le client dans une question précédente.
+            $content = (string) $row->content;
+            if ($row->direction === 'outbound' ? preg_match(self::PRICE_IN_REPLY, $content) === 1 : ($content !== $question && $this->articleWords($content) !== [] && ! $this->refersToUnnamedArticle($content) && array_intersect(explode(' ', $this->normalize($content)), self::ARTICLE_QUESTION_WORDS) !== [])) {
+                return true;
+            }
+
+            $texts[] = $content;
+        }
+
+        foreach ($texts as $text) {
+            $words = implode(' ', $this->articleWords($text));
+
+            if ($words !== '' && (($catalogAvailable && $this->catalog->identifies($business, $words)) || $this->namedMedia($business, $words)->isNotEmpty())) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /** « Qu'est-ce que vous avez ? », « vous avez quoi comme modèles ? », « montrez-moi vos nouveautés »… */
+    private function isDiscoveryRequest(string $question): bool
+    {
+        $normalized = $this->normalize($question);
+
+        foreach (self::DISCOVERY_PATTERNS as $pattern) {
+            if (preg_match($pattern, $normalized) === 1) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Le texte nomme-t-il une catégorie : du catalogue, du profil d'activité, ou courante
+     * (CATEGORY_WORDS) ? Pluriels compris (« chemises », « chaussures »).
+     */
+    private function mentionsCategory(Business $business, string $text): bool
+    {
+        $singular = fn (string $word) => preg_replace('/(?<=[a-z]{3})[sx]$/', '', $word);
+        $words = array_map($singular, explode(' ', $this->normalize($text)));
+
+        $categories = [
+            ...self::CATEGORY_WORDS,
+            ...ActivityProfile::definition($business->activityProfile())['categories'],
+            ...$business->products()->where('is_active', true)->whereNotNull('category')->distinct()->limit(100)->pluck('category')->all(),
+        ];
+
+        foreach ($categories as $category) {
+            foreach (explode(' ', $this->normalize((string) $category)) as $word) {
+                if (mb_strlen($word) >= 3 && in_array($singular($word), $words, true)) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * La réponse nomme-t-elle un article du catalogue (tous les mots de son nom) ou un média ?
+     */
+    private function namesCatalogArticle(Business $business, string $text): bool
+    {
+        $words = array_flip(explode(' ', $this->normalize($text)));
+        $significant = fn (string $name) => array_values(array_filter(
+            explode(' ', $this->normalize($name)),
+            fn (string $word) => mb_strlen($word) >= 3 && ! in_array($word, self::MEDIA_TITLE_STOPWORDS, true),
+        ));
+
+        foreach ($business->products()->where('is_active', true)->limit(200)->pluck('name') as $name) {
+            $tokens = $significant((string) $name);
+
+            if ($tokens !== [] && array_diff($tokens, array_keys($words)) === []) {
+                return true;
+            }
+        }
+
+        return $this->namedMedia($business, $text)->isNotEmpty();
+    }
+
+    /**
+     * Article non précisé : les photos des statuts du jour (3 au plus) et « C'est pour l'un de ces
+     * articles ? », sinon escalade silencieuse avec un résumé fixe pour le gérant.
+     *
+     * @return array<string, mixed>
+     */
+    private function unspecifiedArticleResponse(Business $business, ?Conversation $conversation, string $question): array
+    {
+        $posts = $business->statusPosts()->active()->with(['product', 'media'])->limit(StatusPost::MAX_CHOICES)->get();
+        $log = fn (string $case) => Log::info("AIResponseService: article non précisé, {$case}", [
+            'business_id' => $business->id,
+            'conversation_id' => $conversation?->id,
+        ]);
+
+        if ($posts->isNotEmpty()) {
+            $log('photos des statuts du jour envoyées');
+            $photos = array_slice(array_values(array_unique(array_filter($posts->map(fn (StatusPost $post) => $post->photoId())->all()))), 0, self::UNSPECIFIED_ARTICLE_PHOTOS);
+            // Sans photo, le client lit les noms des articles.
+            $labels = $photos === [] ? 'Nos statuts du jour : '.$posts->take(self::UNSPECIFIED_ARTICLE_PHOTOS)->map(fn (StatusPost $post) => $post->label())->implode(', ').'. ' : '';
+
+            return [
+                'answer' => $labels.self::UNSPECIFIED_ARTICLE_QUESTION,
+                'confidence' => 1.0,
+                'should_escalate' => false,
+                'context_used' => [],
+                'media_ids' => $photos,
+                'clarification' => 'status_reply',
+                'canned' => true,
+            ];
+        }
+
+        $log('passage au gérant');
+        $asked = Str::limit(trim((string) preg_replace('/\s+/u', ' ', EscalationSummaryService::withoutPhoneNumbers($question))), 200);
+
+        return [
+            'answer' => null,
+            'confidence' => 0.2,
+            'should_escalate' => true,
+            'silent' => true,
+            'escalation_reason' => Escalation::REASON_STATUS_REPLY,
+            'summary' => "Le client demande « {$asked} » sur un article non précisé, probablement un statut.",
+            // Le gérant est invité à enregistrer ses statuts (au plus une fois par jour).
+            'status_hint' => true,
+            'context_used' => [],
+            'media_ids' => [],
+            'canned' => true,
+        ];
+    }
+
     /** « Je viens récupérer mon habit déposé », « c'est prêt ? », « depuis des semaines »… */
     private function isPastOrderClaim(string $question): bool
     {
@@ -2914,6 +3196,7 @@ Tu discutes avec un client sur WhatsApp. Tu réponds au nom de {$business->name}
 - Tu parles au nom de l'entreprise : utilise toujours « nous », « notre », « nos », jamais « je », « moi », « mon ».
 - N'appelle jamais le client par son prénom ni par son nom, même s'il te l'a donné. Dis « Monsieur » ou « Madame » seulement quand c'est évident (le client l'a dit lui-même, ou c'est indiqué plus bas) ; sinon, aucune formule : « Bonjour, … ».
 - N'invente JAMAIS d'information : prix, stock, disponibilité, horaires, produits, services, délais, villes desservies, conditions, promotions. Utilise uniquement ce qui est écrit dans le contexte fourni plus bas dans la conversation.
+- Si le client parle d'un article sans le nommer (« c'est combien ? », « disponible en XL ? », « cet haut », « celle-ci ») et qu'aucun article précis n'a été identifié dans les derniers messages de la conversation, ne devine JAMAIS de quel article il s'agit : ni prix, ni disponibilité, ni photo, ni nom d'article. Écris seulement JE_NE_SAIS_PAS.
 - Si une information manque dans le contexte, ne la confirme pas et ne l'infirme pas non plus : ne dis ni « oui » ni « non » (par exemple, si une ville n'est pas mentionnée, ne dis pas que vous y livrez, ni que vous n'y livrez pas). Applique alors la règle d'escalade ci-dessous.
 - Ne promets JAMAIS un service qui ne figure pas dans le contexte : par exemple prévenir le client d'un retour en stock, mettre un article de côté au-delà des règles indiquées, faire une remise, livrer à un endroit ou dans un délai non mentionné.
 - Ne renvoie JAMAIS le client vers un numéro de téléphone, une adresse e-mail, un site ou un autre canal de contact, et surtout pas vers le numéro WhatsApp de cette conversation : c'est ici que le client obtient sa réponse. C'est vrai même si un document, une réponse apprise ou l'historique donnent un numéro à appeler ou disent « appelez-nous », « écrivez au… » : ne recopie jamais ce numéro. Seule exception : un contact indiqué explicitement dans les consignes spécifiques de l'entreprise, que tu peux alors donner tel quel, sauf pour un rendez-vous quand tu peux le prendre toi-même.

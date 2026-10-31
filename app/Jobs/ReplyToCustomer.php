@@ -220,10 +220,11 @@ class ReplyToCustomer implements ShouldQueue
         $order = $paymentProof ? $this->attachPaymentProof($conversation, $photos->first()) : null;
 
         if ($escalated) {
-            // L'assistant ne sait pas : le gérant reçoit un résumé (client, demande, ce qui manque, suggestion).
-            $summary = $silent && ! $paymentProof && ($result['escalation_reason'] ?? null) !== Escalation::REASON_PERSONAL
+            // L'assistant ne sait pas : le gérant reçoit un résumé (client, demande, ce qui manque, suggestion),
+            // fixe quand l'assistant l'a déjà rédigé (article non précisé).
+            $summary = $result['summary'] ?? ($silent && ! $paymentProof && ($result['escalation_reason'] ?? null) !== Escalation::REASON_PERSONAL
                 ? app(EscalationSummaryService::class)->summarize($business, $conversation, $question, $result['escalation_reason'] ?? null)
-                : null;
+                : null);
 
             $escalation = Escalation::create([
                 'conversation_id' => $conversation->id,

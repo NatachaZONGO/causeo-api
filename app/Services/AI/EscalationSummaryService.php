@@ -130,7 +130,7 @@ TEXT;
     }
 
     /** « +226 70 11 22 33 », « 70112233 » → « [numéro] » (8 chiffres au moins : pas un prix comme « 1 500 000 »). */
-    private static function withoutPhoneNumbers(string $text): string
+    public static function withoutPhoneNumbers(string $text): string
     {
         return (string) preg_replace_callback(
             '/\+?\d[\d .\-]{6,}\d/u',

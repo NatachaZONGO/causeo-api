@@ -98,7 +98,7 @@ class AiCostTest extends TestCase
 
         $this->service()->answer($this->business, 'Combien coûte le pagne wax ?', $conversationId);
         $this->travel(2)->hours();
-        $second = $this->service()->answer($this->business, 'Vous l\'avez en quelles couleurs ?', $conversationId);
+        $second = $this->service()->answer($this->business, 'Vous avez le pagne wax en quelles couleurs ?', $conversationId);
 
         [$first, $later] = [Http::recorded()[0][0]->data(), Http::recorded()[1][0]->data()];
 

@@ -561,7 +561,7 @@ class AssistantHandoffTest extends TestCase
         $this->claudeAnswers = ['JE_NE_SAIS_PAS'];
 
         $this->receiveRaw([
-            'id' => 'wamid.1', 'type' => 'text', 'text' => ['body' => "C'est combien ?"],
+            'id' => 'wamid.1', 'type' => 'text', 'text' => ['body' => 'Le boubou bazin du statut, il est à combien ?'],
             'context' => ['from' => '22625000000', 'id' => 'wamid.STATUS-1'],
         ]);
 
@@ -604,7 +604,7 @@ class AssistantHandoffTest extends TestCase
         ];
 
         $this->receive('wamid.1', 'Je veux le truc de la dernière fois');
-        $this->receive('wamid.2', 'Celui que tout le monde porte');
+        $this->receive('wamid.2', 'Le modèle que tout le monde porte');
         $this->assertCount(2, FakeWhatsAppService::$sent);
         $this->assertSame(0, Escalation::count());
 
