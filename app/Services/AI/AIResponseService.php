@@ -175,6 +175,7 @@ TEXT;
         'quelles', 'sont', 'pour', 'par', 'avec', 'sur', 'dans', 'encore', 'aussi', 'toujours', 'aujourd', 'hui', 'deja', 'bien',
         'alors', 'donc', 'mais', 'si', 'pas', 'ne', 'n', 'veux', 'voudrais', 'aimerais', 'prendre', 'avoir', 'peux', 'pouvez',
         'fcfa', 'cfa', 'f', 'francs', 'franc', 'mon', 'ma', 'mes', 'son', 'sa', 'ses', 'votre', 'vos', 'meme',
+        'ref', 'reference', 'statut', 'suis', 'interesse', 'interessee', 'ecris', 'ecrire', 'sujet',
         'xs', 's', 'xl', 'xxl', 'xxxl', '2xl', '3xl', '4xl',
         'rouge', 'bleu', 'bleue', 'vert', 'verte', 'noir', 'noire', 'blanc', 'blanche', 'jaune', 'rose', 'gris', 'grise',
         'marron', 'beige', 'violet', 'violette', 'orange', 'dore', 'doree', 'argent', 'argente',
@@ -205,6 +206,13 @@ TEXT;
         '/\b(quels?|quelles?) (articles?|modeles?|produits?|plats?|prestations?|services?)\b/',
         '/\bvos (articles|modeles|produits|plats|prestations|services|collections?)\b/',
     ];
+
+    /**
+     * Référence d'un statut dans le message (« réf. 12 », « ref 12 », « réf12 », « #12 »), écrite par
+     * le message pré-rempli du lien court (StatusLink). 5 chiffres au plus : une référence de commande
+     * (6 caractères) n'en est pas une.
+     */
+    private const STATUS_REFERENCE = '/(?:\br[ée]f(?:[ée]rence)?\s*\.?\s*(?:n[°o]\.?\s*)?:?\s*|#\s*)(\d{1,5})(?!\d)/iu';
 
     /** Seule question posée quand le client parle d'un article non précisé et qu'il y a des statuts du jour. */
     public const UNSPECIFIED_ARTICLE_QUESTION = "C'est pour l'un de ces articles ?";
@@ -446,14 +454,21 @@ TEXT,
             return $simple;
         }
 
-        $deterministic = $this->statusOrClaimResponse($business, $conversation, $question, $quotes, $withPhotos, $catalogAvailable, $clarifications);
+        // « réf. 12 » (lien court du statut) : l'article est identifié avec certitude et décrit à
+        // l'assistant comme un statut cité. Une référence inconnue est ignorée (règle de prudence).
+        [$referencedPost, $citesReference] = $this->referencedStatus($business, $question);
+        if ($referencedPost !== null) {
+            $quotes[] = $this->referencedStatusQuote($referencedPost);
+        }
+
+        $deterministic = $referencedPost !== null ? null : $this->statusOrClaimResponse($business, $conversation, $question, $quotes, $withPhotos, $catalogAvailable, $clarifications);
         if ($deterministic !== null) {
             return $deterministic;
         }
 
-        // Article non précisé (« C'est disponible en XL ? » en réponse à un statut, sans référence)
-        // et aucun article identifié dans la conversation : jamais deviné.
-        $vagueArticle = ! $withPhotos && $this->refersToUnnamedArticle($question);
+        // Article non précisé (« C'est disponible en XL ? » en réponse à un statut, sans référence, ou
+        // avec une référence inconnue) et aucun article identifié dans la conversation : jamais deviné.
+        $vagueArticle = ! $withPhotos && ($this->refersToUnnamedArticle($question) || ($citesReference && $referencedPost === null));
         $articleKnown = fn () => $this->articleIdentified($business, $question, $session, $quotes, $catalogAvailable);
         if ($vagueArticle && ! $articleKnown()) {
             return $this->unspecifiedArticleResponse($business, $conversation, $question);
@@ -1977,6 +1992,65 @@ PROMPT.($withCatalog ? "\n11. Pour un article du catalogue, mets dans la ligne l
         }
 
         return null;
+    }
+
+    /**
+     * Statut cité par sa référence (« réf. 12 ») parmi ceux du business, même expiré, tant que son
+     * article existe ; et si le message cite une référence.
+     *
+     * @return array{0: ?StatusPost, 1: bool}
+     */
+    private function referencedStatus(Business $business, string $question): array
+    {
+        if (preg_match(self::STATUS_REFERENCE, $question, $match) !== 1) {
+            return [null, false];
+        }
+
+        $post = $business->statusPosts()
+            ->where('reference', (int) $match[1])
+            ->with(['product.variants'])
+            ->first();
+
+        // Article supprimé (product_id remis à null) : la référence ne désigne plus rien.
+        if ($post !== null && $post->product === null && $post->media_id === null) {
+            $post = null;
+        }
+
+        Log::info('AIResponseService: référence de statut dans le message', [
+            'business_id' => $business->id,
+            'reference' => (int) $match[1],
+            'found' => $post !== null,
+        ]);
+
+        return [$post, true];
+    }
+
+    /**
+     * Description du statut cité par sa référence, comme un message cité (QuotedMessageService) :
+     * l'article et ses variantes (prix, tailles, disponibilité), identifié avec certitude.
+     *
+     * @return array{note: string, search: ?string, kind: string}
+     */
+    private function referencedStatusQuote(StatusPost $post): array
+    {
+        $caption = trim((string) $post->caption) !== '' ? ' (légende : « '.trim((string) $post->caption).' »)' : '';
+
+        if ($post->product !== null) {
+            return [
+                'note' => "Le client écrit depuis le lien du statut WhatsApp réf. {$post->reference} de la boutique{$caption}, qui montre l'article du catalogue « {$post->product->name} » : "
+                    .json_encode($this->catalog->describe($post->product), JSON_UNESCAPED_UNICODE).'. '
+                    ."L'article est identifié avec certitude : réponds directement à sa demande sur cet article (prix, tailles, disponibilité), sans lui demander de quel article il s'agit.",
+                'search' => $post->product->name,
+                'kind' => QuotedMessageService::KIND_STATUS_ONE,
+            ];
+        }
+
+        return [
+            'note' => "Le client écrit depuis le lien du statut WhatsApp réf. {$post->reference} de la boutique{$caption}. "
+                .'Si la légende permet de savoir de quel article il s\'agit, réponds directement sur cet article ; sinon, écris seulement JE_NE_SAIS_PAS.',
+            'search' => $caption !== '' ? Str::limit(trim((string) $post->caption), 200) : null,
+            'kind' => QuotedMessageService::KIND_STATUS_ONE,
+        ];
     }
 
     /**

@@ -421,6 +421,87 @@ class StatusPostsAndCatalogTruthTest extends TestCase
         ];
     }
 
+    // --- 5. Référence du statut (lien court, message pré-rempli) -----------------------------------
+
+    public function test_the_exact_prefilled_message_identifies_the_article_and_gets_its_price(): void
+    {
+        // Statut publié il y a 3 jours : expiré, mais son lien et sa référence restent valables.
+        $post = StatusPost::create(['business_id' => $this->business->id, 'product_id' => $this->robe->id, 'posted_at' => now()->subDays(3), 'expires_at' => now()->subDays(2)]);
+        $this->assertSame(1, $post->reference);
+        $this->claudeAnswers = ['La robe longue noire à paillettes est à 15 000 FCFA, disponible en S, M et L.'];
+
+        $this->receive('wamid.1', \App\Support\StatusLink::message($post->load('product')));
+
+        $this->assertSame('Bonjour, je suis intéressé(e) par Robe longue noire à paillettes (réf. 1)', \App\Support\StatusLink::message($post));
+        $this->assertSame(['La robe longue noire à paillettes est à 15 000 FCFA, disponible en S, M et L.'], FakeWhatsAppService::$sent);
+        $this->assertSame(0, Escalation::count());
+        $userMessage = end($this->claudeRequests()[0]['messages'])['content'];
+        $this->assertStringContainsString("Le client écrit depuis le lien du statut WhatsApp réf. 1 de la boutique, qui montre l'article du catalogue « Robe longue noire à paillettes » :", $userMessage);
+        $this->assertStringContainsString('"price":15000', $userMessage);
+        $this->assertStringContainsString("L'article est identifié avec certitude : réponds directement à sa demande sur cet article (prix, tailles, disponibilité), sans lui demander de quel article il s'agit.", $userMessage);
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('referenceForms')]
+    public function test_a_vague_question_with_a_known_reference_is_answered(string $question): void
+    {
+        StatusPost::create(['business_id' => $this->business->id, 'product_id' => $this->sac->id, 'posted_at' => now(), 'expires_at' => now()->addDay()]);
+        $this->claudeAnswers = ['Le sac à main cuir est à 8 000 FCFA.'];
+
+        $this->receive('wamid.1', $question);
+
+        $this->assertSame(['Le sac à main cuir est à 8 000 FCFA.'], FakeWhatsAppService::$sent);
+        $this->assertStringContainsString('réf. 1', end($this->claudeRequests()[0]['messages'])['content']);
+    }
+
+    /**
+     * @return array<string, array{string}>
+     */
+    public static function referenceForms(): array
+    {
+        return [
+            'réf. 1' => ["C'est combien ? (réf. 1)"],
+            'ref 1' => ['Disponible ? ref 1'],
+            'réf1' => ["C'est combien réf1"],
+            '#1' => ['#1 c\'est combien ?'],
+        ];
+    }
+
+    public function test_a_reference_of_another_business_is_ignored(): void
+    {
+        $otherId = (string) Str::uuid();
+        DB::table('businesses')->insert(['id' => $otherId, 'user_id' => $this->owner->id, 'name' => 'Autre boutique', 'modules' => '["catalog"]']);
+        $other = Business::findOrFail($otherId);
+        $boubou = app(CatalogService::class)->saveProduct($other, ['name' => 'Boubou bazin', 'base_price' => 25000], null, [['options' => []]]);
+        StatusPost::create(['business_id' => $otherId, 'product_id' => $boubou->id, 'posted_at' => now(), 'expires_at' => now()->addDay()]);
+
+        $this->receive('wamid.1', 'Bonjour, je vous écris au sujet de votre statut (réf. 1)');
+
+        // Joyce n'a pas de statut réf. 1 : règle de prudence, jamais l'article ni le prix d'un autre business.
+        $this->assertSame([], $this->claudeRequests());
+        $this->assertSame([], FakeWhatsAppService::$sent);
+        $escalation = Escalation::sole();
+        $this->assertTrue($escalation->silent);
+        $this->assertSame('Le client demande « Bonjour, je vous écris au sujet de votre statut (réf. 1) » sur un article non précisé, probablement un statut.', $escalation->summary);
+    }
+
+    public function test_an_unknown_reference_falls_back_to_the_prudence_rule(): void
+    {
+        foreach ([$this->robe, $this->sac] as $i => $product) {
+            StatusPost::create(['business_id' => $this->business->id, 'product_id' => $product->id, 'posted_at' => now()->subMinutes($i + 1), 'expires_at' => now()->addHours(23)]);
+        }
+
+        $this->receive('wamid.1', 'Bonjour, je vous écris au sujet de votre statut (réf. 9)');
+
+        $this->assertSame([], $this->claudeRequests());
+        $this->assertSame(["C'est pour l'un de ces articles ?"], FakeWhatsAppService::$sent);
+        $this->assertSame(['https://cdn.test/robe.jpg', 'https://cdn.test/sac.jpg'], FakeWhatsAppService::$images);
+
+        // Référence effacée ou inconnue mais nom de l'article gardé : recherche catalogue normale.
+        $this->claudeAnswers = ['Le sac à main cuir est à 8 000 FCFA.'];
+        $this->receive('wamid.2', 'Bonjour, je suis intéressé(e) par Sac à main cuir (réf. 9)', '22671000002');
+        $this->assertSame('Le sac à main cuir est à 8 000 FCFA.', end(FakeWhatsAppService::$sent));
+    }
+
     public function test_an_article_named_earlier_in_the_conversation_can_be_priced(): void
     {
         $this->history(['Vous avez le sac à main cuir ?', 'Oui, le sac à main cuir est disponible.']);
