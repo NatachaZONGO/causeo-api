@@ -1,4 +1,4 @@
-# Tests à chaque push sur main, puis déploiement sur le VPS s'ils passent.
+# Tests (SQLite et PostgreSQL) à chaque push sur main, puis déploiement sur le VPS s'ils passent tous.
 #
 # Secrets (Settings > Secrets and variables > Actions > Secrets) :
 #   VPS_HOST      adresse IP du VPS
@@ -124,7 +124,8 @@ jobs:
 
   deploy:
     name: Déploiement sur le VPS
-    needs: tests
+    # Aucun déploiement (ni migration en production) si une des deux suites échoue.
+    needs: [tests, tests-pgsql]
     if: github.ref == 'refs/heads/main' && vars.DEPLOY_ENABLED == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30

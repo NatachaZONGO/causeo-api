@@ -121,8 +121,8 @@ class DeployConfigTest extends TestCase
     {
         $workflow = $this->file('.github/workflows/deploy.yml');
 
-        // Le déploiement attend les tests, ne tourne jamais en double et vise le commit testé.
-        $this->assertMatchesRegularExpression('/^  deploy:\n(?:    .*\n)*?    needs: tests$/m', $workflow);
+        // Le déploiement attend les deux suites (SQLite et PostgreSQL), ne tourne jamais en double et vise le commit testé.
+        $this->assertMatchesRegularExpression('/^  deploy:\n(?:    .*\n)*?    needs: \[tests, tests-pgsql\]$/m', $workflow);
         $this->assertMatchesRegularExpression('/concurrency:\s+group: deploy-production\s+cancel-in-progress: false/', $workflow);
         $this->assertStringContainsString('"$TARGET $GITHUB_SHA"', $workflow);
         $this->assertStringContainsString('StrictHostKeyChecking=yes', $workflow);
