@@ -107,6 +107,9 @@ return [
         // Secret de l'app Meta qui reçoit les webhooks (vérification de X-Hub-Signature-256).
         'app_secret' => env('WHATSAPP_APP_SECRET', env('FACEBOOK_APP_SECRET')),
         'api_url' => env('WHATSAPP_API_URL', 'https://graph.facebook.com/v21.0/'),
+        // Sonde TEMPORAIRE (App\Support\StatusProbe) : structure des webhooks de coexistence et des
+        // réponses à un message inconnu, dans storage/logs/status-probe.log. Jamais de contenu.
+        'status_probe' => (bool) env('LOG_STATUS_PROBE', false),
     ],
 
     // Alertes WhatsApp aux gérants, envoyées depuis le numéro Causeo avec le token

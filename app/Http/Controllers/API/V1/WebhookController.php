@@ -25,6 +25,7 @@ use App\Services\WhatsApp\WhatsAppMediaService;
 use App\Services\WhatsApp\WhatsAppService;
 use App\Services\WhatsApp\WhatsAppServiceFactory;
 use App\Support\EmojiStyle;
+use App\Support\StatusProbe;
 use Illuminate\Database\QueryException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -99,6 +100,7 @@ class WebhookController extends Controller
         if ($field !== 'messages') {
             $value = data_get($payload, 'entry.0.changes.0.value');
 
+            $this->probe(is_string($field) ? $field : 'inconnu', is_array($value) ? $value : []);
             $this->handleNonMessageEvent(is_string($field) ? $field : null, is_array($value) ? $value : []);
 
             return $this->acknowledge();
@@ -110,6 +112,11 @@ class WebhookController extends Controller
             $this->recordNotifyStatuses((array) $value['statuses']);
 
             return $this->acknowledge();
+        }
+
+        // Champ « messages » sans message client (statuts d'envoi, erreurs…).
+        if (is_array($value) && empty($value['messages'])) {
+            $this->probe('messages', $value);
         }
 
         $incoming = $this->whatsApp->parseIncomingMessage($payload);
@@ -348,6 +355,29 @@ class WebhookController extends Controller
         }
 
         return hash_equals('sha256='.hash_hmac('sha256', $request->getContent(), $secret), $signature);
+    }
+
+    /**
+     * Sonde TEMPORAIRE (LOG_STATUS_PROBE) : structure d'un webhook qui n'est pas un message client
+     * classique, pour un business connecté (Coexistence). Rien n'est changé au traitement.
+     *
+     * @param  array<string, mixed>  $value
+     */
+    private function probe(string $field, array $value): void
+    {
+        if (! StatusProbe::enabled()) {
+            return;
+        }
+
+        $phoneNumberId = data_get($value, 'metadata.phone_number_id');
+        $businessId = empty($phoneNumberId) ? null : Business::query()
+            ->where('whatsapp_phone_number_id', $phoneNumberId)
+            ->where('whatsapp_verified', true)
+            ->value('id');
+
+        if ($businessId !== null) {
+            StatusProbe::coexistenceEvent($field, $value, $businessId);
+        }
     }
 
     /**

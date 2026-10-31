@@ -9,6 +9,7 @@ use App\Models\Message;
 use App\Models\StatusPost;
 use App\Services\AI\CustomerImageService;
 use App\Services\Catalog\CatalogService;
+use App\Support\StatusProbe;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
@@ -168,6 +169,10 @@ class QuotedMessageService
 
         if ($reasons === []) {
             return;
+        }
+
+        if (in_array('message_cite_introuvable', $reasons, true)) {
+            StatusProbe::unknownContext($raw, $businessId ?? $conversation?->business_id);
         }
 
         Log::info('QuotedMessageService: message en réponse à un contenu inconnu (statut WhatsApp, publication…), payload brut', [
