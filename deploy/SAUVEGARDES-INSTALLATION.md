@@ -253,6 +253,28 @@ stat -c '%U %a' /var/backups/causeo
 
 Attendu : `root 700`.
 
+### 4 bis — Autoriser deploy.sh à sauvegarder avant des migrations
+
+`deploy.sh` (lancé en tant que `deploy`) sauvegarde la base avant un déploiement qui apporte
+des migrations, et s'arrête sans rien changer si la sauvegarde échoue. Il lui faut le droit de
+lancer `causeo-backup` en root, sans mot de passe (même liste que `setup.sh`) :
+
+```bash
+printf '%s\n' 'deploy ALL=(root) NOPASSWD: /usr/bin/systemctl reload php8.2-fpm, /usr/bin/systemctl reload nginx, /usr/bin/supervisorctl restart causeo-worker\:*, /usr/bin/supervisorctl start causeo-worker\:*, /usr/bin/supervisorctl update, /usr/bin/supervisorctl status, /usr/local/sbin/causeo-backup' > /tmp/causeo-deploy.sudoers
+```
+
+```bash
+visudo -cf /tmp/causeo-deploy.sudoers && install -m 440 -o root -g root /tmp/causeo-deploy.sudoers /etc/sudoers.d/causeo-deploy; rm -f /tmp/causeo-deploy.sudoers
+```
+
+Attendu : `/tmp/causeo-deploy.sudoers: parsed OK`.
+
+```bash
+sudo -l -U deploy | grep causeo-backup
+```
+
+Attendu : la ligne contient `/usr/local/sbin/causeo-backup`.
+
 ---
 
 ## Étape 5 — Réglages : `/etc/causeo-backup.env`

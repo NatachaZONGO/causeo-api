@@ -82,6 +82,24 @@ class DeployConfigTest extends TestCase
         $this->assertStringContainsString("fastcgi_pass unix:{$listen[1]};", $this->file('deploy/nginx/api.conf'));
     }
 
+    public function test_the_database_is_backed_up_before_new_migrations(): void
+    {
+        $deploy = $this->file('deploy/deploy.sh');
+
+        // La sauvegarde a lieu avant le code (pull) et donc avant les migrations ; un échec arrête tout.
+        $this->assertLessThan(strpos($deploy, 'pull "$API_DIR" "$REF"'), strpos($deploy, "    backup_before_migrations\n"));
+        $this->assertLessThan(strpos($deploy, 'artisan migrate --force'), strpos($deploy, 'pull "$API_DIR" "$REF"'));
+        $this->assertStringContainsString("diff --name-only --diff-filter=A HEAD \"\$target\" -- database/migrations", $deploy);
+        $this->assertStringContainsString('if ! sudo -n "$BACKUP_BIN"; then', $deploy);
+        $this->assertStringContainsString('BACKUP_BIN=/usr/local/sbin/causeo-backup', $deploy);
+
+        // Même chemin que l'installation et le cron ; deploy peut le lancer sans mot de passe.
+        $setup = $this->file('deploy/setup.sh');
+        $this->assertStringContainsString('install -m 755 "$SOURCE_DIR/backup.sh" /usr/local/sbin/causeo-backup', $setup);
+        $this->assertMatchesRegularExpression('/^\$\{DEPLOY_USER\} ALL=\(root\) NOPASSWD: .*, \/usr\/local\/sbin\/causeo-backup$/m', $setup);
+        $this->assertStringContainsString('root /usr/local/sbin/causeo-backup', $this->file('deploy/cron/causeo-backup'));
+    }
+
     public function test_the_scheduler_is_not_enabled_by_setup(): void
     {
         $setup = $this->file('deploy/setup.sh');

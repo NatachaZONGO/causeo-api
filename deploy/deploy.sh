@@ -9,7 +9,8 @@
 # GitHub Actions passe par une clé SSH dont la seule commande permise est ce script
 # (commande forcée) : la cible et le commit arrivent alors dans SSH_ORIGINAL_COMMAND.
 #
-# API : dépendances, migrations, seeders et caches, puis rechargement de php-fpm et redémarrage du worker.
+# API : sauvegarde de la base si le commit apporte des migrations, puis dépendances, migrations,
+# seeders et caches, rechargement de php-fpm et redémarrage du worker.
 
 set -euo pipefail
 
@@ -41,6 +42,8 @@ fi
 source /etc/causeo-deploy.env # DOMAIN, API_DIR, DASHBOARD_SRC, DASHBOARD_DIR, PRIVACY_DIR, PHP_VERSION
 PHP="/usr/bin/php${PHP_VERSION}"
 
+BACKUP_BIN=/usr/local/sbin/causeo-backup # deploy/backup.sh, installé par setup.sh (SAUVEGARDES-INSTALLATION.md)
+
 log()  { printf '\n\033[1;34m==> %s\033[0m\n' "$*"; }
 warn() { printf '\033[1;33m[attention] %s\033[0m\n' "$*"; }
 
@@ -65,9 +68,33 @@ pull() {
     echo "    $(basename "$dir") : $(git -C "$dir" log -1 --format='%h %s')"
 }
 
+# Sauvegarde de la base AVANT de toucher au code, si le commit à déployer ajoute des migrations :
+# si elle échoue, rien n'est changé sur le serveur (ni code, ni base).
+backup_before_migrations() {
+    local target="${REF:-origin/main}" count
+    git -C "$API_DIR" fetch --quiet origin main
+    count="$(git -C "$API_DIR" diff --name-only --diff-filter=A HEAD "$target" -- database/migrations | grep -c '\.php$' || true)"
+
+    if [[ "$count" -eq 0 ]]; then
+        echo "    aucune nouvelle migration : pas de sauvegarde préalable."
+        return
+    fi
+
+    log "API : sauvegarde de la base avant ${count} nouvelle(s) migration(s)"
+    if [[ ! -x "$BACKUP_BIN" ]]; then
+        echo "Sauvegarde impossible : $BACKUP_BIN n'est pas installé (deploy/SAUVEGARDES-INSTALLATION.md). Rien n'est déployé." >&2
+        exit 1
+    fi
+    if ! sudo -n "$BACKUP_BIN"; then
+        echo "La sauvegarde de la base a échoué (voir ci-dessus) : rien n'est déployé, aucune migration lancée." >&2
+        exit 1
+    fi
+}
+
 deploy_api() {
     log "API : code"
     [[ -f "$API_DIR/.env" ]] || { echo "Il manque $API_DIR/.env (modèle : deploy/.env.production.example)." >&2; exit 1; }
+    backup_before_migrations
     pull "$API_DIR" "$REF"
     cd "$API_DIR"
 

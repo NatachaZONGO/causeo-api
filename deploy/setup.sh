@@ -196,10 +196,11 @@ if [[ -n "$CI_DASHBOARD_PUBLIC_KEY" ]]; then
     echo "    clé GitHub Actions du dashboard installée (commande forcée : dashboard-release.sh)"
 fi
 
-# deploy.sh peut recharger php-fpm, nginx et le worker sans mot de passe, et rien d'autre.
+# deploy.sh peut recharger php-fpm, nginx et le worker, et sauvegarder la base avant des
+# migrations, sans mot de passe, et rien d'autre.
 sudoers=/etc/sudoers.d/causeo-deploy
 cat > /tmp/causeo-deploy.sudoers <<EOF
-${DEPLOY_USER} ALL=(root) NOPASSWD: /usr/bin/systemctl reload php${PHP_VERSION}-fpm, /usr/bin/systemctl reload nginx, /usr/bin/supervisorctl restart causeo-worker\:*, /usr/bin/supervisorctl start causeo-worker\:*, /usr/bin/supervisorctl update, /usr/bin/supervisorctl status
+${DEPLOY_USER} ALL=(root) NOPASSWD: /usr/bin/systemctl reload php${PHP_VERSION}-fpm, /usr/bin/systemctl reload nginx, /usr/bin/supervisorctl restart causeo-worker\:*, /usr/bin/supervisorctl start causeo-worker\:*, /usr/bin/supervisorctl update, /usr/bin/supervisorctl status, /usr/local/sbin/causeo-backup
 EOF
 visudo -cf /tmp/causeo-deploy.sudoers >/dev/null || die "Fichier sudoers invalide."
 install_file /tmp/causeo-deploy.sudoers "$sudoers" 440 || true
