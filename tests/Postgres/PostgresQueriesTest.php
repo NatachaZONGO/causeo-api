@@ -38,6 +38,23 @@ class PostgresQueriesTest extends PostgresTestCase
         $this->business = $this->business($this->owner);
     }
 
+    // --- Utilisateurs (admin) -----------------------------------------------------------------------
+
+    public function test_admin_user_search_ignores_case_and_number_formatting(): void
+    {
+        DB::table('users')->where('id', $this->user('Awa Ouédraogo'))->update(['email' => 'Awa@Shop.Test', 'phone' => '+226 70 12 34 56']);
+        Sanctum::actingAs(User::findOrFail($this->user('Admin', admin: true)));
+
+        foreach (['awa@shop.test', 'SHOP.TEST', 'OUÉDRAOGO', 'ouédraogo', '+226 70 12 34 56', '70123456', '+22670123456'] as $search) {
+            $emails = array_column($this->getJson('/api/v1/admin/users?'.http_build_query(['search' => $search]))->assertOk()->json('data'), 'email');
+            $this->assertSame(['Awa@Shop.Test'], $emails, "Recherche : {$search}");
+        }
+
+        foreach (['%', '_', 'introuvable'] as $search) {
+            $this->assertSame([], $this->getJson('/api/v1/admin/users?'.http_build_query(['search' => $search]))->assertOk()->json('data'), "Recherche : {$search}");
+        }
+    }
+
     // --- Conversations ------------------------------------------------------------------------------
 
     public function test_conversation_lists_carry_the_latest_message_with_uuid_ids(): void

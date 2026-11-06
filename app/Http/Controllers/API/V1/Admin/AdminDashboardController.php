@@ -12,6 +12,7 @@ use App\Models\Message;
 use App\Models\Plan;
 use App\Models\Subscription;
 use App\Models\User;
+use App\Services\Admin\SignupListQuery;
 use App\Services\Billing\BillingService;
 use App\Services\Conversations\ConversationListQuery;
 use App\Services\WhatsApp\OwnerAlertService;
@@ -185,11 +186,7 @@ class AdminDashboardController extends Controller
         $query = User::query()->withCount('businesses');
 
         if ($request->filled('search')) {
-            $search = $request->input('search');
-            $query->where(function ($q) use ($search) {
-                $q->where('name', 'like', "%{$search}%")
-                    ->orWhere('email', 'like', "%{$search}%");
-            });
+            SignupListQuery::search($query, trim((string) $request->input('search')));
         }
 
         if ($request->has('is_admin')) {

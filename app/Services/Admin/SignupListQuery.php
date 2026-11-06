@@ -4,6 +4,7 @@ namespace App\Services\Admin;
 
 use App\Models\Business;
 use App\Models\Subscription;
+use Illuminate\Database\Eloquent\Builder as EloquentBuilder;
 use Illuminate\Database\Query\Builder;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -182,14 +183,15 @@ final class SignupListQuery
 
     /**
      * Nom, e-mail ou téléphone (le numéro aussi sans espaces ni « + »), sans tenir compte des majuscules.
+     * Sert aussi à la page Utilisateurs (AdminDashboardController::users).
      */
-    private static function search(Builder $query, string $search): void
+    public static function search(Builder|EloquentBuilder $query, string $search): void
     {
         $pattern = '%'.addcslashes(mb_strtolower($search), '%_\\').'%';
         $digits = preg_replace('/\D/', '', $search);
         $like = DB::getDriverName() === 'pgsql' ? 'LIKE ?' : "LIKE ? ESCAPE '\\'";
 
-        $query->where(function (Builder $query) use ($pattern, $digits, $like) {
+        $query->where(function (Builder|EloquentBuilder $query) use ($pattern, $digits, $like) {
             foreach (['name', 'email', 'phone', 'whatsapp_phone'] as $column) {
                 $query->orWhereRaw("LOWER({$column}) {$like}", [$pattern]);
             }
