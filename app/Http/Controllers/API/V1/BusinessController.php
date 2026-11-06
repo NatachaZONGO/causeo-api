@@ -6,6 +6,7 @@ use App\Enums\BusinessType;
 use App\Http\Controllers\Controller;
 use App\Models\Business;
 use App\Services\Billing\BillingService;
+use App\Services\Conversations\ConversationListQuery;
 use App\Support\ActivityProfile;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -68,7 +69,14 @@ class BusinessController extends Controller
             'conversations',
             'managerReplies',
             'escalations as pending_escalations_count' => fn ($query) => $query->where('status', 'pending'),
+            // Compteur du menu : les mêmes conversations que le filtre « À traiter ».
+            'conversations as pending_conversations_count' => fn ($query) => ConversationListQuery::pending($query),
         ]);
+
+        // Null sans le module : il n'y a pas de commandes à traiter, plutôt que zéro à traiter.
+        $business->setAttribute('new_orders_count', $business->moduleEnabled('orders')
+            ? $business->orders()->where('status', 'new')->count()
+            : null);
 
         return response()->json([
             'business' => $business,

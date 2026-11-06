@@ -32,7 +32,7 @@ final class ConversationListQuery
 
         match ($filter) {
             'unread' => $query->whereHas('messages', fn ($q) => self::unread($q)),
-            'pending' => $query->whereHas('escalations', fn ($q) => $q->where('status', Escalation::PENDING)),
+            'pending' => self::pending($query),
             'orders' => $query->whereHas('orders'),
             default => null,
         };
@@ -43,6 +43,14 @@ final class ConversationListQuery
         }
 
         return $query->orderByDesc('last_message_at');
+    }
+
+    /**
+     * Conversations à traiter (filtre « À traiter », compteur du menu) : au moins une escalade en attente.
+     */
+    public static function pending(BuilderContract $query): void
+    {
+        $query->whereHas('escalations', fn ($q) => $q->where('status', Escalation::PENDING));
     }
 
     /**

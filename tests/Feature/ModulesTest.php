@@ -44,6 +44,7 @@ class ModulesTest extends TestCase
             Schema::create($table, function (Blueprint $blueprint) {
                 $blueprint->uuid('id')->primary();
                 $blueprint->uuid('business_id');
+                $blueprint->uuid('conversation_id')->nullable();
                 $blueprint->string('status')->nullable();
             });
         }

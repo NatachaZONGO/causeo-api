@@ -55,6 +55,38 @@ class PostgresQueriesTest extends PostgresTestCase
         }
     }
 
+    // --- Compteurs du menu du gérant ------------------------------------------------------------------
+
+    public function test_menu_counters_on_the_business_details(): void
+    {
+        DB::table('businesses')->where('id', $this->business)->update(['modules' => json_encode(['orders'])]);
+
+        // Deux demandes en attente dans la même conversation : une seule conversation à traiter.
+        $awa = $this->conversation($this->business, 'Awa');
+        $this->escalation($awa, $this->business, $this->message($awa, 'inbound', 'Vous livrez ?', '2026-10-24 08:00:00'), 'Vous livrez ?');
+        $this->escalation($awa, $this->business, $this->message($awa, 'inbound', 'Et le prix ?', '2026-10-24 08:05:00'), 'Et le prix ?');
+        $fatou = $this->conversation($this->business, 'Fatou');
+        $this->escalation($fatou, $this->business, $this->message($fatou, 'inbound', 'Ouvert ?', '2026-10-24 08:10:00'), 'Ouvert ?', 'answered');
+
+        foreach (['new', 'new', 'confirmed'] as $status) {
+            DB::table('orders')->insert([
+                'id' => (string) Str::uuid(), 'business_id' => $this->business, 'customer_phone' => '22670000000', 'items' => '[]',
+                'status' => $status, 'created_at' => now(), 'updated_at' => now(),
+            ]);
+        }
+
+        Sanctum::actingAs(User::findOrFail($this->owner));
+        $business = $this->getJson("/api/v1/businesses/{$this->business}")->assertOk()->json('business');
+
+        $this->assertSame(1, $business['pending_conversations_count']);
+        $this->assertSame(2, $business['pending_escalations_count']);
+        $this->assertSame(2, $business['new_orders_count']);
+        $this->assertSame(1, $this->getJson("/api/v1/businesses/{$this->business}/conversations?filter=pending")->assertOk()->json('total'));
+
+        DB::table('businesses')->where('id', $this->business)->update(['modules' => json_encode([])]);
+        $this->assertNull($this->getJson("/api/v1/businesses/{$this->business}")->assertOk()->json('business.new_orders_count'));
+    }
+
     // --- Conversations ------------------------------------------------------------------------------
 
     public function test_conversation_lists_carry_the_latest_message_with_uuid_ids(): void
