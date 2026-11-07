@@ -42,7 +42,7 @@ class PlanTest extends TestCase
         $plans = Plan::all()->keyBy('slug');
 
         $this->assertSame(
-            ['free' => null, 'starter' => null, 'pro' => 'Le plus choisi', 'business' => null, 'internal' => null],
+            ['free' => null, 'starter' => null, 'pro' => 'Recommandé', 'business' => null, 'internal' => null],
             $this->bySlug($plans, fn (Plan $plan) => $plan->badge),
         );
         $this->assertSame(
@@ -84,7 +84,7 @@ class PlanTest extends TestCase
         $this->assertSame(5, Plan::count());
         $pro = Plan::bySlug('pro');
         $this->assertSame(19900, $pro->price_fcfa);
-        $this->assertSame('Le plus choisi', $pro->badge);
+        $this->assertSame('Recommandé', $pro->badge);
         $this->assertTrue($pro->is_active);
     }
 
@@ -123,7 +123,7 @@ class PlanTest extends TestCase
         $response->assertJsonPath('plans.2.price_fcfa', 19900)
             ->assertJsonPath('plans.2.daily_price_fcfa', 663.33)
             ->assertJsonPath('plans.2.highlight_daily_price', true)
-            ->assertJsonPath('plans.2.badge', 'Le plus choisi')
+            ->assertJsonPath('plans.2.badge', 'Recommandé')
             ->assertJsonPath('plans.2.modules', ['orders', 'appointments', 'catalog']);
         $this->assertEquals(330, $response->json('plans.1.daily_price_fcfa'));
     }

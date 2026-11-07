@@ -97,7 +97,7 @@ class PlanSeeder extends Seeder
                     $learning,
                     'Documents illimités',
                 ],
-                'badge' => 'Le plus choisi',
+                'badge' => 'Recommandé',
                 'highlight_daily_price' => true,
                 'is_public' => true,
                 'sort_order' => 3,
