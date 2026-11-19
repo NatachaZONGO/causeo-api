@@ -125,7 +125,7 @@ final class SignupListQuery
             ->selectRaw('count(*)');
 
         $documents = DB::table('documents')->whereColumn('documents.business_id', 'fb.id')->selectRaw('count(*)');
-        $products = DB::table('products')->whereColumn('products.business_id', 'fb.id')->selectRaw('count(*)');
+        $products = DB::table('products')->whereColumn('products.business_id', 'fb.id')->whereNull('products.deleted_at')->selectRaw('count(*)');
 
         // Formule payante en cours ou en grâce : mêmes règles que BillingService::state().
         $paying = Subscription::query()->current()

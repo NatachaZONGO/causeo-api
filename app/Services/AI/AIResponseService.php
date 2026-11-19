@@ -2011,7 +2011,7 @@ PROMPT.($withCatalog ? "\n11. Pour un article du catalogue, mets dans la ligne l
             ->with(['product.variants'])
             ->first();
 
-        // Article supprimé (product_id remis à null) : la référence ne désigne plus rien.
+        // Article supprimé (archivé : la relation ne le charge plus) : la référence ne désigne plus rien.
         if ($post !== null && $post->product === null && $post->media_id === null) {
             $post = null;
         }

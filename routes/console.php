@@ -13,3 +13,4 @@ Artisan::command('inspire', function () {
 Schedule::command('billing:sync')->hourly()->withoutOverlapping()->onOneServer();
 Schedule::command('billing:weekly-report')->hourlyAt(5)->withoutOverlapping()->onOneServer();
 Schedule::command('escalations:expire')->hourlyAt(10)->withoutOverlapping()->onOneServer();
+Schedule::command('orders:expire')->hourlyAt(20)->withoutOverlapping()->onOneServer();

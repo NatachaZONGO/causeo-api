@@ -194,7 +194,7 @@ class OwnerAlertService
     {
         return implode(', ', array_map(
             fn (array $item) => ($item['quantity'] ?? 1).' × '.($item['name'] ?? ''),
-            (array) $order->items,
+            $order->lineItems(),
         ));
     }
 }

@@ -147,6 +147,19 @@ class CatalogSpreadsheet
                 ->each(fn (ProductVariant $variant) => $variant->delete());
         }
 
+        // SKU unique dans l'entreprise (hors variantes archivées), sans tenir compte de la casse.
+        if ($sku !== null) {
+            $owner = ProductVariant::query()
+                ->with('product:id,name')
+                ->where('business_id', $business->id)
+                ->whereRaw('LOWER(sku) = ?', [mb_strtolower($sku)])
+                ->when($variant !== null, fn ($query) => $query->whereKeyNot($variant->id))
+                ->first();
+            if ($owner !== null) {
+                throw new ImportRowException("Le SKU « {$sku} » est déjà utilisé par l'article « {$owner->product?->name} ».");
+            }
+        }
+
         $variantCreated = $variant === null;
         $variant ??= $product->variants()->create(['options' => $options]);
 

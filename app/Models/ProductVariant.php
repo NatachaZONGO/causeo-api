@@ -7,14 +7,17 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\SoftDeletes;
 
 /**
  * Variante d'un article (taille, couleur…) : prix propre ou celui de l'article, et
- * stock (null : non suivi, toujours disponible).
+ * stock (null : non suivi, toujours disponible). Une variante n'est jamais supprimée de la
+ * base par l'application : elle est archivée (deleted_at) et garde son historique. Les options
+ * sont uniques par article (options_key) et le SKU par entreprise, hors variantes archivées.
  */
 class ProductVariant extends Model
 {
-    use HasFactory, HasUuids;
+    use HasFactory, HasUuids, SoftDeletes;
 
     /** Disponibilités communiquées au client : jamais le nombre exact de pièces. */
     public const AVAILABLE = 'available';
@@ -48,6 +51,7 @@ class ProductVariant extends Model
      */
     protected $hidden = [
         'product',
+        'options_key',
     ];
 
     /**
@@ -71,12 +75,29 @@ class ProductVariant extends Model
         ];
     }
 
+    protected static function booted(): void
+    {
+        // Clé d'unicité des options et entreprise (unicité du SKU), tenues à jour à chaque enregistrement.
+        static::saving(function (ProductVariant $variant): void {
+            $variant->options_key = \App\Services\Catalog\CatalogService::optionsKey((array) ($variant->options ?? []));
+            if ($variant->business_id === null && $variant->product_id !== null) {
+                $variant->business_id = Product::withTrashed()->whereKey($variant->product_id)->value('business_id');
+            }
+        });
+    }
+
     /**
      * @return BelongsTo<Product, $this>
      */
     public function product(): BelongsTo
     {
         return $this->belongsTo(Product::class);
+    }
+
+    /** Stock suivi : une quantité est enregistrée et le profil d'activité suit le stock (boutique). */
+    public function tracksStock(): bool
+    {
+        return $this->stock_quantity !== null && ($this->product?->tracksStock() ?? true);
     }
 
     /**
@@ -98,6 +119,11 @@ class ProductVariant extends Model
         // Plat épuisé aujourd'hui (restaurant) : toutes ses variantes le sont.
         if ($this->product?->sold_out_at !== null && $this->product->isSoldOut()) {
             return self::OUT_OF_STOCK;
+        }
+
+        // Hors boutique, un stock resté d'un ancien profil ne compte pas.
+        if ($this->product !== null && ! $this->product->tracksStock()) {
+            return self::AVAILABLE;
         }
 
         return self::availabilityFor($this->stock_quantity, $this->low_stock_threshold ?? 2);

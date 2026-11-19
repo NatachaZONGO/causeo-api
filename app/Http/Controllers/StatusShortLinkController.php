@@ -22,8 +22,8 @@ class StatusShortLinkController extends Controller
     {
         $post = StatusPost::query()->with(['business:id,whatsapp_number', 'product:id,name'])->where('short_code', strtolower($code))->first();
 
-        // Article supprimé (product_id remis à null) : le message ne peut plus le nommer.
-        if ($post === null || ($post->product_id === null && $post->media_id === null)) {
+        // Article supprimé (archivé : la relation ne le charge plus) : le message ne peut plus le nommer.
+        if ($post === null || ($post->product === null && $post->media_id === null)) {
             return $this->expired();
         }
 

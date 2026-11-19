@@ -99,6 +99,11 @@ class CatalogService
     {
         $keep = [];
 
+        $keepIds = array_filter(array_map(fn (array $data) => $data['id'] ?? null, $variants));
+        // Variantes retirées de la liste : archivées d'abord, pour qu'une variante recréée avec les
+        // mêmes options (ou le même SKU) ne heurte pas les index d'unicité.
+        $product->variants()->whereNotIn('id', $keepIds)->get()->each(fn (ProductVariant $variant) => $variant->delete());
+
         foreach ($variants as $data) {
             $variant = ! empty($data['id']) ? $product->variants()->whereKey($data['id'])->first() : null;
             $stock = $tracksStock && isset($data['stock_quantity']) ? (int) $data['stock_quantity'] : null;
@@ -114,8 +119,16 @@ class CatalogService
             ];
 
             if ($variant === null) {
-                $variant = $product->variants()->create($attributes);
-                $this->setStock($variant, $stock, StockMovement::MANUAL, $userId);
+                // Variante archivée aux mêmes options : restaurée, avec son historique, plutôt que recréée.
+                $variant = $this->restoreArchived($product, $attributes);
+                if ($variant !== null) {
+                    if ($stock !== $variant->stock_quantity) {
+                        $this->setStock($variant, $stock, StockMovement::MANUAL, $userId);
+                    }
+                } else {
+                    $variant = $product->variants()->create($attributes);
+                    $this->setStock($variant, $stock, StockMovement::MANUAL, $userId);
+                }
             } else {
                 $variant->update($attributes);
                 // Stock absent de la requête : inchangé.
@@ -127,7 +140,32 @@ class CatalogService
             $keep[] = $variant->id;
         }
 
-        $product->variants()->whereNotIn('id', $keep)->delete();
+        // Jamais de suppression : une variante retirée est archivée et garde son historique.
+        $product->variants()->whereNotIn('id', $keep)->get()->each(fn (ProductVariant $variant) => $variant->delete());
+    }
+
+    /**
+     * Variante archivée de l'article avec ces options, restaurée avec les nouvelles valeurs ; null
+     * s'il n'y en a pas.
+     *
+     * @param  array<string, mixed>  $attributes  options, prix, seuil, SKU
+     */
+    private function restoreArchived(Product $product, array $attributes): ?ProductVariant
+    {
+        $archived = ProductVariant::onlyTrashed()
+            ->where('product_id', $product->id)
+            ->where('options_key', self::optionsKey($attributes['options'] ?? []))
+            ->latest('deleted_at')
+            ->first();
+
+        if ($archived === null) {
+            return null;
+        }
+
+        // Les nouvelles valeurs (SKU compris) sont enregistrées avec la restauration, en une fois.
+        $archived->fill($attributes)->restore();
+
+        return $archived->setRelation('product', $product);
     }
 
     /**
@@ -165,11 +203,12 @@ class CatalogService
                     continue;
                 }
 
-                $variant = $product->variants()->create([
+                $attributes = [
                     'options' => $options,
                     'price' => $defaults['price'] ?? null,
                     'low_stock_threshold' => $defaults['low_stock_threshold'] ?? 2,
-                ]);
+                ];
+                $variant = $this->restoreArchived($product, $attributes) ?? $product->variants()->create($attributes);
                 $this->setStock($variant, isset($defaults['stock_quantity']) ? (int) $defaults['stock_quantity'] : null, StockMovement::MANUAL, $userId);
                 $created->push($variant->fresh());
             }
@@ -213,14 +252,19 @@ class CatalogService
 
     // --- Stock -------------------------------------------------------------------------------
 
+    /** Sorties de stock liées à une commande, et leurs retours. */
+    private const ORDER_OUT_REASONS = [StockMovement::ORDER, StockMovement::COUNTER_SALE];
+
+    private const ORDER_BACK_REASONS = [StockMovement::ORDER_CANCELLED, StockMovement::ORDER_EXPIRED];
+
     /**
      * Fixer le stock d'une variante (null : stock non suivi). La différence est enregistrée
      * comme un mouvement ($reason : manual ou import).
      */
-    public function setStock(ProductVariant $variant, ?int $quantity, string $reason = StockMovement::MANUAL, ?int $userId = null): ProductVariant
+    public function setStock(ProductVariant $variant, ?int $quantity, string $reason = StockMovement::MANUAL, ?int $userId = null, ?string $note = null): ProductVariant
     {
-        return DB::transaction(function () use ($variant, $quantity, $reason, $userId) {
-            $locked = ProductVariant::query()->whereKey($variant->id)->lockForUpdate()->firstOrFail();
+        return DB::transaction(function () use ($variant, $quantity, $reason, $userId, $note) {
+            $locked = ProductVariant::query()->with(['product' => fn ($query) => $query->withTrashed()->with('business')])->whereKey($variant->id)->lockForUpdate()->firstOrFail();
             $before = $locked->stock_quantity;
 
             if ($quantity === null || $quantity === $before) {
@@ -229,15 +273,58 @@ class CatalogService
                 return $locked;
             }
 
-            $locked->update(['stock_quantity' => $quantity]);
-            StockMovement::create([
-                'variant_id' => $locked->id,
-                'quantity' => $quantity - ($before ?? 0),
-                'reason' => $reason,
-                'user_id' => $userId,
-            ]);
+            $this->move($locked, $quantity - ($before ?? 0), $reason, userId: $userId, note: $note);
 
-            $this->alertIfThresholdCrossed($locked, $before);
+            return $locked;
+        });
+    }
+
+    /**
+     * Mouvement saisi par le gérant : réception (restock) et retour client (return) ajoutent
+     * $quantity pièces, perte (loss) en retire, inventaire (adjustment) remplace le stock par
+     * $quantity (le stock compté). Une réception, un retour ou un inventaire active le suivi
+     * d'une variante qui n'était pas suivie (stock parti de 0).
+     *
+     * @throws InvalidArgumentException message destiné au gérant
+     */
+    public function recordMovement(ProductVariant $variant, string $reason, int $quantity, ?string $note = null, ?float $unitCost = null, ?int $userId = null): ProductVariant
+    {
+        if (! in_array($reason, StockMovement::OWNER_REASONS, true)) {
+            throw new InvalidArgumentException('Motif inconnu : réception, inventaire, perte ou retour.');
+        }
+
+        return DB::transaction(function () use ($variant, $reason, $quantity, $note, $unitCost, $userId) {
+            $locked = ProductVariant::query()->with(['product' => fn ($query) => $query->withTrashed()->with('business')])->whereKey($variant->id)->lockForUpdate()->firstOrFail();
+            $label = $this->variantLabel($locked);
+            $before = $locked->stock_quantity;
+
+            if (! $locked->product->tracksStock()) {
+                throw new InvalidArgumentException("Le stock en quantité n'est suivi que pour une boutique.");
+            }
+            if ($reason !== StockMovement::ADJUSTMENT && $quantity <= 0) {
+                throw new InvalidArgumentException("La quantité doit être d'au moins 1 pièce.");
+            }
+            if ($reason === StockMovement::ADJUSTMENT && $quantity < 0) {
+                throw new InvalidArgumentException('Le stock compté ne peut pas être négatif.');
+            }
+            if ($reason === StockMovement::LOSS && $before === null) {
+                throw new InvalidArgumentException("Le stock de « {$label} » n'est pas suivi : enregistrez d'abord une réception ou un inventaire.");
+            }
+            if ($reason === StockMovement::LOSS && $quantity > $before) {
+                throw new InvalidArgumentException("Impossible de retirer {$quantity} pièce(s) de « {$label} » : il n'en reste que {$before} en stock.");
+            }
+
+            $delta = match ($reason) {
+                StockMovement::ADJUSTMENT => $quantity - ($before ?? 0),
+                StockMovement::LOSS => -$quantity,
+                default => $quantity,
+            };
+
+            if ($delta === 0 && $before !== null) {
+                throw new InvalidArgumentException("Le stock de « {$label} » est déjà de {$quantity} : rien à corriger.");
+            }
+
+            $this->move($locked, $delta, $reason, userId: $userId, note: $note, unitCost: $unitCost);
 
             return $locked;
         });
@@ -245,42 +332,50 @@ class CatalogService
 
     /**
      * Retirer du stock les articles d'une commande (lignes avec variant_id), dans la même
-     * transaction que sa création. Refus si une variante suivie n'a plus assez de pièces.
+     * transaction que sa création, avec un verrou sur chaque variante. Refus si une variante
+     * suivie n'a plus assez de pièces : message pour l'IA (commande WhatsApp, sans nombre de
+     * pièces), ou pour le gérant avec le nombre de pièces restantes ($forOwner, vente au comptoir).
      *
-     * @throws InvalidArgumentException message destiné à l'IA
+     * @throws InvalidArgumentException
      */
-    public function reserveForOrder(Order $order, bool $allowNegative = false, ?int $userId = null): void
+    public function reserveForOrder(Order $order, bool $allowNegative = false, ?int $userId = null, bool $forOwner = false): void
     {
-        foreach ($this->orderLines($order) as $variantId => $quantity) {
-            $variant = ProductVariant::query()->with('product')->whereKey($variantId)->lockForUpdate()->first();
+        $reason = $order->source === Order::SOURCE_COUNTER ? StockMovement::COUNTER_SALE : StockMovement::ORDER;
 
-            if ($variant === null || $variant->stock_quantity === null) {
+        foreach ($this->orderLines($order) as $variantId => $quantity) {
+            $variant = ProductVariant::withTrashed()->with(['product' => fn ($query) => $query->withTrashed()->with('business')])->whereKey($variantId)->lockForUpdate()->first();
+
+            if ($variant === null || ! $variant->tracksStock()) {
                 continue;
             }
 
             if (! $allowNegative && $variant->stock_quantity < $quantity) {
-                $label = trim($variant->product->name.' '.$variant->optionsLabel());
+                $label = $this->variantLabel($variant);
 
-                throw new InvalidArgumentException($variant->stock_quantity <= 0
-                    ? "« {$label} » est en rupture de stock : ne l'enregistre pas, propose une autre variante ou un article proche (search_catalog)."
-                    : "Pas assez de pièces de « {$label} » pour cette quantité : propose une quantité plus faible ou une autre variante, sans donner de nombre exact.");
+                throw new InvalidArgumentException(match (true) {
+                    $forOwner && $variant->stock_quantity <= 0 => "« {$label} » est en rupture de stock.",
+                    $forOwner => "Stock insuffisant pour « {$label} » : il en reste {$variant->stock_quantity}, vous en vendez {$quantity}.",
+                    $variant->stock_quantity <= 0 => "« {$label} » est en rupture de stock : ne l'enregistre pas, propose une autre variante ou un article proche (search_catalog).",
+                    default => "Pas assez de pièces de « {$label} » pour cette quantité : propose une quantité plus faible ou une autre variante, sans donner de nombre exact.",
+                });
             }
 
-            $this->move($variant, -$quantity, StockMovement::ORDER, $order, $userId);
+            $this->move($variant, -$quantity, $reason, $order, $userId);
         }
     }
 
     /**
-     * Remettre en stock les articles d'une commande annulée (une seule fois).
+     * Remettre en stock les articles d'une commande annulée (une seule fois) ; $reason :
+     * order_cancelled (annulée par le gérant) ou order_expired (non confirmée à temps).
      */
-    public function releaseOrder(Order $order, ?int $userId = null): void
+    public function releaseOrder(Order $order, ?int $userId = null, string $reason = StockMovement::ORDER_CANCELLED): void
     {
-        DB::transaction(function () use ($order, $userId) {
+        DB::transaction(function () use ($order, $userId, $reason) {
             foreach ($this->reservedByVariant($order) as $variantId => $reserved) {
-                $variant = ProductVariant::query()->whereKey($variantId)->lockForUpdate()->first();
+                $variant = ProductVariant::withTrashed()->with(['product' => fn ($query) => $query->withTrashed()->with('business')])->whereKey($variantId)->lockForUpdate()->first();
 
                 if ($variant !== null && $reserved > 0 && $variant->stock_quantity !== null) {
-                    $this->move($variant, $reserved, StockMovement::ORDER_CANCELLED, $order, $userId);
+                    $this->move($variant, $reserved, $reason, $order, $userId);
                 }
             }
         });
@@ -299,37 +394,55 @@ class CatalogService
         });
     }
 
-    private function move(ProductVariant $variant, int $quantity, string $reason, ?Order $order = null, ?int $userId = null): void
+    /**
+     * Mouvement sur une variante verrouillée : nouveau stock (parti de 0 si le stock n'était pas
+     * suivi), mouvement avec le stock après coup, alerte de seuil.
+     */
+    private function move(ProductVariant $variant, int $quantity, string $reason, ?Order $order = null, ?int $userId = null, ?string $note = null, ?float $unitCost = null): void
     {
         $before = $variant->stock_quantity;
-        $variant->update(['stock_quantity' => $before + $quantity]);
+        $after = (int) $before + $quantity;
+        $variant->update(['stock_quantity' => $after]);
 
         StockMovement::create([
+            'business_id' => $variant->business_id ?? $variant->product?->business_id,
             'variant_id' => $variant->id,
             'quantity' => $quantity,
             'reason' => $reason,
             'order_id' => $order?->id,
             'user_id' => $userId,
+            'note' => $note !== null && trim($note) !== '' ? Str::limit(trim($note), 250, '') : null,
+            'unit_cost' => $unitCost,
+            'balance_after' => $after,
         ]);
 
         $this->alertIfThresholdCrossed($variant, $before);
     }
 
+    private function variantLabel(ProductVariant $variant): string
+    {
+        return trim(($variant->product?->name ?? 'Article').' '.$variant->optionsLabel());
+    }
+
     /**
-     * Quantités commandées par variante (lignes avec variant_id).
+     * Quantités commandées par variante : lignes de order_items avec variant_id (ou, pour une
+     * commande sans lignes en table, la copie JSON).
      *
      * @return array<string, int>
      */
     private function orderLines(Order $order): array
     {
-        $lines = [];
-        foreach ((array) $order->items as $item) {
+        $lines = $order->lines()->get(['variant_id', 'quantity']);
+        $items = $lines->isNotEmpty() ? $lines->toArray() : (array) $order->items;
+
+        $quantities = [];
+        foreach ($items as $item) {
             if (! empty($item['variant_id'])) {
-                $lines[$item['variant_id']] = ($lines[$item['variant_id']] ?? 0) + (int) $item['quantity'];
+                $quantities[$item['variant_id']] = ($quantities[$item['variant_id']] ?? 0) + (int) $item['quantity'];
             }
         }
 
-        return $lines;
+        return $quantities;
     }
 
     /**
@@ -341,7 +454,8 @@ class CatalogService
     {
         return StockMovement::query()
             ->where('order_id', $order->id)
-            ->whereIn('reason', [StockMovement::ORDER, StockMovement::ORDER_CANCELLED])
+            ->whereNotNull('variant_id')
+            ->whereIn('reason', [...self::ORDER_OUT_REASONS, ...self::ORDER_BACK_REASONS])
             ->get(['variant_id', 'quantity'])
             ->groupBy('variant_id')
             ->map(fn (Collection $movements) => -$movements->sum('quantity'))
@@ -350,10 +464,14 @@ class CatalogService
 
     /**
      * Cloche (et e-mail si le gérant l'a demandé) quand la variante passe sous son seuil
-     * ou en rupture ; pas à chaque mouvement sous le seuil.
+     * ou en rupture ; pas à chaque mouvement sous le seuil. Rien hors boutique.
      */
     private function alertIfThresholdCrossed(ProductVariant $variant, ?int $before): void
     {
+        if ($variant->product !== null && ! $variant->product->tracksStock()) {
+            return;
+        }
+
         $after = ProductVariant::availabilityFor($variant->stock_quantity, $variant->low_stock_threshold);
         $previous = $before === null ? ProductVariant::AVAILABLE : ProductVariant::availabilityFor($before, $variant->low_stock_threshold);
 
@@ -611,7 +729,7 @@ class CatalogService
 
             return collect(DB::select(
                 'SELECT id, 1 - (embedding <=> ?::vector) AS similarity FROM products
-                 WHERE business_id = ? AND is_active = true AND embedding IS NOT NULL
+                 WHERE business_id = ? AND is_active = true AND deleted_at IS NULL AND embedding IS NOT NULL
                  ORDER BY embedding <=> ?::vector LIMIT 20',
                 [$vector, $business->id, $vector],
             ))->mapWithKeys(fn (object $row) => [$row->id => (float) $row->similarity])->all();
@@ -682,6 +800,24 @@ class CatalogService
             ->mapWithKeys(fn ($value, $name) => [$name => self::normalize($value)])->sortKeys()->all();
 
         return $key($a) === $key($b);
+    }
+
+    /**
+     * Clé d'unicité des options d'une variante (index product_variants_options_unique) : noms et
+     * valeurs normalisés (casse, accents, espaces), dans l'ordre alphabétique des noms. Même
+     * calcul que la migration 2026_11_20_110000 (reprise des variantes existantes).
+     *
+     * @param  array<mixed>  $options
+     */
+    public static function optionsKey(array $options): string
+    {
+        $normalized = [];
+        foreach (self::normalizeOptions($options) as $name => $value) {
+            $normalized[self::normalize($name)] = self::normalize($value);
+        }
+        ksort($normalized);
+
+        return hash('sha256', (string) json_encode($normalized));
     }
 
     /** Minuscules, sans accents ni espaces superflus. */

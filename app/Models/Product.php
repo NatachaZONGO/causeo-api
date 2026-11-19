@@ -2,19 +2,23 @@
 
 namespace App\Models;
 
+use App\Support\ActivityProfile;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\SoftDeletes;
 
 /**
  * Article du catalogue (module « catalog »). Ses variantes portent le prix éventuel
- * et le stock ; un article sans variantes en a une seule, aux options vides.
+ * et le stock ; un article sans variantes en a une seule, aux options vides. Supprimer un
+ * article l'archive (deleted_at) : il sort du catalogue et de l'assistant, son historique de
+ * stock et ses lignes de commande restent.
  */
 class Product extends Model
 {
-    use HasFactory, HasUuids;
+    use HasFactory, HasUuids, SoftDeletes;
 
     /**
      * @var list<string>
@@ -47,6 +51,8 @@ class Product extends Model
      */
     protected $hidden = [
         'embedding',
+        // Chargé pour le profil d'activité (tracksStock), jamais renvoyé avec l'article.
+        'business',
     ];
 
     /**
@@ -89,6 +95,18 @@ class Product extends Model
     public function getSoldOutAttribute(): bool
     {
         return $this->isSoldOut();
+    }
+
+    /**
+     * Stock suivi en quantité : profil boutique seulement. Au restaurant et pour les prestations,
+     * un stock_quantity resté d'un ancien profil est ignoré (disponibilité et sorties de stock).
+     */
+    public function tracksStock(): bool
+    {
+        $business = $this->business;
+
+        return $business === null
+            || ActivityProfile::definition($business->activityProfile())['tracking'] === ActivityProfile::TRACK_QUANTITY;
     }
 
     /**

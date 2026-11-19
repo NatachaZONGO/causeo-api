@@ -287,6 +287,55 @@ class NotificationService
     }
 
     /**
+     * Commande de l'assistant annulée faute de confirmation (orders:expire) : ses articles sont
+     * revenus en stock. Cloche seulement.
+     */
+    public function notifyExpiredOrder(Order $order, int $hours): void
+    {
+        $customer = $order->customer_name ?: $order->customer_phone;
+
+        $this->orderNotice($order, 'order_expired', "Commande de {$customer} annulée : non confirmée",
+            "La commande {$order->reference()} (".number_format((float) $order->total_amount, 0, ',', ' ')." FCFA) est restée sans confirmation pendant {$hours} h : "
+            .'elle a été annulée et ses articles sont revenus en stock. Vous pouvez la réactiver si le client la veut toujours.');
+    }
+
+    /**
+     * Commande de l'assistant non confirmée après le délai, mais le client a envoyé une preuve de
+     * paiement : elle n'est pas annulée, le gérant doit vérifier le paiement et la confirmer.
+     */
+    public function notifyUnconfirmedPaidOrder(Order $order, int $hours): void
+    {
+        $customer = $order->customer_name ?: $order->customer_phone;
+
+        $this->orderNotice($order, 'order_unconfirmed_paid', "Commande de {$customer} à confirmer : preuve de paiement reçue",
+            "La commande {$order->reference()} attend votre confirmation depuis plus de {$hours} h. Le client a envoyé une preuve de paiement : "
+            .'elle n\'a donc pas été annulée et ses articles restent réservés. Vérifiez le paiement, puis confirmez-la ou annulez-la.');
+    }
+
+    private function orderNotice(Order $order, string $kind, string $title, string $body): void
+    {
+        try {
+            Notification::create([
+                'business_id' => $order->business_id,
+                'type' => 'order',
+                'title' => $title,
+                'body' => $body,
+                'data' => [
+                    'kind' => $kind,
+                    'conversation_id' => $order->conversation_id,
+                    'order_id' => $order->id,
+                ],
+            ]);
+        } catch (Throwable $e) {
+            Log::error('NotificationService::orderNotice a échoué', [
+                'order_id' => $order->id,
+                'kind' => $kind,
+                'exception' => $e::class,
+            ]);
+        }
+    }
+
+    /**
      * Notifier le gérant d'une nouvelle commande.
      */
     public function notifyOrder(Order $order): void
@@ -296,7 +345,7 @@ class NotificationService
 
             $lines = array_map(
                 fn (array $item) => "{$item['quantity']} × {$item['name']}".(! empty($item['options']) ? " ({$item['options']})" : ''),
-                $order->items,
+                $order->lineItems(),
             );
 
             $remise = match ($order->fulfillment_type) {

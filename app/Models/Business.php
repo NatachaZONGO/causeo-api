@@ -63,6 +63,14 @@ class Business extends Model
     public const ESCALATION_FALLBACK_MAX_MINUTES = 1440;
 
     /**
+     * Heures avant qu'une commande de l'assistant restée « new » soit annulée et ses articles remis
+     * en stock (order_expiry_hours) ; 0 : jamais.
+     */
+    public const DEFAULT_ORDER_EXPIRY_HOURS = 24;
+
+    public const ORDER_EXPIRY_MAX_HOURS = 168;
+
+    /**
      * Valeurs par défaut avant enregistrement : aucun module tant qu'on ne l'a pas choisi.
      *
      * @var array<string, mixed>
@@ -114,6 +122,7 @@ class Business extends Model
         'dine_in_enabled',
         'escalation_fallback_minutes',
         'whatsapp_number',
+        'order_expiry_hours',
     ];
 
     /**
@@ -166,6 +175,7 @@ class Business extends Model
             'dine_in_enabled' => 'boolean',
             'contacts_exported_at' => 'datetime',
             'escalation_fallback_minutes' => 'integer',
+            'order_expiry_hours' => 'integer',
         ];
     }
 
@@ -421,7 +431,28 @@ class Business extends Model
      */
     public function products(): HasMany
     {
-        return $this->hasMany(Product::class);
+        // chaperone : chaque article connaît son business (profil d'activité, suivi du stock) sans requête de plus.
+        return $this->hasMany(Product::class)->chaperone('business');
+    }
+
+    /**
+     * Journal du stock de l'entreprise.
+     *
+     * @return HasMany<StockMovement, $this>
+     */
+    public function stockMovements(): HasMany
+    {
+        return $this->hasMany(StockMovement::class);
+    }
+
+    /**
+     * Versements reçus sur les commandes et ventes.
+     *
+     * @return HasMany<OrderPayment, $this>
+     */
+    public function orderPayments(): HasMany
+    {
+        return $this->hasMany(OrderPayment::class);
     }
 
     /**

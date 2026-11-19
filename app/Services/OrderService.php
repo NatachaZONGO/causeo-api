@@ -91,25 +91,66 @@ class OrderService
             return $duplicate;
         }
 
-        $order = DB::transaction(fn () => tap(Order::create([
-            'business_id' => $business->id,
-            'conversation_id' => $conversation->id,
-            'customer_phone' => $conversation->customer_phone,
-            'customer_name' => $customerName,
-            'items' => $items,
-            'total_amount' => $this->total($items),
-            'delivery_city' => $deliveryCity,
-            'delivery_address' => $deliveryAddress,
-            'payment_method' => $paymentMethod,
-            'fulfillment_type' => $fulfillmentType,
-            'pickup_time' => $isPickup ? $this->string($input['pickup_time'] ?? null) : null,
-            'status' => 'new',
-            'notes' => $this->string($input['notes'] ?? null),
-        ]), fn (Order $order) => $this->catalog->reserveForOrder($order)));
+        $order = DB::transaction(function () use ($business, $conversation, $customerName, $items, $deliveryCity, $deliveryAddress, $paymentMethod, $fulfillmentType, $isPickup, $input) {
+            $order = Order::create([
+                'business_id' => $business->id,
+                'conversation_id' => $conversation->id,
+                'customer_phone' => $conversation->customer_phone,
+                'customer_name' => $customerName,
+                // Copie de secours (transition) : les lignes font foi dans order_items.
+                'items' => $items,
+                'total_amount' => $this->total($items),
+                'delivery_city' => $deliveryCity,
+                'delivery_address' => $deliveryAddress,
+                'payment_method' => $paymentMethod,
+                'fulfillment_type' => $fulfillmentType,
+                'pickup_time' => $isPickup ? $this->string($input['pickup_time'] ?? null) : null,
+                'status' => 'new',
+                'notes' => $this->string($input['notes'] ?? null),
+                'source' => Order::SOURCE_AI,
+            ]);
+
+            // L'assistant ne négocie pas : le prix du catalogue est le prix pratiqué.
+            $this->writeLines($order, array_map(fn (array $item) => $item + ['catalog_unit_price' => isset($item['variant_id']) ? $item['unit_price'] : null], $items));
+            $this->catalog->reserveForOrder($order);
+
+            return $order;
+        });
 
         $this->notificationService->notifyOrder($order);
 
         return $order;
+    }
+
+    /**
+     * Enregistrer les lignes d'une commande dans order_items (copie figée : nom, options, prix du
+     * catalogue et prix pratiqué, suppléments). L'article est retrouvé à partir de la variante.
+     *
+     * @param  list<array{name: string, options?: ?string, quantity: int, unit_price: float, catalog_unit_price?: ?float, variant_id?: ?string, extras?: ?array}>  $lines
+     */
+    public function writeLines(Order $order, array $lines): void
+    {
+        $variantIds = array_values(array_filter(array_column($lines, 'variant_id')));
+        $products = $variantIds === [] ? collect() : ProductVariant::withTrashed()->whereIn('id', $variantIds)->pluck('product_id', 'id');
+
+        foreach (array_values($lines) as $position => $line) {
+            $quantity = (int) $line['quantity'];
+            $unitPrice = round((float) $line['unit_price'], 2);
+            $variantId = $line['variant_id'] ?? null;
+
+            $order->lines()->create([
+                'product_id' => $variantId !== null ? ($products[$variantId] ?? null) : null,
+                'variant_id' => $variantId,
+                'position' => $position,
+                'name' => Str::limit($line['name'], 250, ''),
+                'options' => isset($line['options']) && $line['options'] !== '' ? Str::limit((string) $line['options'], 250, '') : null,
+                'quantity' => $quantity,
+                'catalog_unit_price' => isset($line['catalog_unit_price']) ? round((float) $line['catalog_unit_price'], 2) : null,
+                'unit_price' => $unitPrice,
+                'extras' => $line['extras'] ?? null,
+                'line_total' => round($quantity * $unitPrice, 2),
+            ]);
+        }
     }
 
     /**
