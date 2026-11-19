@@ -134,6 +134,9 @@ trait CreatesConversationSchema
         (require base_path('database/migrations/2026_10_31_100000_add_silent_escalations.php'))->up();
         (require base_path('database/migrations/2026_10_31_110000_add_summary_to_escalations.php'))->up();
         (require base_path('database/migrations/2026_11_01_100000_add_status_links.php'))->up();
+        (require base_path('database/migrations/2026_11_20_100000_create_order_items_and_payments.php'))->up();
+        (require base_path('database/migrations/2026_11_20_110000_stock_movements_reasons_and_catalog_archive.php'))->up();
+        (require base_path('database/migrations/2026_11_20_120000_add_order_expiry_hours_to_businesses.php'))->up();
     }
 
     /**
