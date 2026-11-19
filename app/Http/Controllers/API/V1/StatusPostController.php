@@ -47,7 +47,7 @@ class StatusPostController extends Controller
 
         $data = $request->validate([
             'product_ids' => ['required_without:image', 'array', 'max:20'],
-            'product_ids.*' => ['uuid', Rule::exists('products', 'id')->where('business_id', $business->id)],
+            'product_ids.*' => ['uuid', Rule::exists('products', 'id')->where('business_id', $business->id)->whereNull('deleted_at')],
             'image' => ['required_without:product_ids', 'file', 'mimes:jpg,jpeg,png', 'max:'.self::IMAGE_MAX_KB],
             'caption' => ['nullable', 'string', 'max:500'],
             'posted_at' => ['nullable', 'date', 'before_or_equal:now', 'after:'.now()->subHours(StatusPost::LIFETIME_HOURS)->toIso8601String()],

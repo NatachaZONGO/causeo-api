@@ -290,16 +290,44 @@ class ProductController extends Controller
             'extras.*.price.min' => 'Le prix d\'un supplément ne peut pas être négatif.',
         ]);
 
-        // Deux variantes avec les mêmes options seraient indiscernables pour le client.
-        $validator->after(function (Validator $validator) use ($request): void {
+        // Deux variantes avec les mêmes options seraient indiscernables pour le client ; un SKU est
+        // unique dans l'entreprise (hors variantes archivées), sans tenir compte de la casse.
+        $validator->after(function (Validator $validator) use ($request, $business, $product): void {
             $seen = [];
+            $skus = [];
             foreach ((array) $request->input('variants', []) as $index => $variant) {
-                $key = json_encode(collect(CatalogService::normalizeOptions((array) ($variant['options'] ?? [])))
-                    ->map(fn ($value) => CatalogService::normalize($value))->sortKeys()->all());
+                $key = CatalogService::optionsKey((array) ($variant['options'] ?? []));
                 if (isset($seen[$key])) {
                     $validator->errors()->add("variants.{$index}.options", 'Deux variantes ont les mêmes options.');
                 }
                 $seen[$key] = true;
+
+                $sku = mb_strtolower(trim((string) ($variant['sku'] ?? '')));
+                if ($sku === '') {
+                    continue;
+                }
+                if (isset($skus[$sku])) {
+                    $validator->errors()->add("variants.{$index}.sku", 'Deux variantes ont le même SKU.');
+                }
+                $skus[$sku] = $index;
+            }
+
+            if ($skus === []) {
+                return;
+            }
+
+            // Les variantes de cet article envoyées dans la requête gardent leur SKU (ou le changent).
+            $own = $product?->variants()->pluck('id')->all() ?? [];
+            $taken = ProductVariant::query()
+                ->with('product:id,name')
+                ->where('business_id', $business->id)
+                ->whereNotIn('id', $own)
+                ->whereIn(DB::raw('LOWER(sku)'), array_keys($skus))
+                ->get(['id', 'product_id', 'sku']);
+
+            foreach ($taken as $variant) {
+                $index = $skus[mb_strtolower($variant->sku)];
+                $validator->errors()->add("variants.{$index}.sku", "Le SKU « {$variant->sku} » est déjà utilisé par l'article « {$variant->product?->name} ».");
             }
         });
 

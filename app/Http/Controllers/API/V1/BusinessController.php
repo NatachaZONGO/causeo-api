@@ -203,6 +203,8 @@ class BusinessController extends Controller
             'dine_in_enabled' => ['sometimes', 'boolean'],
             // Message d'attente au client si le gérant n'a pas répondu à une escalade silencieuse (0 = jamais).
             'escalation_fallback_minutes' => ['sometimes', 'integer', 'min:0', 'max:'.Business::ESCALATION_FALLBACK_MAX_MINUTES],
+            // Commande de l'assistant non confirmée : annulée et remise en stock après ce délai (heures, 0 = jamais).
+            'order_expiry_hours' => ['sometimes', 'integer', 'min:0', 'max:'.Business::ORDER_EXPIRY_MAX_HOURS],
         ];
     }
 
@@ -262,6 +264,9 @@ class BusinessController extends Controller
             'escalation_fallback_minutes.min' => "Le délai avant le message d'attente est un nombre de minutes (0 pour ne jamais l'envoyer).",
             'escalation_fallback_minutes.max' => "Le délai avant le message d'attente ne doit pas dépasser ".Business::ESCALATION_FALLBACK_MAX_MINUTES.' minutes (24 h).',
             'ai_pause_hours.in' => 'La pause de l\'assistant dure 1, 6 ou 24 heures, ou jusqu\'à réactivation (0).',
+            'order_expiry_hours.integer' => "Le délai avant l'annulation d'une commande non confirmée est un nombre d'heures (0 pour ne jamais l'annuler).",
+            'order_expiry_hours.min' => "Le délai avant l'annulation d'une commande non confirmée est un nombre d'heures (0 pour ne jamais l'annuler).",
+            'order_expiry_hours.max' => "Le délai avant l'annulation d'une commande non confirmée ne doit pas dépasser ".Business::ORDER_EXPIRY_MAX_HOURS.' heures (7 jours).',
             'stock_alert_email.boolean' => 'Les alertes de stock par e-mail doivent être activées ou désactivées (vrai ou faux).',
             'brand_color.regex' => 'La couleur doit être au format hexadécimal #RRGGBB, par exemple #0F766E.',
             'brand_color.string' => 'La couleur doit être au format hexadécimal #RRGGBB, par exemple #0F766E.',

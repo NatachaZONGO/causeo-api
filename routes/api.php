@@ -124,6 +124,13 @@ Route::prefix('v1')->middleware('auth:sanctum')->group(function () {
     Route::get('businesses/{business}/orders', [OrderController::class, 'index']);
     Route::get('orders/{order}', [OrderController::class, 'show']);
     Route::patch('orders/{order}/status', [OrderController::class, 'updateStatus']);
+    // Ventes : vente au comptoir, versement complémentaire, résumé (bloc « Ventes » de l'accueil).
+    Route::post('businesses/{business}/sales', [OrderController::class, 'storeSale']);
+    Route::post('orders/{order}/payments', [OrderController::class, 'storePayment']);
+    Route::get('businesses/{business}/sales/summary', [\App\Http\Controllers\API\V1\SalesController::class, 'summary']);
+    // Stock : réception, inventaire, perte ou retour ; journal de l'entreprise.
+    Route::post('variants/{variant}/movements', [\App\Http\Controllers\API\V1\StockController::class, 'store']);
+    Route::get('businesses/{business}/stock-movements', [\App\Http\Controllers\API\V1\StockController::class, 'index']);
 
     Route::get('businesses/{business}/appointments', [AppointmentController::class, 'index']);
     Route::get('appointments/{appointment}', [AppointmentController::class, 'show']);
