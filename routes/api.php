@@ -100,6 +100,10 @@ Route::prefix('v1')->middleware('auth:sanctum')->group(function () {
     // Export des contacts clients (vCard), pour les enregistrer dans le téléphone du gérant.
     Route::get('businesses/{business}/contacts/summary', [\App\Http\Controllers\API\V1\ContactExportController::class, 'summary']);
     Route::get('businesses/{business}/contacts/export', [\App\Http\Controllers\API\V1\ContactExportController::class, 'export']);
+    // Clients (WhatsApp et comptoir) : liste, fiche, nom choisi par le gérant et note.
+    Route::get('businesses/{business}/customers', [\App\Http\Controllers\API\V1\CustomerController::class, 'index']);
+    Route::get('customers/{customer}', [\App\Http\Controllers\API\V1\CustomerController::class, 'show']);
+    Route::patch('customers/{customer}', [\App\Http\Controllers\API\V1\CustomerController::class, 'update']);
     Route::post('escalations/{escalation}/resolve', [\App\Http\Controllers\API\V1\EscalationController::class, 'resolve']);
 
     Route::get('businesses/{business}/billing', [BillingController::class, 'show']);

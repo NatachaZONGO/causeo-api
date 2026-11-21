@@ -3,13 +3,17 @@
 namespace Tests\Postgres;
 
 use App\Models\Business;
+use App\Models\Conversation;
+use App\Models\Customer;
 use App\Models\Escalation;
+use App\Models\Order;
 use App\Models\User;
 use App\Services\AI\AIResponseService;
 use App\Services\AI\AiCostService;
 use App\Services\AI\ManagerReplyService;
 use App\Services\AppointmentService;
 use App\Services\Billing\UsageService;
+use App\Services\Customers\CustomerService;
 use App\Services\Embedding\EmbeddingService;
 use App\Services\OrderService;
 use Carbon\CarbonImmutable;
@@ -223,6 +227,46 @@ class PostgresQueriesTest extends PostgresTestCase
         $context = $ai->findRelevantContext(Business::findOrFail($this->business), 'Le pagne wax bleu ?');
 
         $this->assertSame(['document', 'learned_response'], $context->pluck('source')->sort()->values()->all());
+    }
+
+    // --- Clients ---------------------------------------------------------------------------------------------
+
+    public function test_customer_list_totals_sorts_search_and_rls_on_postgresql(): void
+    {
+        DB::table('businesses')->where('id', $this->business)->update(['modules' => json_encode(['orders'])]);
+        $customers = app(CustomerService::class);
+
+        $awa = $this->conversation($this->business, 'Awa Ouédraogo');
+        $customers->linkConversation(Conversation::findOrFail($awa));
+        $customer = Customer::sole();
+        foreach ([['delivered', 20000, 5000, 'counter'], ['cancelled', 9000, 9000, 'counter'], ['new', 7000, 0, 'whatsapp_ai']] as [$status, $total, $paid, $source]) {
+            $order = Order::create([
+                'business_id' => $this->business, 'customer_phone' => $customer->phone, 'customer_name' => 'Awa', 'items' => [],
+                'total_amount' => $total, 'amount_paid' => $paid, 'status' => $status, 'source' => $source,
+            ]);
+            $this->assertSame($customer->id, $order->fresh()->customer_id);
+        }
+        $customers->resolve($this->business, 'BF', '+33 6 12 34 56 78', merchantName: 'Zoé');
+
+        Sanctum::actingAs(User::findOrFail($this->owner));
+        $url = "/api/v1/businesses/{$this->business}/customers";
+
+        $list = $this->getJson($url)->assertOk();
+        $row = collect($list->json('data'))->firstWhere('id', $customer->id);
+        $this->assertSame(['both', 1, 1, 20000, 15000], [$row['origin'], $row['orders_count'], $row['pending_orders_count'], (int) $row['total_spent'], (int) $row['balance_due']]);
+        $list->assertJsonPath('totals.customers_count', 2)->assertJsonPath('totals.owing_count', 1);
+
+        foreach (['recent', 'name', 'spent', 'due', 'last_message'] as $sort) {
+            $this->getJson("{$url}?sort={$sort}&direction=asc")->assertOk()->assertJsonCount(2, 'data');
+        }
+        // Nom WhatsApp « Awa Ouédraogo », nom du commerçant « Awa » (vente au comptoir) : affiché « Awa », trouvé par les deux.
+        $this->assertSame(['Awa'], array_column($this->getJson("{$url}?search=OUÉDRAOGO")->json('data'), 'display_name'));
+        $this->assertSame('Awa Ouédraogo', $this->getJson("{$url}?search=OUÉDRAOGO")->json('data.0.whatsapp_name'));
+        $this->assertSame(['Zoé'], array_column($this->getJson("{$url}?search=".urlencode('+33 6 12 34 56 78'))->json('data'), 'display_name'));
+        $this->assertSame(['Awa'], array_column($this->getJson("{$url}?owes=1")->json('data'), 'display_name'));
+
+        $this->getJson("/api/v1/customers/{$customer->id}")->assertOk()->assertJsonPath('customer.cancelled_paid', 9000);
+        $this->assertTrue((bool) DB::scalar("SELECT relrowsecurity FROM pg_class WHERE relname = 'customers'"));
     }
 
     // --- Escalades ---------------------------------------------------------------------------------------------

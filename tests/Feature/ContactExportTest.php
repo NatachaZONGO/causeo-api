@@ -3,8 +3,10 @@
 namespace Tests\Feature;
 
 use App\Models\Business;
+use App\Models\Conversation;
 use App\Models\Plan;
 use App\Models\User;
+use App\Services\Customers\CustomerService;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
@@ -46,7 +48,7 @@ class ContactExportTest extends TestCase
         $this->client('22670123456', 'Awa Ouédraogo', '2026-10-02 08:30:00', firstMessageAt: '2026-10-01 18:00:00');
         $this->client('22676543210', null, '2026-10-05 09:00:00');
         // Deuxième conversation du même numéro : toujours un seul contact.
-        $this->client('22670123456', 'Awa', '2026-10-20 09:00:00');
+        $this->client('22670123456', null, '2026-10-20 09:00:00');
 
         $response = $this->exportAs('all');
 
@@ -75,7 +77,8 @@ class ContactExportTest extends TestCase
 
         $body = $this->exportAs('all')->assertOk()->getContent();
 
-        $this->assertStringContainsString('FN:Dupont\; Marie\, \\\\ la\nboss · NEEB-RATA MARKET', $body);
+        // Le retour à la ligne d'un nom de profil devient une espace (nom enregistré sur une ligne).
+        $this->assertStringContainsString('FN:Dupont\; Marie\, \\\\ la boss · NEEB-RATA MARKET', $body);
         // Numéro local à 8 chiffres : indicatif du Burkina ajouté.
         $this->assertStringContainsString('TEL;TYPE=CELL:+22670112233', $body);
 
@@ -211,5 +214,8 @@ class ContactExportTest extends TestCase
                 'content' => 'Bonjour', 'created_at' => $firstMessageAt, 'updated_at' => $firstMessageAt,
             ]);
         }
+
+        // Comme à la réception d'un message : la conversation est rattachée à son client.
+        app(CustomerService::class)->linkConversation(Conversation::findOrFail($conversation));
     }
 }
