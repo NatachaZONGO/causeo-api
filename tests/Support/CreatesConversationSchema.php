@@ -137,6 +137,7 @@ trait CreatesConversationSchema
         (require base_path('database/migrations/2026_11_20_100000_create_order_items_and_payments.php'))->up();
         (require base_path('database/migrations/2026_11_20_110000_stock_movements_reasons_and_catalog_archive.php'))->up();
         (require base_path('database/migrations/2026_11_20_120000_add_order_expiry_hours_to_businesses.php'))->up();
+        (require base_path('database/migrations/2026_11_21_100000_create_customers_table.php'))->up();
     }
 
     /**
