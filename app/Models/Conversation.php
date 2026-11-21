@@ -2,8 +2,10 @@
 
 namespace App\Models;
 
+use App\Observers\CustomerLinkObserver;
 use Carbon\CarbonImmutable;
 use Carbon\CarbonInterface;
+use Illuminate\Database\Eloquent\Attributes\ObservedBy;
 use Illuminate\Database\Eloquent\Casts\Attribute;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
@@ -12,6 +14,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\HasOne;
 
+#[ObservedBy(CustomerLinkObserver::class)]
 class Conversation extends Model
 {
     use HasFactory, HasUuids;
@@ -31,6 +34,7 @@ class Conversation extends Model
         'business_id',
         'customer_phone',
         'customer_name',
+        'customer_id',
         'whatsapp_conversation_id',
         'is_active',
         'last_message_at',
@@ -178,5 +182,13 @@ class Conversation extends Model
                 ->orderByDesc('latest.id')
                 ->limit(1);
         });
+    }
+
+    /**
+     * @return BelongsTo<Customer, $this>
+     */
+    public function customer(): BelongsTo
+    {
+        return $this->belongsTo(Customer::class);
     }
 }

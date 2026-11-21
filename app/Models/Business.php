@@ -409,6 +409,14 @@ class Business extends Model
     }
 
     /**
+     * @return HasMany<Customer, $this>
+     */
+    public function customers(): HasMany
+    {
+        return $this->hasMany(Customer::class);
+    }
+
+    /**
      * @return HasMany<Order>
      */
     public function orders(): HasMany

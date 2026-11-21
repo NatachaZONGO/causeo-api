@@ -2,12 +2,15 @@
 
 namespace App\Models;
 
+use App\Observers\CustomerLinkObserver;
+use Illuminate\Database\Eloquent\Attributes\ObservedBy;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
+#[ObservedBy(CustomerLinkObserver::class)]
 class Order extends Model
 {
     use HasFactory, HasUuids;
@@ -77,6 +80,7 @@ class Order extends Model
         'conversation_id',
         'customer_phone',
         'customer_name',
+        'customer_id',
         'items',
         'total_amount',
         'delivery_city',
@@ -173,6 +177,14 @@ class Order extends Model
     public function business(): BelongsTo
     {
         return $this->belongsTo(Business::class);
+    }
+
+    /**
+     * @return BelongsTo<Customer, $this>
+     */
+    public function customer(): BelongsTo
+    {
+        return $this->belongsTo(Customer::class);
     }
 
     /**
