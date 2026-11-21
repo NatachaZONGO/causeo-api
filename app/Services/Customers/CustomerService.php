@@ -33,6 +33,9 @@ class CustomerService
 
         // Premier rattachement : date du premier message s'il précède la conversation (historique repris).
         $seenAt = $conversation->created_at;
+        if ($conversation->last_message_at !== null && ($seenAt === null || $conversation->last_message_at->lt($seenAt))) {
+            $seenAt = $conversation->last_message_at;
+        }
         if ($conversation->customer_id === null && ($firstMessage = $conversation->messages()->min('created_at')) !== null) {
             $firstMessage = Carbon::parse($firstMessage);
             $seenAt = $seenAt === null || $firstMessage->lt($seenAt) ? $firstMessage : $seenAt;
